@@ -1,0 +1,27 @@
+# Temporary & Archive files
+*.rar
+*.zip
+*.tar.gz
+*.7z
+*.log
+
+# Uploads directory (keep directory with .gitkeep, ignore uploaded images)
+/uploads/admins/*
+!/uploads/admins/.gitkeep
+/uploads/staff/*
+!/uploads/staff/.gitkeep
+/uploads/students/*
+!/uploads/students/.gitkeep
+
+# IDE & OS files
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temporary & workspace documentation
+task.md
+implementation_plan.md
+tools.yaml
+scratch/
