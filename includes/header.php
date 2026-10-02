@@ -358,13 +358,20 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-// Activity Heartbeat — menjaga status online tetap akurat setiap 60 detik jika tab aktif
+// Activity Heartbeat & Background Auto Reminder WA (setiap 60-120 detik)
 (function() {
     let lastPing = Date.now();
+    let lastWaCheck = 0;
     function sendHeartbeat() {
         if (Date.now() - lastPing < 40000) return;
         lastPing = Date.now();
         fetch('<?= BASE_URL ?>/kelola/activity.php?action=heartbeat', { method: 'POST' }).catch(function(){});
+        
+        // Pengecekan pesan WA otomatis (Pesan 2 & 4) setiap 2 menit jika aktif
+        if (Date.now() - lastWaCheck > 120000) {
+            lastWaCheck = Date.now();
+            fetch('<?= BASE_URL ?>/whatsapp/check_reminders.php').catch(function(){});
+        }
     }
     setInterval(sendHeartbeat, 60000);
     window.addEventListener('focus', sendHeartbeat);

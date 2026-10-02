@@ -58,12 +58,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         redirect('index.php?tab=settings');
     }
 
-    // 2. Simpan Sakelar 4 Pesan & Template
+    // 2. Simpan Sakelar 4 Pesan, Waktu Pengiriman & Template
     if ($action === 'save_message_settings') {
         $msgIn = isset($_POST['msg_in_enabled']) ? '1' : '0';
         $msgLate = isset($_POST['msg_late_enabled']) ? '1' : '0';
         $msgOut = isset($_POST['msg_out_enabled']) ? '1' : '0';
         $msgOutLate = isset($_POST['msg_out_late_enabled']) ? '1' : '0';
+
+        $msgInTiming = trim($_POST['msg_in_timing'] ?? 'realtime');
+        $msgLateTiming = trim($_POST['msg_late_timing'] ?? 'after_late');
+        $msgLateRef = in_array($_POST['msg_late_ref'] ?? '', ['student_late', 'student_in']) ? $_POST['msg_late_ref'] : 'student_late';
+        $msgLateDelay = max(1, (int)($_POST['msg_late_delay_minutes'] ?? 30));
+        $msgOutTiming = trim($_POST['msg_out_timing'] ?? 'realtime');
+        $msgOutLateTiming = trim($_POST['msg_out_late_timing'] ?? 'after_out');
+        $msgOutLateDelay = max(1, (int)($_POST['msg_out_late_delay_minutes'] ?? 45));
 
         if ($isSuperAdmin) {
             updateWaSetting($pdo, 'msg_in_enabled', $msgIn);
@@ -71,21 +79,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             updateWaSetting($pdo, 'msg_out_enabled', $msgOut);
             updateWaSetting($pdo, 'msg_out_late_enabled', $msgOutLate);
 
+            updateWaSetting($pdo, 'msg_in_timing', $msgInTiming);
+            updateWaSetting($pdo, 'msg_late_timing', $msgLateTiming);
+            updateWaSetting($pdo, 'msg_late_ref', $msgLateRef);
+            updateWaSetting($pdo, 'msg_late_delay_minutes', (string)$msgLateDelay);
+            updateWaSetting($pdo, 'msg_out_timing', $msgOutTiming);
+            updateWaSetting($pdo, 'msg_out_late_timing', $msgOutLateTiming);
+            updateWaSetting($pdo, 'msg_out_late_delay_minutes', (string)$msgOutLateDelay);
+
             if (isset($_POST['template_in'])) updateWaSetting($pdo, 'template_in', trim($_POST['template_in']));
             if (isset($_POST['template_late'])) updateWaSetting($pdo, 'template_late', trim($_POST['template_late']));
             if (isset($_POST['template_out'])) updateWaSetting($pdo, 'template_out', trim($_POST['template_out']));
             if (isset($_POST['template_out_late'])) updateWaSetting($pdo, 'template_out_late', trim($_POST['template_out_late']));
 
-            flash('success', 'Pengaturan 4 Jenis Pesan Otomatis & Template berhasil diperbarui.');
+            flash('success', 'Pengaturan 4 Jenis Pesan Otomatis, Waktu Pengiriman & Template berhasil diperbarui.');
         } elseif ($isKepsek && $ksUnitId) {
-            // Kepala Sekolah mengatur status 4 pesan untuk unitnya
+            // Kepala Sekolah mengatur status & waktu kirim 4 pesan untuk unitnya
             $stmtUpUnit = $pdo->prepare("
                 UPDATE wa_unit_settings 
-                SET msg_in_enabled = ?, msg_late_enabled = ?, msg_out_enabled = ?, msg_out_late_enabled = ?
+                SET msg_in_enabled = ?, msg_late_enabled = ?, msg_out_enabled = ?, msg_out_late_enabled = ?,
+                    msg_late_delay_minutes = ?, msg_out_late_delay_minutes = ?, msg_late_ref = ?
                 WHERE unit_id = ?
             ");
-            $stmtUpUnit->execute([$msgIn, $msgLate, $msgOut, $msgOutLate, $ksUnitId]);
-            flash('success', "Pengaturan status 4 pesan untuk Unit {$ksUnitName} berhasil diperbarui.");
+            $stmtUpUnit->execute([$msgIn, $msgLate, $msgOut, $msgOutLate, $msgLateDelay, $msgOutLateDelay, $msgLateRef, $ksUnitId]);
+            flash('success', "Pengaturan status & waktu pengiriman pesan untuk Unit {$ksUnitName} berhasil diperbarui.");
         }
 
         redirect('index.php?tab=messages');
@@ -352,6 +369,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // =========================================================================
 $activeTab = $_GET['tab'] ?? ($isKepsek ? 'students' : 'settings');
 $waSettings = getWaSettings($pdo);
+$ksUnitSettings = ($isKepsek && $ksUnitId) ? getWaUnitSettings($pdo, $ksUnitId) : null;
+
+$currentLateDelay = ($isKepsek && !empty($ksUnitSettings['msg_late_delay_minutes']))
+    ? (int)$ksUnitSettings['msg_late_delay_minutes']
+    : (int)($waSettings['msg_late_delay_minutes'] ?? 30);
+
+$currentLateRef = ($isKepsek && !empty($ksUnitSettings['msg_late_ref']))
+    ? $ksUnitSettings['msg_late_ref']
+    : ($waSettings['msg_late_ref'] ?? 'student_late');
+
+$currentOutLateDelay = ($isKepsek && !empty($ksUnitSettings['msg_out_late_delay_minutes']))
+    ? (int)$ksUnitSettings['msg_out_late_delay_minutes']
+    : (int)($waSettings['msg_out_late_delay_minutes'] ?? 45);
+
+$currentMsgInTiming = $waSettings['msg_in_timing'] ?? 'realtime';
+$currentMsgOutTiming = $waSettings['msg_out_timing'] ?? 'realtime';
 
 // Cek status perangkat jika di tab settings
 $deviceInfo = null;
@@ -814,41 +847,82 @@ input:checked + .slider:before {
 
             <!-- PESAN 1: ABSEN MASUK -->
             <div class="msg-card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                     <div>
                         <span style="background: #dcfce7; color: #15803d; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 800; text-transform: uppercase;">PESAN 1</span>
-                        <h4 style="margin: 4px 0 0 0; font-size: 16px; color: #0f172a;">Absen Masuk (Hadir di Sekolah)</h4>
-                        <small style="color: #64748b;">Terkirim seketika saat anak menempelkan kartu RFID / scan barcode di scanner saat jam masuk.</small>
+                        <h4 style="margin: 4px 0 2px 0; font-size: 16px; color: #0f172a;">Absen Masuk (Hadir di Sekolah)</h4>
+                        <small style="color: #64748b;">Notifikasi konfirmasi kehadiran siswa saat jam masuk sekolah.</small>
+                        <div style="margin-top: 6px;">
+                            <span style="display: inline-flex; align-items: center; gap: 6px; background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700;">
+                                <i class="fa-solid fa-bolt"></i> Waktu Kirim: <strong>Ketika Absen</strong> (Seketika saat scan masuk)
+                            </span>
+                        </div>
                     </div>
                     <label class="switch">
                         <input type="checkbox" name="msg_in_enabled" value="1" <?= (!empty($waSettings['msg_in_enabled']) && $waSettings['msg_in_enabled'] === '1') ? 'checked' : '' ?>>
                         <span class="slider"></span>
                     </label>
                 </div>
+                <input type="hidden" name="msg_in_timing" value="realtime">
                 <?php if ($isSuperAdmin): ?>
-                    <div class="form-group">
+                    <div class="form-group" style="margin-top: 12px;">
                         <label style="font-size: 12px; font-weight: 600;">Template Pesan Absen Masuk:</label>
                         <textarea name="template_in" rows="4" style="font-family: monospace; font-size: 12.5px;"><?= htmlspecialchars($waSettings['template_in'] ?? '') ?></textarea>
                     </div>
                 <?php endif; ?>
             </div>
 
-            <!-- PESAN 2: TERLAMBAT / BELUM HADIR (1 JAM SETELAH BATAS MASUK) -->
+            <!-- PESAN 2: TERLAMBAT / BELUM HADIR (SESUDAH JAM MASUK) -->
             <div class="msg-card" style="border-left: 5px solid #f59e0b;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                     <div>
                         <span style="background: #fef3c7; color: #b45309; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 800; text-transform: uppercase;">PESAN 2</span>
-                        <h4 style="margin: 4px 0 0 0; font-size: 16px; color: #0f172a;">Terlambat / Belum Hadir (1 Jam Setelah Batas Telat)</h4>
-                        <small style="color: #64748b;">Terkirim otomatis ke orang tua jika 1 jam setelah jam batas telat anaknya belum melakukan scan absensi masuk.</small>
+                        <h4 style="margin: 4px 0 2px 0; font-size: 16px; color: #0f172a;">Terlambat / Belum Hadir (Sesudah Jam Masuk)</h4>
+                        <small style="color: #64748b;">Terkirim otomatis ke orang tua jika siswa belum melakukan scan absensi masuk setelah jam yang ditentukan.</small>
                     </div>
                     <label class="switch">
                         <input type="checkbox" name="msg_late_enabled" value="1" <?= (!empty($waSettings['msg_late_enabled']) && $waSettings['msg_late_enabled'] === '1') ? 'checked' : '' ?>>
                         <span class="slider"></span>
                     </label>
                 </div>
+
+                <!-- PENGATURAN WAKTU PENGIRIMAN PESAN 2 -->
+                <div style="background: #fffbeb; border: 1px solid #fef3c7; border-radius: 8px; padding: 14px; margin-bottom: 15px;">
+                    <label style="font-size: 13px; font-weight: 700; color: #92400e; display: flex; align-items: center; gap: 6px; margin-bottom: 10px;">
+                        <i class="fa-solid fa-clock"></i> Pengaturan Waktu Pengiriman (Sesudah Jam Masuk):
+                    </label>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end;">
+                        <div>
+                            <label style="font-size: 12px; color: #78350f; font-weight: 600; display: block; margin-bottom: 4px;">Patokan Waktu Acuan:</label>
+                            <select name="msg_late_ref" style="padding: 7px 10px; border-radius: 6px; border: 1px solid #fcd34d; font-size: 13px; background: white;">
+                                <option value="student_late" <?= ($currentLateRef === 'student_late') ? 'selected' : '' ?>>Batas Jam Masuk / Toleransi Telat (student_late)</option>
+                                <option value="student_in" <?= ($currentLateRef === 'student_in') ? 'selected' : '' ?>>Jam Mulai Masuk Sekolah (student_in)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size: 12px; color: #78350f; font-weight: 600; display: block; margin-bottom: 4px;">Jeda Pengiriman (Berapa Menit Sesudahnya):</label>
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <input type="number" id="input_late_delay" name="msg_late_delay_minutes" min="1" max="300" value="<?= e($currentLateDelay) ?>" style="width: 85px; padding: 7px 10px; border-radius: 6px; border: 1px solid #fcd34d; font-size: 13px; font-weight: 700; text-align: center; background: white;">
+                                <span style="font-size: 13px; color: #92400e; font-weight: 600;">Menit</span>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 5px; align-items: center;">
+                            <span style="font-size: 11px; color: #92400e; font-weight: 600;">Pilih Cepat:</span>
+                            <button type="button" class="btn btn-sm" onclick="document.getElementById('input_late_delay').value=15" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fcd34d; cursor: pointer;">15m</button>
+                            <button type="button" class="btn btn-sm" onclick="document.getElementById('input_late_delay').value=30" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fcd34d; cursor: pointer;">30m</button>
+                            <button type="button" class="btn btn-sm" onclick="document.getElementById('input_late_delay').value=45" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fcd34d; cursor: pointer;">45m</button>
+                            <button type="button" class="btn btn-sm" onclick="document.getElementById('input_late_delay').value=60" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fcd34d; cursor: pointer;">1 Jam</button>
+                            <button type="button" class="btn btn-sm" onclick="document.getElementById('input_late_delay').value=90" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fcd34d; cursor: pointer;">1.5 Jam</button>
+                        </div>
+                    </div>
+                    <div style="margin-top: 10px; font-size: 12px; color: #b45309; line-height: 1.5;">
+                        <i class="fa-solid fa-circle-info"></i> <strong>Contoh Penerapan:</strong> Jika batas telat jam <strong>07:00</strong> dan jeda disetel <strong><?= e($currentLateDelay) ?> Menit</strong>, maka pada pukul <strong><?= date('H:i', strtotime("+{$currentLateDelay} minutes", strtotime('07:00:00'))) ?></strong> sistem otomatis mengirim notifikasi kepada orang tua yang anaknya belum ada data absen masuk.
+                    </div>
+                </div>
+
                 <?php if ($isSuperAdmin): ?>
                     <div class="form-group">
-                        <label style="font-size: 12px; font-weight: 600;">Template Pesan Belum Hadir (1 Jam Setelah Batas):</label>
+                        <label style="font-size: 12px; font-weight: 600;">Template Pesan Belum Hadir (Sesudah Jam Masuk):</label>
                         <textarea name="template_late" rows="4" style="font-family: monospace; font-size: 12.5px;"><?= htmlspecialchars($waSettings['template_late'] ?? '') ?></textarea>
                     </div>
                 <?php endif; ?>
@@ -856,41 +930,81 @@ input:checked + .slider:before {
 
             <!-- PESAN 3: ABSEN PULANG -->
             <div class="msg-card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                     <div>
                         <span style="background: #e0e7ff; color: #4338ca; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 800; text-transform: uppercase;">PESAN 3</span>
-                        <h4 style="margin: 4px 0 0 0; font-size: 16px; color: #0f172a;">Absen Pulang</h4>
-                        <small style="color: #64748b;">Terkirim seketika saat anak menempelkan kartu RFID / barcode kepulangan di gerbang sekolah.</small>
+                        <h4 style="margin: 4px 0 2px 0; font-size: 16px; color: #0f172a;">Absen Pulang (Meninggalkan Sekolah)</h4>
+                        <small style="color: #64748b;">Notifikasi kepulangan siswa saat tap RFID / barcode kepulangan di gerbang sekolah.</small>
+                        <div style="margin-top: 6px;">
+                            <span style="display: inline-flex; align-items: center; gap: 6px; background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700;">
+                                <i class="fa-solid fa-person-walking-arrow-right"></i> Waktu Kirim: <strong>Ketika Pulang</strong> (Seketika saat scan pulang)
+                            </span>
+                        </div>
                     </div>
                     <label class="switch">
                         <input type="checkbox" name="msg_out_enabled" value="1" <?= (!empty($waSettings['msg_out_enabled']) && $waSettings['msg_out_enabled'] === '1') ? 'checked' : '' ?>>
                         <span class="slider"></span>
                     </label>
                 </div>
+                <input type="hidden" name="msg_out_timing" value="realtime">
                 <?php if ($isSuperAdmin): ?>
-                    <div class="form-group">
+                    <div class="form-group" style="margin-top: 12px;">
                         <label style="font-size: 12px; font-weight: 600;">Template Pesan Absen Pulang:</label>
                         <textarea name="template_out" rows="4" style="font-family: monospace; font-size: 12.5px;"><?= htmlspecialchars($waSettings['template_out'] ?? '') ?></textarea>
                     </div>
                 <?php endif; ?>
             </div>
 
-            <!-- PESAN 4: PERINGATAN 1 JAM SETELAH KEPULANGAN -->
+            <!-- PESAN 4: PERINGATAN KONFIRMASI LEWAT JAM PULANG -->
             <div class="msg-card" style="border-left: 5px solid #ef4444;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                     <div>
                         <span style="background: #fee2e2; color: #b91c1c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 800; text-transform: uppercase;">PESAN 4</span>
-                        <h4 style="margin: 4px 0 0 0; font-size: 16px; color: #0f172a;">Peringatan 1 Jam Setelah Kepulangan (Konfirmasi Sampai di Rumah)</h4>
-                        <small style="color: #64748b;">Terkirim ke orang tua jika 1 jam setelah jam kepulangan anaknya belum absen pulang untuk konfirmasi apakah sudah di rumah.</small>
+                        <h4 style="margin: 4px 0 2px 0; font-size: 16px; color: #0f172a;">Konfirmasi Kepulangan (Berapa Menit Ketika Lewat Jam Pulang)</h4>
+                        <small style="color: #64748b;">Terkirim ke orang tua jika setelah jam pulang anaknya belum absen pulang untuk konfirmasi apakah anak sudah sampai di rumah.</small>
                     </div>
                     <label class="switch">
                         <input type="checkbox" name="msg_out_late_enabled" value="1" <?= (!empty($waSettings['msg_out_late_enabled']) && $waSettings['msg_out_late_enabled'] === '1') ? 'checked' : '' ?>>
                         <span class="slider"></span>
                     </label>
                 </div>
+
+                <!-- PENGATURAN WAKTU PENGIRIMAN PESAN 4 -->
+                <div style="background: #fef2f2; border: 1px solid #fee2e2; border-radius: 8px; padding: 14px; margin-bottom: 15px;">
+                    <label style="font-size: 13px; font-weight: 700; color: #991b1b; display: flex; align-items: center; gap: 6px; margin-bottom: 10px;">
+                        <i class="fa-solid fa-clock"></i> Pengaturan Waktu Pengiriman (Berapa Menit Ketika Lewat Jam Pulang):
+                    </label>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end;">
+                        <div>
+                            <label style="font-size: 12px; color: #991b1b; font-weight: 600; display: block; margin-bottom: 4px;">Patokan Waktu Acuan:</label>
+                            <div style="padding: 7px 12px; border-radius: 6px; border: 1px solid #fca5a5; font-size: 13px; background: white; color: #991b1b; font-weight: 600;">
+                                <i class="fa-solid fa-bell"></i> Jam Pulang Sekolah Terjadwal (student_out)
+                            </div>
+                        </div>
+                        <div>
+                            <label style="font-size: 12px; color: #991b1b; font-weight: 600; display: block; margin-bottom: 4px;">Jeda Pengiriman (Menit Lewat Jam Pulang):</label>
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <input type="number" id="input_out_delay" name="msg_out_late_delay_minutes" min="1" max="300" value="<?= e($currentOutLateDelay) ?>" style="width: 85px; padding: 7px 10px; border-radius: 6px; border: 1px solid #fca5a5; font-size: 13px; font-weight: 700; text-align: center; background: white;">
+                                <span style="font-size: 13px; color: #991b1b; font-weight: 600;">Menit</span>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 5px; align-items: center;">
+                            <span style="font-size: 11px; color: #991b1b; font-weight: 600;">Pilih Cepat:</span>
+                            <button type="button" class="btn btn-sm" onclick="document.getElementById('input_out_delay').value=15" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fca5a5; cursor: pointer;">15m</button>
+                            <button type="button" class="btn btn-sm" onclick="document.getElementById('input_out_delay').value=30" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fca5a5; cursor: pointer;">30m</button>
+                            <button type="button" class="btn btn-sm" onclick="document.getElementById('input_out_delay').value=45" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fca5a5; cursor: pointer;">45m</button>
+                            <button type="button" class="btn btn-sm" onclick="document.getElementById('input_out_delay').value=60" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fca5a5; cursor: pointer;">1 Jam</button>
+                            <button type="button" class="btn btn-sm" onclick="document.getElementById('input_out_delay').value=90" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fca5a5; cursor: pointer;">1.5 Jam</button>
+                        </div>
+                    </div>
+                    <div style="margin-top: 10px; font-size: 12px; color: #b91c1c; line-height: 1.5;">
+                        <i class="fa-solid fa-circle-info"></i> <strong>Contoh Penerapan:</strong> Jika jadwal pulang sekolah jam <strong>15:30</strong> dan jeda disetel <strong><?= e($currentOutLateDelay) ?> Menit</strong>, maka pada pukul <strong><?= date('H:i', strtotime("+{$currentOutLateDelay} minutes", strtotime('15:30:00'))) ?></strong> sistem otomatis mengirim pesan konfirmasi kepada orang tua siswa yang belum tap pulang.
+                    </div>
+                </div>
+
                 <?php if ($isSuperAdmin): ?>
                     <div class="form-group">
-                        <label style="font-size: 12px; font-weight: 600;">Template Pesan Konfirmasi Kepulangan:</label>
+                        <label style="font-size: 12px; font-weight: 600;">Template Pesan Konfirmasi Kepulangan (Lewat Jam Pulang):</label>
                         <textarea name="template_out_late" rows="4" style="font-family: monospace; font-size: 12.5px;"><?= htmlspecialchars($waSettings['template_out_late'] ?? '') ?></textarea>
                     </div>
                 <?php endif; ?>

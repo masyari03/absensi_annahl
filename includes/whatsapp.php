@@ -324,8 +324,18 @@ function sendStudentWaNotification(PDO $pdo, int $studentId, string $type, array
 }
 
 /**
- * Pengecekan Pesan 2: Terlambat / Belum Masuk 1 Jam Setelah Batas Telat
- * Dipanggil secara berkala (cron / background ping dari scanner / dashboard)
+ * Ambil Pengaturan Khusus Unit
+ */
+function getWaUnitSettings(PDO $pdo, int $unitId): ?array {
+    $stmt = $pdo->prepare("SELECT * FROM wa_unit_settings WHERE unit_id = ? LIMIT 1");
+    $stmt->execute([$unitId]);
+    $res = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $res ?: null;
+}
+
+/**
+ * Pengecekan Pesan 2: Terlambat / Belum Masuk (Sesudah Jam Masuk / Batas Telat)
+ * Waktu keterlambatan dapat dikonfigurasi per menit (default 30 menit sesudah batas telat)
  */
 function runLateCheckReminders(PDO $pdo): int {
     $settings = getWaSettings($pdo);
@@ -338,7 +348,7 @@ function runLateCheckReminders(PDO $pdo): int {
 
     // Ambil semua aktivitas aktif hari ini
     $stmtAct = $pdo->prepare("
-        SELECT a.id, a.unit_id, a.student_late, a.name AS act_name, u.unit AS unit_name
+        SELECT a.id, a.unit_id, a.student_in, a.student_late, a.name AS act_name, u.unit AS unit_name
         FROM activities a
         JOIN units u ON u.id = a.unit_id
         WHERE a.activity_date = ? AND a.status = 'active' AND a.is_holiday = 'no'
@@ -350,14 +360,30 @@ function runLateCheckReminders(PDO $pdo): int {
 
     foreach ($activities as $act) {
         $unitId = (int)$act['unit_id'];
-        $jamBatas = $act['student_late'];
-        if (empty($jamBatas)) continue;
+        
+        // Cek setting unit jika ada
+        $unitSetting = getWaUnitSettings($pdo, $unitId);
+        if ($unitSetting) {
+            if ((int)$unitSetting['is_enabled'] === 0) continue;
+            if (isset($unitSetting['msg_late_enabled']) && (int)$unitSetting['msg_late_enabled'] === 0) continue;
+        }
 
-        // Hitung waktu 1 jam setelah batas telat
-        $jamBatasPlus1Jam = date('H:i:s', strtotime('+1 hour', strtotime($jamBatas)));
+        // Tentukan patokan jam (student_late atau student_in)
+        $refType = $unitSetting['msg_late_ref'] ?? $settings['msg_late_ref'] ?? 'student_late';
+        $baseTime = ($refType === 'student_in' && !empty($act['student_in'])) ? $act['student_in'] : $act['student_late'];
+        if (empty($baseTime)) continue;
 
-        // Jika waktu sekarang sudah melewati (1 jam setelah batas telat)
-        if ($timeNow >= $jamBatasPlus1Jam) {
+        // Ambil delay menit (prioritas unit -> global -> default 30 menit)
+        $delayMinutes = isset($unitSetting['msg_late_delay_minutes']) && $unitSetting['msg_late_delay_minutes'] !== null && $unitSetting['msg_late_delay_minutes'] !== ''
+            ? (int)$unitSetting['msg_late_delay_minutes']
+            : (int)($settings['msg_late_delay_minutes'] ?? 30);
+        if ($delayMinutes < 0) $delayMinutes = 30;
+
+        // Hitung waktu pengiriman target: baseTime + delayMinutes
+        $targetSendTime = date('H:i:s', strtotime("+{$delayMinutes} minutes", strtotime($baseTime)));
+
+        // Jika waktu sekarang sudah melewati waktu target pengiriman
+        if ($timeNow >= $targetSendTime) {
             // Ambil semua siswa di unit ini yang WA-nya aktif dan belum pernah absen masuk hari ini
             $stmtMissing = $pdo->prepare("
                 SELECT s.id, s.name, s.parent_phone
@@ -385,7 +411,7 @@ function runLateCheckReminders(PDO $pdo): int {
 
             foreach ($missingStudents as $mStudent) {
                 $res = sendStudentWaNotification($pdo, (int)$mStudent['id'], 'late', [
-                    'jam_batas' => substr($jamBatas, 0, 5)
+                    'jam_batas' => substr($baseTime, 0, 5)
                 ]);
                 if (!empty($res['success'])) {
                     $sentCount++;
@@ -398,7 +424,8 @@ function runLateCheckReminders(PDO $pdo): int {
 }
 
 /**
- * Pengecekan Pesan 4: Konfirmasi Kepulangan (1 Jam Setelah Jam Pulang Belum Absen)
+ * Pengecekan Pesan 4: Konfirmasi Kepulangan (Berapa Menit Ketika Lewat Jam Pulang)
+ * Waktu jeda kepulangan dapat dikonfigurasi per menit (default 45 menit sesudah jam pulang)
  */
 function runDepartureCheckReminders(PDO $pdo): int {
     $settings = getWaSettings($pdo);
@@ -425,11 +452,24 @@ function runDepartureCheckReminders(PDO $pdo): int {
         $jamPulang = $act['student_out'];
         if (empty($jamPulang)) continue;
 
-        // Hitung waktu 1 jam setelah jam kepulangan
-        $jamPulangPlus1Jam = date('H:i:s', strtotime('+1 hour', strtotime($jamPulang)));
+        // Cek setting unit jika ada
+        $unitSetting = getWaUnitSettings($pdo, $unitId);
+        if ($unitSetting) {
+            if ((int)$unitSetting['is_enabled'] === 0) continue;
+            if (isset($unitSetting['msg_out_late_enabled']) && (int)$unitSetting['msg_out_late_enabled'] === 0) continue;
+        }
 
-        // Jika waktu sekarang sudah melewati 1 jam setelah kepulangan
-        if ($timeNow >= $jamPulangPlus1Jam) {
+        // Ambil delay menit (prioritas unit -> global -> default 45 menit)
+        $delayMinutes = isset($unitSetting['msg_out_late_delay_minutes']) && $unitSetting['msg_out_late_delay_minutes'] !== null && $unitSetting['msg_out_late_delay_minutes'] !== ''
+            ? (int)$unitSetting['msg_out_late_delay_minutes']
+            : (int)($settings['msg_out_late_delay_minutes'] ?? 45);
+        if ($delayMinutes < 0) $delayMinutes = 45;
+
+        // Hitung waktu target kirim: jamPulang + delayMinutes
+        $targetSendTime = date('H:i:s', strtotime("+{$delayMinutes} minutes", strtotime($jamPulang)));
+
+        // Jika waktu sekarang sudah melewati waktu target kirim kepulangan
+        if ($timeNow >= $targetSendTime) {
             // Ambil siswa yang hadir pagi ini (atau terdaftar), namun belum pernah scan pulang
             $stmtNoOut = $pdo->prepare("
                 SELECT s.id, s.name, s.parent_phone

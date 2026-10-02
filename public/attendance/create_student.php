@@ -83,6 +83,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+$preSelectedStudentId = (int)($_GET['student_id'] ?? 0);
+$preSelectedDate = $_GET['attendance_date'] ?? date('Y-m-d');
+$preSelectedStatus = $_GET['status'] ?? 'izin';
+
 require '../../includes/header.php';
 ?>
 
@@ -94,7 +98,7 @@ require '../../includes/header.php';
     <form method="POST" style="padding: 20px;">
         <div class="form-group" style="margin-bottom: 15px;">
             <label style="display:block; margin-bottom:8px; font-weight:600;">Tanggal</label>
-            <input type="date" name="attendance_date" value="<?= date('Y-m-d') ?>" required style="width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px;">
+            <input type="date" name="attendance_date" value="<?= e($preSelectedDate) ?>" required style="width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px;">
         </div>
         
         <div class="form-group" style="margin-bottom: 15px;">
@@ -102,7 +106,7 @@ require '../../includes/header.php';
             <select name="student_id" required style="width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px;">
                 <option value="">-- Pilih Siswa --</option>
                 <?php foreach ($students as $s): ?>
-                    <option value="<?= $s['id'] ?>"><?= e($s['name']) ?> (Kelas <?= e($s['class_name']) ?>)</option>
+                    <option value="<?= $s['id'] ?>" <?= $preSelectedStudentId == $s['id'] ? 'selected' : '' ?>><?= e($s['name']) ?> (Kelas <?= e($s['class_name']) ?>)</option>
                 <?php endforeach; ?>
             </select>
         </div>
@@ -110,10 +114,10 @@ require '../../includes/header.php';
         <div class="form-group" style="margin-bottom: 15px;">
             <label style="display:block; margin-bottom:8px; font-weight:600;">Status Kehadiran</label>
             <select name="status" required style="width: 100%; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px;">
-                <option value="izin">ℹ Izin</option>
-                <option value="sakit">♥ Sakit</option>
-                <option value="terlambat">⚠ Terlambat (Manual)</option>
-                <option value="tepat_waktu">✓ Tepat Waktu (Manual)</option>
+                <option value="tepat_waktu" <?= $preSelectedStatus === 'tepat_waktu' ? 'selected' : '' ?>>✓ Tepat Waktu (Hadir)</option>
+                <option value="terlambat" <?= $preSelectedStatus === 'terlambat' ? 'selected' : '' ?>>⚠ Terlambat</option>
+                <option value="izin" <?= $preSelectedStatus === 'izin' ? 'selected' : '' ?>>ℹ Izin</option>
+                <option value="sakit" <?= $preSelectedStatus === 'sakit' ? 'selected' : '' ?>>♥ Sakit</option>
             </select>
         </div>
         
