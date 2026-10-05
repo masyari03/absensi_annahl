@@ -258,11 +258,48 @@ require '../../includes/header.php';
         </form>
     </div>
 
+    <!-- BULK ACTION TOOLBAR (Muncul otomatis saat ada jadwal yang dicentang) -->
+    <div id="bulkActionToolbar" style="display:none; margin: 12px 20px; padding: 12px 16px; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: #16a34a; color: white; font-weight: bold; font-size: 13px;" id="selectedCountBadge">0</span>
+            <span style="font-size: 13.5px; font-weight: 600; color: #166534;" id="selectedCountText">0 jadwal terpilih</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <!-- Tombol Aktifkan Sekaligus -->
+            <button type="button" class="btn btn-sm btn-success" onclick="submitBulkDirect('activate')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12.5px; font-weight: 600; background: #16a34a; border-color: #16a34a; color: white; border-radius: 6px; cursor: pointer;">
+                <i class="fa-solid fa-circle-check"></i> Aktifkan Terpilih
+            </button>
+            <!-- Tombol Nonaktifkan Sekaligus -->
+            <button type="button" class="btn btn-sm btn-warning" onclick="submitBulkDirect('deactivate')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12.5px; font-weight: 600; background: #eab308; border-color: #ca8a04; color: #713f12; border-radius: 6px; cursor: pointer;">
+                <i class="fa-solid fa-circle-xmark"></i> Nonaktifkan Terpilih
+            </button>
+            <!-- Tombol Edit Sekaligus -->
+            <button type="button" class="btn btn-sm btn-primary" onclick="openBulkEditModal()" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12.5px; font-weight: 600; background: #0284c7; border-color: #0284c7; color: white; border-radius: 6px; cursor: pointer;">
+                <i class="fa-solid fa-pen-to-square"></i> Edit Sekaligus
+            </button>
+            <!-- Tombol Hapus Terpilih -->
+            <button type="button" class="btn btn-sm btn-danger" onclick="submitBulkDirect('delete')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12.5px; font-weight: 600; background: #dc2626; border-color: #dc2626; color: white; border-radius: 6px; cursor: pointer;">
+                <i class="fa-solid fa-trash"></i> Hapus Terpilih
+            </button>
+        </div>
+    </div>
+
+    <!-- Hidden Form for Direct Bulk Actions (activate, deactivate, delete) -->
+    <form id="formBulkDirect" method="POST" action="bulk_action.php" style="display:none;">
+        <input type="hidden" name="bulk_action_type" id="bulkDirectActionType" value="">
+        <input type="hidden" name="tab" value="<?= e($activeTab) ?>">
+        <input type="hidden" name="unit_id" value="<?= (int)($filterUnitId ?: 0) ?>">
+        <div id="bulkDirectHiddenInputs"></div>
+    </form>
+
     <!-- TABEL DATA JADWAL -->
     <div class="table-wrapper">
         <table class="table" style="width:100%; border-collapse:collapse;">
             <thead>
                 <tr style="background:#f1f5f9; text-align:left; font-size:12.5px; color:#334155;">
+                    <th style="padding:10px 14px; width:44px; text-align:center;">
+                        <input type="checkbox" id="selectAllSchedules" title="Pilih Semua Jadwal di Tab Ini" style="width:16px; height:16px; cursor:pointer;" onchange="toggleSelectAllSchedules(this)">
+                    </th>
                     <?php if ($activeTab === 'student'): ?>
                         <th style="padding:10px 14px;">Lingkup Jadwal</th>
                         <th style="padding:10px 14px;">Unit</th>
@@ -299,14 +336,17 @@ require '../../includes/header.php';
             <tbody>
                 <?php if (empty($schedules)): ?>
                     <tr>
-                        <td colspan="9" style="text-align:center; padding: 32px; color:#64748b;">
+                        <td colspan="<?= $activeTab === 'staff' ? 11 : ($activeTab === 'eskul' ? 10 : 9) ?>" style="text-align:center; padding: 32px; color:#64748b;">
                             <i class="fa-regular fa-folder-open" style="font-size: 28px; margin-bottom: 8px; display:block; color:#94a3b8;"></i>
                             Belum ada data jadwal yang sesuai filter pada tab ini.
                         </td>
                     </tr>
                 <?php else: ?>
                     <?php foreach ($schedules as $s): ?>
-                        <tr style="border-bottom: 1px solid #f1f5f9; font-size:13px;">
+                        <tr style="border-bottom: 1px solid #f1f5f9; font-size:13px;" id="schedule-row-<?= $s['id'] ?>">
+                            <td style="padding:10px 14px; text-align:center;">
+                                <input type="checkbox" class="schedule-checkbox" value="<?= $s['id'] ?>" style="width:16px; height:16px; cursor:pointer;" onchange="onScheduleCheckChanged()">
+                            </td>
                             <?php if ($activeTab === 'student'): ?>
                                 <!-- Lingkup Jadwal Siswa -->
                                 <td style="padding:10px 14px;">
@@ -488,6 +528,10 @@ window.addEventListener('click', function(e) {
     if (e.target === modalStaff) {
         closeStaffModal();
     }
+    const modalBulk = document.getElementById('modalBulkEdit');
+    if (e.target === modalBulk) {
+        closeBulkEditModal();
+    }
 });
 
 const staffAssignedData = <?= json_encode($staffAssigned) ?>;
@@ -536,6 +580,178 @@ function filterModalStaff() {
         }
     });
 }
+
+/* ========================================================
+   LOGIKA MASSAL / CHECKBOX (BULK ACTIONS)
+   ======================================================== */
+function getSelectedScheduleIds() {
+    const checkboxes = document.querySelectorAll('.schedule-checkbox:checked');
+    const ids = [];
+    checkboxes.forEach(cb => {
+        const val = parseInt(cb.value);
+        if (val > 0) ids.push(val);
+    });
+    return ids;
+}
+
+function updateBulkToolbar() {
+    const totalCheckboxes = document.querySelectorAll('.schedule-checkbox');
+    const checkedCheckboxes = document.querySelectorAll('.schedule-checkbox:checked');
+    const count = checkedCheckboxes.length;
+    const toolbar = document.getElementById('bulkActionToolbar');
+    const masterCheckbox = document.getElementById('selectAllSchedules');
+    const badge = document.getElementById('selectedCountBadge');
+    const text = document.getElementById('selectedCountText');
+
+    if (toolbar) {
+        if (count > 0) {
+            toolbar.style.display = 'flex';
+            if (badge) badge.innerText = count;
+            if (text) text.innerText = count + ' jadwal terpilih';
+        } else {
+            toolbar.style.display = 'none';
+        }
+    }
+
+    if (masterCheckbox && totalCheckboxes.length > 0) {
+        if (count === 0) {
+            masterCheckbox.checked = false;
+            masterCheckbox.indeterminate = false;
+        } else if (count === totalCheckboxes.length) {
+            masterCheckbox.checked = true;
+            masterCheckbox.indeterminate = false;
+        } else {
+            masterCheckbox.checked = false;
+            masterCheckbox.indeterminate = true;
+        }
+    }
+}
+
+function toggleSelectAllSchedules(master) {
+    const checkboxes = document.querySelectorAll('.schedule-checkbox');
+    checkboxes.forEach(cb => {
+        cb.checked = master.checked;
+        const row = document.getElementById('schedule-row-' + cb.value);
+        if (row) {
+            row.style.background = master.checked ? '#f0fdf4' : '';
+        }
+    });
+    updateBulkToolbar();
+}
+
+function onScheduleCheckChanged() {
+    const checkboxes = document.querySelectorAll('.schedule-checkbox');
+    checkboxes.forEach(cb => {
+        const row = document.getElementById('schedule-row-' + cb.value);
+        if (row) {
+            row.style.background = cb.checked ? '#f0fdf4' : '';
+        }
+    });
+    updateBulkToolbar();
+}
+
+function submitBulkDirect(actionType) {
+    const ids = getSelectedScheduleIds();
+    if (ids.length === 0) {
+        alert('Silakan centang minimal satu jadwal terlebih dahulu.');
+        return;
+    }
+
+    let confirmMsg = '';
+    if (actionType === 'activate') {
+        confirmMsg = `Yakin ingin MENGAKTIFKAN ${ids.length} jadwal terpilih?`;
+    } else if (actionType === 'deactivate') {
+        confirmMsg = `Yakin ingin MENONAKTIFKAN ${ids.length} jadwal terpilih?`;
+    } else if (actionType === 'delete') {
+        confirmMsg = `PERINGATAN: Yakin ingin MENGHAPUS ${ids.length} jadwal terpilih secara permanen? Tindakan ini tidak dapat dibatalkan!`;
+    }
+
+    if (!confirm(confirmMsg)) {
+        return;
+    }
+
+    const form = document.getElementById('formBulkDirect');
+    const actionTypeInput = document.getElementById('bulkDirectActionType');
+    const container = document.getElementById('bulkDirectHiddenInputs');
+
+    actionTypeInput.value = actionType;
+    container.innerHTML = '';
+    ids.forEach(id => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'schedule_ids[]';
+        input.value = id;
+        container.appendChild(input);
+    });
+
+    form.submit();
+}
+
+function openBulkEditModal() {
+    const ids = getSelectedScheduleIds();
+    if (ids.length === 0) {
+        alert('Silakan centang minimal satu jadwal terlebih dahulu.');
+        return;
+    }
+
+    const count = ids.length;
+    const subtitle = document.getElementById('bulkEditSubtitle');
+    if (subtitle) {
+        subtitle.innerText = `Memperbarui ${count} jadwal terpilih secara serentak`;
+    }
+
+    const container = document.getElementById('bulkEditHiddenInputs');
+    container.innerHTML = '';
+    ids.forEach(id => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'schedule_ids[]';
+        input.value = id;
+        container.appendChild(input);
+    });
+
+    document.getElementById('modalBulkEdit').style.display = 'flex';
+}
+
+function closeBulkEditModal() {
+    document.getElementById('modalBulkEdit').style.display = 'none';
+}
+
+function toggleBulkSection(section, checked) {
+    let sectionEl = null;
+    if (section === 'hours') {
+        sectionEl = document.getElementById('sectionHoursFields');
+    } else if (section === 'shift_name') {
+        sectionEl = document.getElementById('sectionShiftNameFields');
+    } else if (section === 'overnight') {
+        sectionEl = document.getElementById('sectionOvernightFields');
+    } else if (section === 'status') {
+        sectionEl = document.getElementById('sectionStatusFields');
+    }
+
+    if (sectionEl) {
+        sectionEl.style.display = checked ? (section === 'hours' ? 'grid' : 'block') : 'none';
+    }
+}
+
+function validateBulkEditSubmit() {
+    const chkHours = document.getElementById('chkApplyHours');
+    const chkShiftName = document.getElementById('chkApplyShiftName');
+    const chkOvernight = document.getElementById('chkApplyOvernight');
+    const chkStatus = document.getElementById('chkApplyStatus');
+
+    const anyChecked = (chkHours && chkHours.checked) || 
+                       (chkShiftName && chkShiftName.checked) || 
+                       (chkOvernight && chkOvernight.checked) || 
+                       (chkStatus && chkStatus.checked);
+
+    if (!anyChecked) {
+        alert('Silakan centang minimal satu bagian yang ingin diubah (Jam Operasional, Nama Shift, Shift Malam, atau Status).');
+        return false;
+    }
+
+    return confirm('Simpan perubahan pada semua jadwal terpilih?');
+}
 </script>
 
 <!-- MODAL LIHAT STAFF PENUGASAN -->
@@ -557,6 +773,130 @@ function filterModalStaff() {
         <div style="padding:12px 20px; border-top:1px solid #e2e8f0; display:flex; justify-content:flex-end;">
             <button type="button" class="btn btn-light" onclick="closeStaffModal()" style="padding:6px 14px;">Tutup</button>
         </div>
+    </div>
+</div>
+
+<!-- MODAL EDIT MASSAL JADWAL -->
+<div id="modalBulkEdit" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.6); z-index:9999; justify-content:center; align-items:center;">
+    <div style="background:white; border-radius:12px; width:92%; max-width:620px; max-height:90vh; display:flex; flex-direction:column; box-shadow:0 20px 25px -5px rgba(0,0,0,0.2);">
+        <div style="padding:16px 20px; border-bottom:1px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <h4 style="margin:0; font-size:16px; color:#0f172a;"><i class="fa-solid fa-pen-to-square" style="color:#0284c7; margin-right:6px;"></i> Edit Jadwal Sekaligus</h4>
+                <small style="color:#64748b;" id="bulkEditSubtitle">Perbarui jam operasional atau status untuk jadwal yang dipilih</small>
+            </div>
+            <button type="button" onclick="closeBulkEditModal()" style="border:none; background:transparent; font-size:22px; cursor:pointer; color:#64748b;">&times;</button>
+        </div>
+        
+        <form method="POST" action="bulk_action.php" id="formBulkEditModal" onsubmit="return validateBulkEditSubmit();" style="display:flex; flex-direction:column; flex:1; overflow:hidden; margin:0;">
+            <input type="hidden" name="bulk_action_type" value="bulk_edit">
+            <input type="hidden" name="tab" value="<?= e($activeTab) ?>">
+            <input type="hidden" name="unit_id" value="<?= (int)($filterUnitId ?: 0) ?>">
+            <div id="bulkEditHiddenInputs"></div>
+
+            <div style="padding:16px 20px; overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:16px;">
+                <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:10px 14px; font-size:12.5px; color:#1e40af;">
+                    <i class="fa-solid fa-circle-info"></i> Centang kotak centang pada bagian yang ingin diubah. Bagian yang tidak dicentang tidak akan diubah pada jadwal terpilih.
+                </div>
+
+                <!-- Bagian 1: Ubah Jam -->
+                <div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px 16px; background:#fafafa;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:700; font-size:13.5px; color:#1e293b; margin-bottom:10px;">
+                        <input type="checkbox" name="apply_hours" value="1" id="chkApplyHours" onchange="toggleBulkSection('hours', this.checked)" style="width:16px; height:16px; cursor:pointer;">
+                        <span><i class="fa-regular fa-clock" style="color:#0284c7;"></i> Ubah Jam Operasional</span>
+                    </label>
+                    <div id="sectionHoursFields" style="display:none; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:10px; margin-top:8px;">
+                        <?php if ($activeTab === 'student'): ?>
+                            <div>
+                                <label style="font-size:11.5px; color:#475569; font-weight:600; display:block; margin-bottom:4px;">Jam Masuk Siswa</label>
+                                <input type="time" name="bulk_student_in" class="form-control" style="font-size:13px; padding:6px 10px; width:100%; border-radius:6px;">
+                            </div>
+                            <div>
+                                <label style="font-size:11.5px; color:#475569; font-weight:600; display:block; margin-bottom:4px;">Batas Terlambat</label>
+                                <input type="time" name="bulk_student_late" class="form-control" style="font-size:13px; padding:6px 10px; width:100%; border-radius:6px;">
+                            </div>
+                            <div>
+                                <label style="font-size:11.5px; color:#475569; font-weight:600; display:block; margin-bottom:4px;">Jam Pulang Siswa</label>
+                                <input type="time" name="bulk_student_out" class="form-control" style="font-size:13px; padding:6px 10px; width:100%; border-radius:6px;">
+                            </div>
+                        <?php elseif ($activeTab === 'staff'): ?>
+                            <div>
+                                <label style="font-size:11.5px; color:#475569; font-weight:600; display:block; margin-bottom:4px;">Jam Masuk Staff</label>
+                                <input type="time" name="bulk_staff_in" class="form-control" style="font-size:13px; padding:6px 10px; width:100%; border-radius:6px;">
+                            </div>
+                            <div>
+                                <label style="font-size:11.5px; color:#475569; font-weight:600; display:block; margin-bottom:4px;">Batas Terlambat</label>
+                                <input type="time" name="bulk_staff_late" class="form-control" style="font-size:13px; padding:6px 10px; width:100%; border-radius:6px;">
+                            </div>
+                            <div>
+                                <label style="font-size:11.5px; color:#475569; font-weight:600; display:block; margin-bottom:4px;">Jam Pulang Staff</label>
+                                <input type="time" name="bulk_staff_out" class="form-control" style="font-size:13px; padding:6px 10px; width:100%; border-radius:6px;">
+                            </div>
+                        <?php elseif ($activeTab === 'eskul'): ?>
+                            <div>
+                                <label style="font-size:11.5px; color:#475569; font-weight:600; display:block; margin-bottom:4px;">Jam Mulai Eskul</label>
+                                <input type="time" name="bulk_eskul_in" class="form-control" style="font-size:13px; padding:6px 10px; width:100%; border-radius:6px;">
+                            </div>
+                            <div>
+                                <label style="font-size:11.5px; color:#475569; font-weight:600; display:block; margin-bottom:4px;">Batas Toleransi</label>
+                                <input type="time" name="bulk_eskul_late" class="form-control" style="font-size:13px; padding:6px 10px; width:100%; border-radius:6px;">
+                            </div>
+                            <div>
+                                <label style="font-size:11.5px; color:#475569; font-weight:600; display:block; margin-bottom:4px;">Jam Selesai Eskul</label>
+                                <input type="time" name="bulk_eskul_out" class="form-control" style="font-size:13px; padding:6px 10px; width:100%; border-radius:6px;">
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <?php if ($activeTab === 'staff'): ?>
+                    <!-- Bagian 2: Ubah Nama Shift (Khusus Staff) -->
+                    <div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px 16px; background:#fafafa;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:700; font-size:13.5px; color:#1e293b; margin-bottom:10px;">
+                            <input type="checkbox" name="apply_shift_name" value="1" id="chkApplyShiftName" onchange="toggleBulkSection('shift_name', this.checked)" style="width:16px; height:16px; cursor:pointer;">
+                            <span><i class="fa-solid fa-tag" style="color:#059669;"></i> Ubah Nama Shift / Keterangan</span>
+                        </label>
+                        <div id="sectionShiftNameFields" style="display:none; margin-top:8px;">
+                            <input type="text" name="bulk_staff_shift_name" placeholder="Contoh: Shift 1 Pagi, Reguler Staff, Security Malam..." class="form-control" style="font-size:13px; padding:7px 12px; width:100%; border-radius:6px;">
+                        </div>
+                    </div>
+
+                    <!-- Bagian 3: Ubah Pengaturan Shift Malam (Khusus Staff) -->
+                    <div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px 16px; background:#fafafa;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:700; font-size:13.5px; color:#1e293b; margin-bottom:10px;">
+                            <input type="checkbox" name="apply_overnight" value="1" id="chkApplyOvernight" onchange="toggleBulkSection('overnight', this.checked)" style="width:16px; height:16px; cursor:pointer;">
+                            <span><i class="fa-solid fa-moon" style="color:#b45309;"></i> Ubah Tipe Shift (Normal / Malam Lintas Hari)</span>
+                        </label>
+                        <div id="sectionOvernightFields" style="display:none; margin-top:8px;">
+                            <select name="bulk_is_overnight" class="form-control" style="font-size:13px; padding:7px 12px; width:100%; border-radius:6px;">
+                                <option value="0">Normal (Masuk & Pulang di Hari yang Sama)</option>
+                                <option value="1">🌙 Shift Malam / Overnight (Pulang Keesokan Paginya)</option>
+                            </select>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <!-- Bagian 4: Ubah Status Aktif/Nonaktif -->
+                <div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px 16px; background:#fafafa;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:700; font-size:13.5px; color:#1e293b; margin-bottom:10px;">
+                        <input type="checkbox" name="apply_status" value="1" id="chkApplyStatus" onchange="toggleBulkSection('status', this.checked)" style="width:16px; height:16px; cursor:pointer;">
+                        <span><i class="fa-solid fa-toggle-on" style="color:#16a34a;"></i> Ubah Status (Aktif / Nonaktif)</span>
+                    </label>
+                    <div id="sectionStatusFields" style="display:none; margin-top:8px;">
+                        <select name="bulk_status" class="form-control" style="font-size:13px; padding:7px 12px; width:100%; border-radius:6px;">
+                            <option value="active">Aktif</option>
+                            <option value="inactive">Nonaktif</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div style="padding:14px 20px; border-top:1px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center; background:#f8fafc;">
+                <button type="button" class="btn btn-light" onclick="closeBulkEditModal()" style="padding:7px 16px; cursor:pointer;">Batal</button>
+                <button type="submit" class="btn btn-primary" style="padding:7px 20px; font-weight:600; display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                    <i class="fa-solid fa-floppy-disk"></i> Simpan Perubahan Sekaligus
+                </button>
+            </div>
+        </form>
     </div>
 </div>
 
