@@ -1096,16 +1096,37 @@ if (!function_exists('getStaffShiftSchedule')) {
         $stmtAll->execute([$unitId, $dayCode]);
         $allShifts = $stmtAll->fetchAll(PDO::FETCH_ASSOC);
 
+        // Fallback untuk jadwal legacy jika target_type = 'staff' belum ada
         if (empty($allShifts)) {
+            $stmtLegacy = $pdo->prepare("
+                SELECT * FROM weekly_schedules 
+                WHERE unit_id = ? AND day_code = ? AND is_active = 'active' AND (staff_in IS NOT NULL AND staff_in != '00:00:00')
+                ORDER BY is_overnight ASC, id ASC
+            ");
+            $stmtLegacy->execute([$unitId, $dayCode]);
+            $allShifts = $stmtLegacy->fetchAll(PDO::FETCH_ASSOC);
+        }
+
+        // Fallback jika hari ini belum terdaftar jadwal, ambil template shift dari hari lain di unit yang sama
+        if (empty($allShifts)) {
+            $stmtAny = $pdo->prepare("
+                SELECT * FROM weekly_schedules 
+                WHERE unit_id = ? AND is_active = 'active' 
+                  AND (target_type = 'staff' OR (staff_in IS NOT NULL AND staff_in != '00:00:00'))
+                ORDER BY id ASC LIMIT 1
+            ");
+            $stmtAny->execute([$unitId]);
+            $any = $stmtAny->fetch(PDO::FETCH_ASSOC);
+
             return [
-                'has_schedule' => false,
-                'id' => 0,
-                'schedule_id' => 0,
-                'is_overnight' => false,
-                'staff_in' => '07:00:00',
-                'staff_late' => '07:30:00',
-                'staff_out' => '16:00:00',
-                'name' => 'Default Staff'
+                'has_schedule' => true,
+                'id' => $any ? (int)$any['id'] : 0,
+                'schedule_id' => $any ? (int)$any['id'] : 0,
+                'is_overnight' => !empty($any['is_overnight']),
+                'staff_in' => $any['staff_in'] ?? '06:45:00',
+                'staff_late' => $any['staff_late'] ?? '07:00:00',
+                'staff_out' => $any['staff_out'] ?? '15:30:00',
+                'name' => $any['name'] ?: 'Shift Reguler Staff'
             ];
         }
 
@@ -1179,10 +1200,46 @@ if (!function_exists('getDailyActivity')) {
             $stmtWeek->execute([$dayCode, $unitId, $targetType]);
             $weekly = $stmtWeek->fetch(PDO::FETCH_ASSOC);
             
+            // Fallback 1: Jika staff tapi belum ada target_type = 'staff', cari jadwal legacy dengan staff_in valid
+            if (!$weekly && $targetType === 'staff') {
+                $stmtFallback = $pdo->prepare("
+                    SELECT * FROM weekly_schedules 
+                    WHERE day_code = ? AND unit_id = ? AND is_active = 'active' 
+                      AND (staff_in IS NOT NULL AND staff_in != '00:00:00')
+                    ORDER BY id ASC LIMIT 1
+                ");
+                $stmtFallback->execute([$dayCode, $unitId]);
+                $weekly = $stmtFallback->fetch(PDO::FETCH_ASSOC);
+            }
+
+            // Fallback 2: Jika masih kosong untuk staff, ambil template hari lain di unit yang sama atau default jam kerja
+            if (!$weekly && $targetType === 'staff') {
+                $stmtAny = $pdo->prepare("
+                    SELECT * FROM weekly_schedules 
+                    WHERE unit_id = ? AND is_active = 'active' 
+                      AND (target_type = 'staff' OR (staff_in IS NOT NULL AND staff_in != '00:00:00'))
+                    ORDER BY id ASC LIMIT 1
+                ");
+                $stmtAny->execute([$unitId]);
+                $anyStaff = $stmtAny->fetch(PDO::FETCH_ASSOC);
+
+                $weekly = [
+                    'student_in'   => '00:00:00',
+                    'student_late' => '00:00:00',
+                    'student_out'  => '00:00:00',
+                    'staff_in'     => $anyStaff['staff_in'] ?? '06:45:00',
+                    'staff_late'   => $anyStaff['staff_late'] ?? '07:00:00',
+                    'staff_out'    => $anyStaff['staff_out'] ?? '15:30:00',
+                    'name'         => 'Jadwal Reguler Staff'
+                ];
+            }
+
             if ($weekly) {
                 $stmtAy = $pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1");
                 $ay = $stmtAy->fetch(PDO::FETCH_ASSOC);
                 $ayId = $ay ? $ay['id'] : 1;
+
+                $actName = ($targetType === 'staff') ? "Jadwal Reguler Staff & Guru" : "Jadwal Reguler Siswa";
 
                 $insertAct = $pdo->prepare("
                     INSERT INTO activities 
@@ -1190,9 +1247,9 @@ if (!function_exists('getDailyActivity')) {
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
                 ");
                 $insertAct->execute([
-                    $ayId, $unitId, $targetType, "Jadwal Reguler", $dateToday, 
-                    $weekly['student_in'], $weekly['student_late'], $weekly['student_out'], 
-                    $weekly['staff_in'], $weekly['staff_late'], $weekly['staff_out']
+                    $ayId, $unitId, $targetType, $actName, $dateToday, 
+                    $weekly['student_in'] ?? '00:00:00', $weekly['student_late'] ?? '00:00:00', $weekly['student_out'] ?? '00:00:00', 
+                    $weekly['staff_in'] ?? '06:45:00', $weekly['staff_late'] ?? '07:00:00', $weekly['staff_out'] ?? '15:30:00'
                 ]);
                 $stmt->execute([$dateToday, $unitId, $targetType, $targetType]);
                 $activity = $stmt->fetch(PDO::FETCH_ASSOC);

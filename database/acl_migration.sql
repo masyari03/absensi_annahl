@@ -338,8 +338,88 @@ SELECT u.id, 'pulang_staff',
        'Halo {nama}, presensi kepulangan Anda di {unit} tercatat pada pukul {jam}. Terima kasih atas dedikasi Anda hari ini.', 1
 FROM units u;
 
+-- -------------------------------------------------------------------------
+-- 12. SEED JADWAL REGULER STAFF & GURU UNTUK SELURUH UNIT SEKOLAH
+-- -------------------------------------------------------------------------
+-- Bersihkan jam staff dari jadwal siswa legacy (ID 1-7)
+UPDATE `weekly_schedules` SET staff_in = '00:00:00', staff_late = '00:00:00', staff_out = '00:00:00', name = 'KBM Reguler SD' WHERE id = 1;
+UPDATE `weekly_schedules` SET staff_in = '00:00:00', staff_late = '00:00:00', staff_out = '00:00:00', name = 'KBM Reguler SMP' WHERE id BETWEEN 2 AND 7;
+
+-- Unit 1: TK (Senin - Jumat, 06:45 - 14:30)
+INSERT INTO `weekly_schedules` (`unit_id`, `target_type`, `schedule_type`, `name`, `day_name`, `day_code`, `student_in`, `student_late`, `student_out`, `staff_in`, `staff_late`, `staff_out`, `is_overnight`, `is_active`)
+SELECT 1, 'staff', 'reguler', 'Shift Reguler Guru & Staff TK',
+       CASE d.code WHEN 1 THEN 'Senin' WHEN 2 THEN 'Selasa' WHEN 3 THEN 'Rabu' WHEN 4 THEN 'Kamis' WHEN 5 THEN 'Jumat' END,
+       d.code, '00:00:00', '00:00:00', '00:00:00', '06:45:00', '07:00:00', '14:30:00', 0, 'active'
+FROM (SELECT 1 AS code UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) d
+WHERE NOT EXISTS (SELECT 1 FROM weekly_schedules WHERE unit_id = 1 AND target_type = 'staff' AND day_code = d.code);
+
+-- Unit 2: SD (Senin - Jumat, 06:30 - 15:30)
+INSERT INTO `weekly_schedules` (`unit_id`, `target_type`, `schedule_type`, `name`, `day_name`, `day_code`, `student_in`, `student_late`, `student_out`, `staff_in`, `staff_late`, `staff_out`, `is_overnight`, `is_active`)
+SELECT 2, 'staff', 'reguler', 'Shift Reguler Guru & Staff SD',
+       CASE d.code WHEN 1 THEN 'Senin' WHEN 2 THEN 'Selasa' WHEN 3 THEN 'Rabu' WHEN 4 THEN 'Kamis' WHEN 5 THEN 'Jumat' END,
+       d.code, '00:00:00', '00:00:00', '00:00:00', '06:30:00', '06:45:00', '15:30:00', 0, 'active'
+FROM (SELECT 1 AS code UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) d
+WHERE NOT EXISTS (SELECT 1 FROM weekly_schedules WHERE unit_id = 2 AND target_type = 'staff' AND day_code = d.code);
+
+-- Unit 3: SMP (Senin - Sabtu, 06:30 - 16:00)
+INSERT INTO `weekly_schedules` (`unit_id`, `target_type`, `schedule_type`, `name`, `day_name`, `day_code`, `student_in`, `student_late`, `student_out`, `staff_in`, `staff_late`, `staff_out`, `is_overnight`, `is_active`)
+SELECT 3, 'staff', 'reguler', 'Shift Reguler Guru & Staff SMP',
+       CASE d.code WHEN 1 THEN 'Senin' WHEN 2 THEN 'Selasa' WHEN 3 THEN 'Rabu' WHEN 4 THEN 'Kamis' WHEN 5 THEN 'Jumat' WHEN 6 THEN 'Sabtu' END,
+       d.code, '00:00:00', '00:00:00', '00:00:00', '06:30:00', '06:45:00', '16:00:00', 0, 'active'
+FROM (SELECT 1 AS code UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6) d
+WHERE NOT EXISTS (SELECT 1 FROM weekly_schedules WHERE unit_id = 3 AND target_type = 'staff' AND day_code = d.code);
+
+-- Unit 4: SDM & Umum (Senin - Jumat, 07:00 - 16:00)
+INSERT INTO `weekly_schedules` (`unit_id`, `target_type`, `schedule_type`, `name`, `day_name`, `day_code`, `student_in`, `student_late`, `student_out`, `staff_in`, `staff_late`, `staff_out`, `is_overnight`, `is_active`)
+SELECT 4, 'staff', 'reguler', 'Shift Reguler SDM & Umum',
+       CASE d.code WHEN 1 THEN 'Senin' WHEN 2 THEN 'Selasa' WHEN 3 THEN 'Rabu' WHEN 4 THEN 'Kamis' WHEN 5 THEN 'Jumat' END,
+       d.code, '00:00:00', '00:00:00', '00:00:00', '07:00:00', '07:30:00', '16:00:00', 0, 'active'
+FROM (SELECT 1 AS code UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) d
+WHERE NOT EXISTS (SELECT 1 FROM weekly_schedules WHERE unit_id = 4 AND target_type = 'staff' AND day_code = d.code);
+
+-- Unit 5: Office Boy (Senin - Sabtu, 05:30 - 16:30)
+INSERT INTO `weekly_schedules` (`unit_id`, `target_type`, `schedule_type`, `name`, `day_name`, `day_code`, `student_in`, `student_late`, `student_out`, `staff_in`, `staff_late`, `staff_out`, `is_overnight`, `is_active`)
+SELECT 5, 'staff', 'reguler', 'Shift Reguler Office Boy',
+       CASE d.code WHEN 1 THEN 'Senin' WHEN 2 THEN 'Selasa' WHEN 3 THEN 'Rabu' WHEN 4 THEN 'Kamis' WHEN 5 THEN 'Jumat' WHEN 6 THEN 'Sabtu' END,
+       d.code, '00:00:00', '00:00:00', '00:00:00', '05:30:00', '06:00:00', '16:30:00', 0, 'active'
+FROM (SELECT 1 AS code UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6) d
+WHERE NOT EXISTS (SELECT 1 FROM weekly_schedules WHERE unit_id = 5 AND target_type = 'staff' AND day_code = d.code);
+
+-- Unit 7: SMA (Senin - Jumat, 06:30 - 16:00)
+INSERT INTO `weekly_schedules` (`unit_id`, `target_type`, `schedule_type`, `name`, `day_name`, `day_code`, `student_in`, `student_late`, `student_out`, `staff_in`, `staff_late`, `staff_out`, `is_overnight`, `is_active`)
+SELECT 7, 'staff', 'reguler', 'Shift Reguler Guru & Staff SMA',
+       CASE d.code WHEN 1 THEN 'Senin' WHEN 2 THEN 'Selasa' WHEN 3 THEN 'Rabu' WHEN 4 THEN 'Kamis' WHEN 5 THEN 'Jumat' END,
+       d.code, '00:00:00', '00:00:00', '00:00:00', '06:30:00', '06:45:00', '16:00:00', 0, 'active'
+FROM (SELECT 1 AS code UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) d
+WHERE NOT EXISTS (SELECT 1 FROM weekly_schedules WHERE unit_id = 7 AND target_type = 'staff' AND day_code = d.code);
+
+-- Unit 8: Gardener (Senin - Sabtu, 06:00 - 15:00)
+INSERT INTO `weekly_schedules` (`unit_id`, `target_type`, `schedule_type`, `name`, `day_name`, `day_code`, `student_in`, `student_late`, `student_out`, `staff_in`, `staff_late`, `staff_out`, `is_overnight`, `is_active`)
+SELECT 8, 'staff', 'reguler', 'Shift Reguler Gardener',
+       CASE d.code WHEN 1 THEN 'Senin' WHEN 2 THEN 'Selasa' WHEN 3 THEN 'Rabu' WHEN 4 THEN 'Kamis' WHEN 5 THEN 'Jumat' WHEN 6 THEN 'Sabtu' END,
+       d.code, '00:00:00', '00:00:00', '00:00:00', '06:00:00', '06:30:00', '15:00:00', 0, 'active'
+FROM (SELECT 1 AS code UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6) d
+WHERE NOT EXISTS (SELECT 1 FROM weekly_schedules WHERE unit_id = 8 AND target_type = 'staff' AND day_code = d.code);
+
+-- Unit 9: Litbang (Senin - Jumat, 07:30 - 16:00)
+INSERT INTO `weekly_schedules` (`unit_id`, `target_type`, `schedule_type`, `name`, `day_name`, `day_code`, `student_in`, `student_late`, `student_out`, `staff_in`, `staff_late`, `staff_out`, `is_overnight`, `is_active`)
+SELECT 9, 'staff', 'reguler', 'Shift Reguler Litbang',
+       CASE d.code WHEN 1 THEN 'Senin' WHEN 2 THEN 'Selasa' WHEN 3 THEN 'Rabu' WHEN 4 THEN 'Kamis' WHEN 5 THEN 'Jumat' END,
+       d.code, '00:00:00', '00:00:00', '00:00:00', '07:30:00', '08:00:00', '16:00:00', 0, 'active'
+FROM (SELECT 1 AS code UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) d
+WHERE NOT EXISTS (SELECT 1 FROM weekly_schedules WHERE unit_id = 9 AND target_type = 'staff' AND day_code = d.code);
+
+-- Unit 10: Marketing & Keuangan (Senin - Jumat, 07:30 - 16:00)
+INSERT INTO `weekly_schedules` (`unit_id`, `target_type`, `schedule_type`, `name`, `day_name`, `day_code`, `student_in`, `student_late`, `student_out`, `staff_in`, `staff_late`, `staff_out`, `is_overnight`, `is_active`)
+SELECT 10, 'staff', 'reguler', 'Shift Reguler Marketing & Keuangan',
+       CASE d.code WHEN 1 THEN 'Senin' WHEN 2 THEN 'Selasa' WHEN 3 THEN 'Rabu' WHEN 4 THEN 'Kamis' WHEN 5 THEN 'Jumat' END,
+       d.code, '00:00:00', '00:00:00', '00:00:00', '07:30:00', '08:00:00', '16:00:00', 0, 'active'
+FROM (SELECT 1 AS code UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5) d
+WHERE NOT EXISTS (SELECT 1 FROM weekly_schedules WHERE unit_id = 10 AND target_type = 'staff' AND day_code = d.code);
+
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =========================================================================
 -- SELESAI — Migrasi ACL dan Database Berhasil Diperbarui Secara Penuh.
 -- =========================================================================
+

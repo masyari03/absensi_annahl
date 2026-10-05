@@ -142,9 +142,10 @@ if ($activeTab === 'staff' && !empty($schedules)) {
     $schIds = array_column($schedules, 'id');
     $inQ = implode(',', array_fill(0, count($schIds), '?'));
     $stStaff = $pdo->prepare("
-        SELECT wsf.weekly_schedule_id, st.id, st.nik, st.name, st.role
+        SELECT wsf.weekly_schedule_id, st.id, st.nik, st.name, COALESCE(u.role, 'Staff') AS role
         FROM weekly_schedule_staff wsf
         JOIN staff st ON st.id = wsf.staff_id
+        LEFT JOIN users u ON u.id = st.user_id
         WHERE wsf.weekly_schedule_id IN ({$inQ})
         ORDER BY st.name ASC
     ");
@@ -153,6 +154,7 @@ if ($activeTab === 'staff' && !empty($schedules)) {
         $staffAssigned[$r['weekly_schedule_id']][] = $r;
     }
 }
+
 
 $daysMap = [1=>'Senin', 2=>'Selasa', 3=>'Rabu', 4=>'Kamis', 5=>'Jumat', 6=>'Sabtu', 7=>'Minggu'];
 
