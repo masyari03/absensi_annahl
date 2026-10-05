@@ -1,14 +1,20 @@
 -- =========================================================================
--- ACL MIGRATION — Database-Driven Access Control
+-- ACL & DATABASE FULL MIGRATION SCRIPT
 -- Proyek: AIS Absensi An-Nahl Islamic School
--- Tanggal: 2026-09-20
+-- Pembaruan Terkini: 2026-10-05
+-- Fitur: Multi-Shift Security, Pemisahan Siswa & Staff (Jadwal & Activity),
+--        Jadwal Eskul per Murid, Template Pesan WhatsApp Unit,
+--        Audit Log Aktivitas & Rollback, Dashboard Pemakaian WA,
+--        Kelola Akun Cadangan Darurat Superadmin.
 -- =========================================================================
--- File ini memastikan semua tabel ACL sudah ada dan terisi dengan benar.
--- Aman dijalankan berulang kali (menggunakan IF NOT EXISTS & INSERT IGNORE).
+-- File ini aman dijalankan berulang kali (Idempotent: CREATE IF NOT EXISTS,
+-- INSERT IGNORE, dan pengecekan kolom).
 -- =========================================================================
 
+SET FOREIGN_KEY_CHECKS = 0;
+
 -- -------------------------------------------------------------------------
--- TABEL 1: roles — Master Role yang bisa dibuat/diedit oleh Super Admin
+-- 1. TABEL: roles — Master Role Sistem
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `roles` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
@@ -21,17 +27,14 @@ CREATE TABLE IF NOT EXISTS `roles` (
   UNIQUE KEY `uq_role_key` (`role_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-ALTER TABLE `roles` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-
--- Default roles (sistem — tidak bisa dihapus)
 INSERT IGNORE INTO `roles` (`role_key`, `role_name`, `description`, `is_system`) VALUES
-('super_admin',    'Super Admin',         'Akses penuh ke seluruh sistem dan konfigurasi', 1),
-('kepala_sekolah', 'Kepala Sekolah',      'Akses monitoring dan laporan unit sekolah', 1),
-('admin',          'Admin Unit / Pemantau','Akses monitoring data dan absensi siswa', 1),
-('staff',          'Staff / Guru',        'Akses dasar guru dan pegawai', 1);
+('super_admin',    'Super Admin',           'Akses penuh ke seluruh sistem dan konfigurasi', 1),
+('kepala_sekolah', 'Kepala Sekolah',        'Akses monitoring, jadwal unit, dan laporan unit', 1),
+('admin',          'Admin Unit / Pemantau', 'Akses monitoring data dan absensi siswa', 1),
+('staff',          'Staff / Guru',          'Akses dasar guru dan pegawai', 1);
 
 -- -------------------------------------------------------------------------
--- TABEL 2: app_menus — Daftar semua halaman/fitur di aplikasi
+-- 2. TABEL: app_menus — Master Menu & Fitur Aplikasi
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `app_menus` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
@@ -47,31 +50,35 @@ CREATE TABLE IF NOT EXISTS `app_menus` (
   UNIQUE KEY `uq_menu_key` (`menu_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Data menu (sesuai dengan struktur project)
+-- Sinkronisasi Menu Lengkap (Termasuk Fitur Baru 2026-10-05)
 INSERT IGNORE INTO `app_menus` (`menu_key`, `menu_name`, `category`, `menu_url`, `menu_icon`, `sort_order`) VALUES
-('dashboard',            'Dashboard',              'UTAMA',       'dashboard.php',                    'fa-home',             1),
-('scanner',              'Scanner',                'UTAMA',       'scanner.php',                      'fa-qrcode',           2),
-('attendance_students',  'Absensi Siswa',          'KEHADIRAN',   'attendance/students.php',          'fa-user-check',       3),
-('attendance_staff',     'Absensi Staff',          'KEHADIRAN',   'attendance/staff.php',             'fa-user-tie',         4),
-('master_students',      'Siswa',                  'MASTER DATA', 'students/index.php',               'fa-users',            5),
-('master_staff',         'Staff / Guru',           'MASTER DATA', 'staff/index.php',                  'fa-chalkboard-teacher',6),
-('master_admins',        'Admin Pemantau',         'MASTER DATA', 'admins/index.php',                 'fa-user-shield',      7),
-('master_kepsek',        'Kepala Sekolah',         'MASTER DATA', 'kepala_sekolah/index.php',         'fa-user-tie',         8),
-('master_units',         'Unit',                   'MASTER DATA', 'units/index.php',                  'fa-building',         9),
-('master_grades',        'Grade',                  'MASTER DATA', 'grades/index.php',                 'fa-layer-group',      10),
-('master_classes',       'Subkelas',               'MASTER DATA', 'classes/index.php',                'fa-door-open',        11),
-('master_activities',    'Activities',             'MASTER DATA', 'activities/index.php',             'fa-calendar-alt',     12),
-('master_enrollments',   'Kenaikan Kelas',         'MASTER DATA', 'enrollments/index.php',            'fa-exchange-alt',     13),
-('master_schedules',     'Jadwal Pekanan',         'MASTER DATA', 'weekly_schedules/index.php',       'fa-clock',            14),
-('master_academic_years','Tahun Ajaran',           'MASTER DATA', 'academic_years/index.php',         'fa-calendar',         15),
-('reports_attendance',   'Laporan Absen',          'LAPORAN',     'reports/index.php',                'fa-file-alt',         16),
-('reports_overtimes',    'Lembur Staff',           'LAPORAN',     'overtimes/index.php',              'fa-business-time',    17),
-('access_control',       'Manajemen Akses & User', 'PENGATURAN',  'kelola/index.php',                 'fa-user-cog',         18),
-('user_activity',        'Aktivitas & Log Pengguna', 'PENGATURAN', 'kelola/activity.php',             'fa-user-clock',       19),
-('data_cctv',            'Data CCTV',              'PENGATURAN',  'cctv/index.php',                   'fa-video',            20);
+('dashboard',                'Dashboard',                'UTAMA',       'dashboard.php',                    'fa-home',             1),
+('scanner',                  'Scanner',                  'UTAMA',       'scanner.php',                      'fa-qrcode',           2),
+('attendance_students',      'Absensi Siswa',            'KEHADIRAN',   'attendance/students.php',          'fa-user-check',       3),
+('attendance_staff',         'Absensi Staff',            'KEHADIRAN',   'attendance/staff.php',             'fa-user-tie',         4),
+('master_students',          'Siswa',                    'MASTER DATA', 'students/index.php',               'fa-users',            5),
+('master_staff',             'Staff / Guru',             'MASTER DATA', 'staff/index.php',                  'fa-chalkboard-teacher',6),
+('master_admins',            'Admin Pemantau',           'MASTER DATA', 'admins/index.php',                 'fa-user-shield',      7),
+('master_kepsek',            'Kepala Sekolah',           'MASTER DATA', 'kepala_sekolah/index.php',         'fa-user-tie',         8),
+('master_units',             'Unit',                     'MASTER DATA', 'units/index.php',                  'fa-building',         9),
+('master_grades',            'Grade',                    'MASTER DATA', 'grades/index.php',                 'fa-layer-group',      10),
+('master_classes',           'Subkelas',                 'MASTER DATA', 'classes/index.php',                'fa-door-open',        11),
+('master_activities',        'Activities',               'MASTER DATA', 'activities/index.php',             'fa-calendar-alt',     12),
+('master_enrollments',       'Kenaikan Kelas',           'MASTER DATA', 'enrollments/index.php',            'fa-exchange-alt',     13),
+('master_schedules',         'Jadwal Pekanan',           'MASTER DATA', 'weekly_schedules/index.php',       'fa-clock',            14),
+('master_academic_years',    'Tahun Ajaran',             'MASTER DATA', 'academic_years/index.php',         'fa-calendar',         15),
+('reports_attendance',       'Laporan Absen',            'LAPORAN',     'reports/index.php',                'fa-file-alt',         16),
+('reports_overtimes',        'Lembur Staff',             'LAPORAN',     'overtimes/index.php',              'fa-business-time',    17),
+('access_control',           'Manajemen Akses & User',   'PENGATURAN',  'kelola/index.php',                 'fa-user-cog',         18),
+('user_activity',            'Aktivitas Pengguna',       'PENGATURAN',  'kelola/activity.php',             'fa-user-clock',       19),
+('data_cctv',                'Data CCTV',                'PENGATURAN',  'cctv/index.php',                   'fa-video',            20),
+('kelola_wa_dashboard',      'Dashboard WA Gateway',     'PENGATURAN',  'kelola/wa_dashboard.php',          'fa-chart-pie',        21),
+('kelola_audit_logs',        'Audit Log Aktivitas',      'PENGATURAN',  'kelola/audit_logs.php',            'fa-clock-rotate-left',22),
+('kelola_message_templates', 'Template Pesan Unit',      'PENGATURAN',  'kelola/message_templates.php',     'fa-comments',         23),
+('super_kelola_akun',        'Kelola Akun Cadangan',     'PENGATURAN',  'kelola/super/index.php',           'fa-users-gear',       24);
 
 -- -------------------------------------------------------------------------
--- TABEL 3: role_menu_access — Default akses per role
+-- 3. TABEL: role_menu_access — Hak Akses Menu Default per Role
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `role_menu_access` (
   `role_id` int unsigned NOT NULL,
@@ -81,30 +88,30 @@ CREATE TABLE IF NOT EXISTS `role_menu_access` (
   CONSTRAINT `fk_rma_menu` FOREIGN KEY (`menu_id`) REFERENCES `app_menus` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Default: Super Admin dapat semua menu
+-- 1. Super Admin: Seluruh menu tanpa batas
 INSERT IGNORE INTO `role_menu_access` (`role_id`, `menu_id`)
 SELECT r.id, am.id FROM roles r, app_menus am WHERE r.role_key = 'super_admin';
 
--- Default: Kepala Sekolah (kecuali access_control dan master_academic_years)
+-- 2. Kepala Sekolah: Akses unit, jadwal, aktivitas, audit log unit, template pesan unit
 INSERT IGNORE INTO `role_menu_access` (`role_id`, `menu_id`)
 SELECT r.id, am.id FROM roles r, app_menus am
 WHERE r.role_key = 'kepala_sekolah'
-  AND am.menu_key NOT IN ('access_control', 'master_academic_years', 'master_kepsek');
+  AND am.menu_key NOT IN ('access_control', 'master_academic_years', 'master_kepsek', 'super_kelola_akun', 'data_cctv');
 
--- Default: Admin (hanya monitoring)
+-- 3. Admin Unit / Pemantau: Monitoring
 INSERT IGNORE INTO `role_menu_access` (`role_id`, `menu_id`)
 SELECT r.id, am.id FROM roles r, app_menus am
 WHERE r.role_key = 'admin'
   AND am.menu_key IN ('dashboard', 'scanner', 'attendance_students', 'master_students', 'reports_attendance');
 
--- Default: Staff/Guru (hanya dashboard dan scanner)
+-- 4. Staff / Guru: Dashboard & Scanner
 INSERT IGNORE INTO `role_menu_access` (`role_id`, `menu_id`)
 SELECT r.id, am.id FROM roles r, app_menus am
 WHERE r.role_key = 'staff'
   AND am.menu_key IN ('dashboard', 'scanner');
 
 -- -------------------------------------------------------------------------
--- TABEL 4: user_menu_access — Hak akses per user (override role default)
+-- 4. TABEL: user_menu_access — Penyesuaian Akses Spesifik per User
 -- -------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `user_menu_access` (
   `user_id` bigint unsigned NOT NULL,
@@ -115,54 +122,224 @@ CREATE TABLE IF NOT EXISTS `user_menu_access` (
   CONSTRAINT `fk_uma_menu` FOREIGN KEY (`menu_id`) REFERENCES `app_menus` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- -------------------------------------------------------------------------
--- POPULATE user_menu_access dari role_menu_access untuk user yang belum ada
--- (Jalankan sekali saja untuk populate user lama)
--- -------------------------------------------------------------------------
+-- Sinkronkan user_menu_access untuk user eksisting
 INSERT IGNORE INTO `user_menu_access` (`user_id`, `menu_id`)
 SELECT u.id, rma.menu_id
 FROM users u
 INNER JOIN roles r ON r.role_key = u.role
 INNER JOIN role_menu_access rma ON rma.role_id = r.id
-WHERE u.deleted_at IS NULL
-  AND NOT EXISTS (
-    SELECT 1 FROM user_menu_access uma2
-    WHERE uma2.user_id = u.id
-  );
+WHERE u.deleted_at IS NULL;
 
 -- -------------------------------------------------------------------------
--- TABEL 4: user_login_logs & Kolom Aktivitas Pengguna
+-- 5. TABEL BARU: activity_audit_logs — Pencatatan Aktivitas, Audit & Rollback
 -- -------------------------------------------------------------------------
-ALTER TABLE `users` 
-  ADD COLUMN IF NOT EXISTS `last_activity` DATETIME DEFAULT NULL AFTER `deleted_at`,
-  ADD COLUMN IF NOT EXISTS `last_login_at` DATETIME DEFAULT NULL AFTER `last_activity`,
-  ADD COLUMN IF NOT EXISTS `last_login_ip` VARCHAR(45) DEFAULT NULL AFTER `last_login_at`,
-  ADD COLUMN IF NOT EXISTS `is_online` TINYINT(1) NOT NULL DEFAULT 0 AFTER `last_login_ip`;
-
-CREATE TABLE IF NOT EXISTS `user_login_logs` (
+CREATE TABLE IF NOT EXISTS `activity_audit_logs` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `user_id` BIGINT UNSIGNED NOT NULL,
+  `user_id` BIGINT UNSIGNED DEFAULT NULL,
   `username` VARCHAR(100) NOT NULL,
   `role` VARCHAR(50) NOT NULL,
-  `is_superadmin` TINYINT(1) NOT NULL DEFAULT 0,
-  `ip_address` VARCHAR(45) NOT NULL,
-  `user_agent` TEXT DEFAULT NULL,
-  `device_type` VARCHAR(50) DEFAULT 'Desktop',
-  `browser` VARCHAR(100) DEFAULT NULL,
-  `platform` VARCHAR(100) DEFAULT NULL,
-  `login_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `logout_at` DATETIME DEFAULT NULL,
-  `last_seen_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `status` ENUM('online', 'offline', 'logged_out', 'revoked') NOT NULL DEFAULT 'online',
+  `unit_id` INT DEFAULT NULL,
+  `module` VARCHAR(100) NOT NULL,
+  `action` VARCHAR(50) NOT NULL COMMENT 'CREATE, UPDATE, DELETE, ROLLBACK, STATUS_CHANGE',
+  `table_name` VARCHAR(100) NOT NULL,
+  `record_id` BIGINT DEFAULT NULL,
+  `description` TEXT NOT NULL,
+  `old_data` LONGTEXT DEFAULT NULL,
+  `new_data` LONGTEXT DEFAULT NULL,
+  `is_rolled_back` TINYINT(1) NOT NULL DEFAULT 0,
+  `rolled_back_at` DATETIME DEFAULT NULL,
+  `rolled_back_by` VARCHAR(100) DEFAULT NULL,
+  `ip_address` VARCHAR(45) DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `idx_user_id` (`user_id`),
-  KEY `idx_role` (`role`),
-  KEY `idx_is_superadmin` (`is_superadmin`),
-  KEY `idx_login_at` (`login_at`),
-  KEY `idx_status` (`status`)
+  KEY `idx_audit_user` (`user_id`),
+  KEY `idx_audit_unit` (`unit_id`),
+  KEY `idx_audit_module` (`module`),
+  KEY `idx_audit_created` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- =========================================================================
--- SELESAI — Sistem ACL & Logging siap digunakan.
--- =========================================================================
+-- -------------------------------------------------------------------------
+-- 6. TABEL BARU: weekly_schedule_students — Relasi Peserta Eskul per Murid
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `weekly_schedule_students` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `weekly_schedule_id` INT NOT NULL,
+  `student_id` BIGINT NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_sch_stu` (`weekly_schedule_id`, `student_id`),
+  KEY `idx_sch_id` (`weekly_schedule_id`),
+  KEY `idx_stu_id` (`student_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+-- -------------------------------------------------------------------------
+-- 7. TABEL BARU: weekly_schedule_staff — Relasi Penugasan Shift per Personel
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `weekly_schedule_staff` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `weekly_schedule_id` INT NOT NULL,
+  `staff_id` INT NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_sch_stf` (`weekly_schedule_id`, `staff_id`),
+  KEY `idx_wss_sch` (`weekly_schedule_id`),
+  KEY `idx_wss_stf` (`staff_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- -------------------------------------------------------------------------
+-- 8. TABEL BARU: unit_message_templates — 4 Template Pesan Otomatis per Unit
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `unit_message_templates` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `unit_id` INT NOT NULL,
+  `message_type` ENUM('masuk_siswa', 'pulang_siswa', 'masuk_staff', 'pulang_staff') NOT NULL,
+  `template_text` TEXT NOT NULL,
+  `is_enabled` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_unit_msg` (`unit_id`, `message_type`),
+  KEY `idx_unit_id` (`unit_id`),
+  KEY `idx_msg_type` (`message_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- -------------------------------------------------------------------------
+-- 9. TABEL BARU: whatsapp_usage_daily — Agregat Harian WhatsApp per Unit
+-- -------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `whatsapp_usage_daily` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `log_date` DATE NOT NULL,
+  `unit_id` INT NOT NULL,
+  `total_sent` INT UNSIGNED NOT NULL DEFAULT 0,
+  `total_delivered` INT UNSIGNED NOT NULL DEFAULT 0,
+  `total_read` INT UNSIGNED NOT NULL DEFAULT 0,
+  `total_failed` INT UNSIGNED NOT NULL DEFAULT 0,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_date_unit` (`log_date`, `unit_id`),
+  KEY `idx_log_date` (`log_date`),
+  KEY `idx_unit` (`unit_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- -------------------------------------------------------------------------
+-- 10. MODIFIKASI KOLOM TABEL EKSISTING (PENAMBAHAN KOLOM JIKA BELUM ADA)
+-- -------------------------------------------------------------------------
+
+-- A. Tabel weekly_schedules: Fitur Pemisahan Siswa/Staff, Eskul, Grade, Subkelas & Overnight
+DROP PROCEDURE IF EXISTS `AddColWeeklySchedules`;
+DELIMITER //
+CREATE PROCEDURE `AddColWeeklySchedules`()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'target_type') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `target_type` ENUM('student', 'staff') NOT NULL DEFAULT 'student' AFTER `unit_id`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'grade_id') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `grade_id` INT NULL AFTER `target_type`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'class_group_id') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `class_group_id` INT NULL AFTER `grade_id`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'schedule_type') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `schedule_type` ENUM('reguler', 'eskul') NOT NULL DEFAULT 'reguler' AFTER `class_group_id`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'student_in') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `student_in` TIME NULL DEFAULT '00:00:00' AFTER `day_code`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'student_late') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `student_late` TIME NULL DEFAULT '00:00:00' AFTER `student_in`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'student_out') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `student_out` TIME NULL DEFAULT '00:00:00' AFTER `student_late`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'staff_in') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `staff_in` TIME NULL DEFAULT '00:00:00' AFTER `student_out`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'staff_late') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `staff_late` TIME NULL DEFAULT '00:00:00' AFTER `staff_in`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'staff_out') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `staff_out` TIME NULL DEFAULT '00:00:00' AFTER `staff_late`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'weekly_schedules' AND COLUMN_NAME = 'is_overnight') THEN
+    ALTER TABLE `weekly_schedules` ADD COLUMN `is_overnight` TINYINT(1) NOT NULL DEFAULT 0 AFTER `staff_out`;
+  END IF;
+END //
+DELIMITER ;
+CALL `AddColWeeklySchedules`();
+DROP PROCEDURE IF EXISTS `AddColWeeklySchedules`;
+
+-- B. Tabel auto_attendances: Fitur custom per guru/user, grade, subkelas
+DROP PROCEDURE IF EXISTS `AddColAutoAttendances`;
+DELIMITER //
+CREATE PROCEDURE `AddColAutoAttendances`()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'auto_attendances' AND COLUMN_NAME = 'user_id') THEN
+    ALTER TABLE `auto_attendances` ADD COLUMN `user_id` INT NULL AFTER `unit_id`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'auto_attendances' AND COLUMN_NAME = 'grade_id') THEN
+    ALTER TABLE `auto_attendances` ADD COLUMN `grade_id` INT NULL AFTER `user_id`;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'auto_attendances' AND COLUMN_NAME = 'class_group_id') THEN
+    ALTER TABLE `auto_attendances` ADD COLUMN `class_group_id` INT NULL AFTER `grade_id`;
+  END IF;
+END //
+DELIMITER ;
+CALL `AddColAutoAttendances`();
+DROP PROCEDURE IF EXISTS `AddColAutoAttendances`;
+
+-- C. Tabel activities: Fitur pemisahan kegiatan Siswa vs Staff
+DROP PROCEDURE IF EXISTS `AddColActivities`;
+DELIMITER //
+CREATE PROCEDURE `AddColActivities`()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'activities' AND COLUMN_NAME = 'target_type') THEN
+    ALTER TABLE `activities` ADD COLUMN `target_type` ENUM('student', 'staff', 'all') NOT NULL DEFAULT 'student' AFTER `unit_id`;
+  END IF;
+END //
+DELIMITER ;
+CALL `AddColActivities`();
+DROP PROCEDURE IF EXISTS `AddColActivities`;
+
+-- -------------------------------------------------------------------------
+-- 11. SEED DATA DEFAULT & ANTI-TABRAKAN SECURITY SHIFT 1 & SHIFT 2
+-- -------------------------------------------------------------------------
+
+-- Tambahkan Jadwal Shift 1 Pagi/Siang Security (Unit 6, 06:00:00 - 18:00:00) untuk hari 1 s/d 7 jika belum ada
+INSERT INTO `weekly_schedules` 
+  (`unit_id`, `target_type`, `grade_id`, `class_group_id`, `schedule_type`, `name`, `day_name`, `day_code`, `student_in`, `student_late`, `student_out`, `staff_in`, `staff_late`, `staff_out`, `is_overnight`, `is_active`)
+SELECT 6, 'staff', NULL, NULL, 'reguler', 'Shift 1 Pagi/Siang Security', 
+       CASE d.code WHEN 1 THEN 'Senin' WHEN 2 THEN 'Selasa' WHEN 3 THEN 'Rabu' WHEN 4 THEN 'Kamis' WHEN 5 THEN 'Jumat' WHEN 6 THEN 'Sabtu' WHEN 7 THEN 'Minggu' END,
+       d.code, '00:00:00', '00:00:00', '00:00:00', '06:00:00', '06:30:00', '18:00:00', 0, 'active'
+FROM (SELECT 1 AS code UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7) d
+WHERE NOT EXISTS (
+  SELECT 1 FROM weekly_schedules 
+  WHERE unit_id = 6 AND target_type = 'staff' AND day_code = d.code AND (is_overnight = 0 OR staff_in < staff_out)
+);
+
+-- Template Pesan WhatsApp Default per Unit (Semua unit yang terdaftar)
+INSERT IGNORE INTO `unit_message_templates` (`unit_id`, `message_type`, `template_text`, `is_enabled`)
+SELECT u.id, 'masuk_siswa', 
+       'Assalamualaikum Wr. Wb. Diberitahukan bahwa ananda *{nama}* telah hadir di {unit} pada pukul *{jam}* (Status: {status}). Terima kasih.', 1
+FROM units u;
+
+INSERT IGNORE INTO `unit_message_templates` (`unit_id`, `message_type`, `template_text`, `is_enabled`)
+SELECT u.id, 'pulang_siswa', 
+       'Assalamualaikum Wr. Wb. Diberitahukan bahwa ananda *{nama}* telah pulang dari {unit} pada pukul *{jam}*. Terima kasih.', 1
+FROM units u;
+
+INSERT IGNORE INTO `unit_message_templates` (`unit_id`, `message_type`, `template_text`, `is_enabled`)
+SELECT u.id, 'masuk_staff', 
+       'Halo {nama}, presensi kehadiran Anda di {unit} tercatat pada pukul {jam} ({status}). Selamat bertugas!', 1
+FROM units u;
+
+INSERT IGNORE INTO `unit_message_templates` (`unit_id`, `message_type`, `template_text`, `is_enabled`)
+SELECT u.id, 'pulang_staff', 
+       'Halo {nama}, presensi kepulangan Anda di {unit} tercatat pada pukul {jam}. Terima kasih atas dedikasi Anda hari ini.', 1
+FROM units u;
+
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- =========================================================================
+-- SELESAI — Migrasi ACL dan Database Berhasil Diperbarui Secara Penuh.
+-- =========================================================================

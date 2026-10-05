@@ -217,7 +217,7 @@ function sendStudentWaNotification(PDO $pdo, int $studentId, string $type, array
 
     // 5. Cek Pembatasan Per Unit
     if ($unitId > 0) {
-        $stmtUnit = $pdo->prepare("SELECT is_enabled, msg_in_enabled, msg_late_enabled, msg_out_enabled, msg_out_late_enabled FROM wa_unit_settings WHERE unit_id = ? LIMIT 1");
+        $stmtUnit = $pdo->prepare("SELECT * FROM wa_unit_settings WHERE unit_id = ? LIMIT 1");
         $stmtUnit->execute([$unitId]);
         $unitConf = $stmtUnit->fetch(PDO::FETCH_ASSOC);
 
@@ -255,9 +255,15 @@ function sendStudentWaNotification(PDO $pdo, int $studentId, string $type, array
         }
     }
 
-    // 8. Siapkan Template Pesan
+    // 8. Siapkan Template Pesan: Prioritaskan template unit jika tersedia, fallback ke global
     $templateKey = "template_{$type}";
-    $messageTemplate = $settings[$templateKey] ?? '';
+    $messageTemplate = '';
+    if (!empty($unitConf[$templateKey])) {
+        $messageTemplate = $unitConf[$templateKey];
+    } else {
+        $messageTemplate = $settings[$templateKey] ?? '';
+    }
+
     if (empty($messageTemplate)) {
         return ['success' => false, 'skipped' => true, 'reason' => "Template pesan '{$type}' kosong"];
     }
@@ -465,47 +471,60 @@ function runDepartureCheckReminders(PDO $pdo): int {
             : (int)($settings['msg_out_late_delay_minutes'] ?? 45);
         if ($delayMinutes < 0) $delayMinutes = 45;
 
-        // Hitung waktu target kirim: jamPulang + delayMinutes
-        $targetSendTime = date('H:i:s', strtotime("+{$delayMinutes} minutes", strtotime($jamPulang)));
+        $dayCode = date('N');
 
-        // Jika waktu sekarang sudah melewati waktu target kirim kepulangan
-        if ($timeNow >= $targetSendTime) {
-            // Ambil siswa yang hadir pagi ini (atau terdaftar), namun belum pernah scan pulang
-            $stmtNoOut = $pdo->prepare("
-                SELECT s.id, s.name, s.parent_phone
-                FROM students s
-                INNER JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
-                INNER JOIN academic_years ay ON ay.id = se.academic_year_id AND ay.status = 'active'
-                INNER JOIN class_groups cg ON cg.id = se.class_group_id
-                INNER JOIN grades g ON g.id = cg.grade_id
-                WHERE s.deleted_at IS NULL 
-                  AND g.unit_id = ?
-                  AND s.wa_notify = 1
-                  AND s.parent_phone IS NOT NULL AND s.parent_phone != ''
-                  AND EXISTS (
-                      SELECT 1 FROM student_attendances sa 
-                      WHERE sa.student_id = s.id AND sa.attendance_date = ? AND sa.time_in IS NOT NULL AND sa.time_in != '00:00:00'
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM student_attendances sa2 
-                      WHERE sa2.student_id = s.id AND sa2.attendance_date = ? AND sa2.time_out IS NOT NULL AND sa2.time_out != '00:00:00'
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM wa_message_logs wl 
-                      WHERE wl.student_id = s.id AND wl.sent_date = ? AND wl.message_type = 'out_late'
-                  )
-                LIMIT 50
-            ");
-            $stmtNoOut->execute([$unitId, $dateToday, $dateToday, $dateToday]);
-            $noOutStudents = $stmtNoOut->fetchAll(PDO::FETCH_ASSOC);
+        // Ambil siswa yang hadir pagi ini (atau terdaftar), namun belum pernah scan pulang
+        $stmtNoOut = $pdo->prepare("
+            SELECT s.id, s.name, s.parent_phone
+            FROM students s
+            INNER JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
+            INNER JOIN academic_years ay ON ay.id = se.academic_year_id AND ay.status = 'active'
+            INNER JOIN class_groups cg ON cg.id = se.class_group_id
+            INNER JOIN grades g ON g.id = cg.grade_id
+            WHERE s.deleted_at IS NULL 
+              AND g.unit_id = ?
+              AND s.wa_notify = 1
+              AND s.parent_phone IS NOT NULL AND s.parent_phone != ''
+              AND EXISTS (
+                  SELECT 1 FROM student_attendances sa 
+                  WHERE sa.student_id = s.id AND sa.attendance_date = ? AND sa.time_in IS NOT NULL AND sa.time_in != '00:00:00'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM student_attendances sa2 
+                  WHERE sa2.student_id = s.id AND sa2.attendance_date = ? AND sa2.time_out IS NOT NULL AND sa2.time_out != '00:00:00'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM wa_message_logs wl 
+                  WHERE wl.student_id = s.id AND wl.sent_date = ? AND wl.message_type = 'out_late'
+              )
+            LIMIT 50
+        ");
+        $stmtNoOut->execute([$unitId, $dateToday, $dateToday, $dateToday]);
+        $noOutStudents = $stmtNoOut->fetchAll(PDO::FETCH_ASSOC);
 
-            foreach ($noOutStudents as $noStudent) {
-                $res = sendStudentWaNotification($pdo, (int)$noStudent['id'], 'out_late', [
-                    'jam_pulang' => substr($jamPulang, 0, 5)
-                ]);
-                if (!empty($res['success'])) {
-                    $sentCount++;
+        foreach ($noOutStudents as $noStudent) {
+            // Hitung jam pulang efektif siswa (jika ikut eskul/kegiatan tambahan, ambil jam pulang yang paling belakang/latest)
+            $effectiveJamPulang = $jamPulang;
+            if (function_exists('getStudentEffectiveSchedule')) {
+                $effSched = getStudentEffectiveSchedule($pdo, (int)$noStudent['id'], $unitId, $dateToday, (int)$dayCode);
+                if (!empty($effSched['student_out'])) {
+                    $effectiveJamPulang = $effSched['student_out'];
                 }
+            }
+
+            // Hitung waktu target kirim per siswa: jamPulangPalingAkhir + delayMinutes
+            $studentTargetSendTime = date('H:i:s', strtotime("+{$delayMinutes} minutes", strtotime($effectiveJamPulang)));
+
+            // Jika waktu sekarang belum mencapai target pengiriman siswa ini (karena eskul jam pulangnya lebih sore), tunda kirim!
+            if ($timeNow < $studentTargetSendTime) {
+                continue;
+            }
+
+            $res = sendStudentWaNotification($pdo, (int)$noStudent['id'], 'out_late', [
+                'jam_pulang' => substr($effectiveJamPulang, 0, 5)
+            ]);
+            if (!empty($res['success'])) {
+                $sentCount++;
             }
         }
     }

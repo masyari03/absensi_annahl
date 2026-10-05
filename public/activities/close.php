@@ -21,19 +21,30 @@ if ($currentRole === 'kepala_sekolah') {
     $stmtKs->execute([$userId]);
     $ksUnitId = $stmtKs->fetchColumn();
 
-    $stmtAct = $pdo->prepare("SELECT unit_id FROM activities WHERE id = ?");
+    $stmtAct = $pdo->prepare("SELECT unit_id, target_type FROM activities WHERE id = ?");
     $stmtAct->execute([$id]);
-    $actUnitId = $stmtAct->fetchColumn();
+    $actData = $stmtAct->fetch(PDO::FETCH_ASSOC);
+    $actUnitId = $actData['unit_id'] ?? null;
+    $targetType = $actData['target_type'] ?? 'student';
 
     if ($actUnitId != $ksUnitId) {
         flash('error', 'Akses ditolak. Anda tidak bisa menutup jadwal kegiatan unit lain.');
-        redirect('index.php');
+        redirect('index.php?tab=' . urlencode($targetType));
         exit;
     }
+} else {
+    $stmtAct = $pdo->prepare("SELECT target_type FROM activities WHERE id = ?");
+    $stmtAct->execute([$id]);
+    $targetType = $stmtAct->fetchColumn() ?: 'student';
+}
+
+$tab = $_POST['tab'] ?? $targetType;
+if (!in_array($tab, ['student', 'staff'])) {
+    $tab = 'student';
 }
 
 $stmt = $pdo->prepare("UPDATE activities SET status = 'closed' WHERE id = ?");
 $stmt->execute([$id]);
 
 flash('success', 'Kegiatan berhasil ditutup.');
-redirect('index.php');
+redirect('index.php?tab=' . urlencode($tab));

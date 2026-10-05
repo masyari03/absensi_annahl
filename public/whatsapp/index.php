@@ -58,54 +58,97 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         redirect('index.php?tab=settings');
     }
 
-    // 2. Simpan Sakelar 4 Pesan, Waktu Pengiriman & Template
+    // 2. Simpan Sakelar 4 Pesan, Waktu Pengiriman & Template (Masing-Masing Unit / Global)
     if ($action === 'save_message_settings') {
+        $targetUnitId = null;
+        if ($isKepsek && $ksUnitId) {
+            $targetUnitId = $ksUnitId;
+        } elseif ($isSuperAdmin) {
+            $postUnit = $_POST['target_unit_id'] ?? 'global';
+            if ($postUnit !== 'global' && is_numeric($postUnit) && (int)$postUnit > 0) {
+                $targetUnitId = (int)$postUnit;
+            }
+        }
+
         $msgIn = isset($_POST['msg_in_enabled']) ? '1' : '0';
         $msgLate = isset($_POST['msg_late_enabled']) ? '1' : '0';
         $msgOut = isset($_POST['msg_out_enabled']) ? '1' : '0';
         $msgOutLate = isset($_POST['msg_out_late_enabled']) ? '1' : '0';
 
-        $msgInTiming = trim($_POST['msg_in_timing'] ?? 'realtime');
-        $msgLateTiming = trim($_POST['msg_late_timing'] ?? 'after_late');
         $msgLateRef = in_array($_POST['msg_late_ref'] ?? '', ['student_late', 'student_in']) ? $_POST['msg_late_ref'] : 'student_late';
         $msgLateDelay = max(1, (int)($_POST['msg_late_delay_minutes'] ?? 30));
-        $msgOutTiming = trim($_POST['msg_out_timing'] ?? 'realtime');
-        $msgOutLateTiming = trim($_POST['msg_out_late_timing'] ?? 'after_out');
         $msgOutLateDelay = max(1, (int)($_POST['msg_out_late_delay_minutes'] ?? 45));
 
-        if ($isSuperAdmin) {
+        $tmplIn = trim($_POST['template_in'] ?? '');
+        $tmplLate = trim($_POST['template_late'] ?? '');
+        $tmplOut = trim($_POST['template_out'] ?? '');
+        $tmplOutLate = trim($_POST['template_out_late'] ?? '');
+
+        if ($targetUnitId > 0) {
+            // Simpan ke wa_unit_settings untuk unit ini
+            $stmtUpUnit = $pdo->prepare("
+                INSERT INTO wa_unit_settings 
+                (unit_id, msg_in_enabled, msg_late_enabled, msg_out_enabled, msg_out_late_enabled, 
+                 msg_late_delay_minutes, msg_out_late_delay_minutes, msg_late_ref,
+                 template_in, template_late, template_out, template_out_late, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                ON DUPLICATE KEY UPDATE
+                    msg_in_enabled = VALUES(msg_in_enabled),
+                    msg_late_enabled = VALUES(msg_late_enabled),
+                    msg_out_enabled = VALUES(msg_out_enabled),
+                    msg_out_late_enabled = VALUES(msg_out_late_enabled),
+                    msg_late_delay_minutes = VALUES(msg_late_delay_minutes),
+                    msg_out_late_delay_minutes = VALUES(msg_out_late_delay_minutes),
+                    msg_late_ref = VALUES(msg_late_ref),
+                    template_in = VALUES(template_in),
+                    template_late = VALUES(template_late),
+                    template_out = VALUES(template_out),
+                    template_out_late = VALUES(template_out_late),
+                    updated_at = NOW()
+            ");
+            $stmtUpUnit->execute([
+                $targetUnitId, $msgIn, $msgLate, $msgOut, $msgOutLate,
+                $msgLateDelay, $msgOutLateDelay, $msgLateRef,
+                $tmplIn, $tmplLate, $tmplOut, $tmplOutLate
+            ]);
+
+            $stmtUName = $pdo->prepare("SELECT unit FROM units WHERE id = ?");
+            $stmtUName->execute([$targetUnitId]);
+            $uName = $stmtUName->fetchColumn() ?: "Unit #$targetUnitId";
+
+            recordActivityAudit($pdo, 'whatsapp', 'UPDATE', 'wa_unit_settings', $targetUnitId, 
+                "Update 4 Pesan & Template WhatsApp Unit {$uName}", null, [
+                    'unit_id' => $targetUnitId,
+                    'msg_in' => $msgIn,
+                    'msg_late' => $msgLate,
+                    'msg_out' => $msgOut,
+                    'msg_out_late' => $msgOutLate
+                ], $targetUnitId);
+
+            flash('success', "Pengaturan pesan dan template untuk Unit {$uName} berhasil disimpan.");
+            redirect("index.php?tab=messages" . ($isSuperAdmin ? "&unit_id={$targetUnitId}" : ""));
+        } else {
+            // Simpan pengaturan global di wa_settings (Super Admin Only)
             updateWaSetting($pdo, 'msg_in_enabled', $msgIn);
             updateWaSetting($pdo, 'msg_late_enabled', $msgLate);
             updateWaSetting($pdo, 'msg_out_enabled', $msgOut);
             updateWaSetting($pdo, 'msg_out_late_enabled', $msgOutLate);
 
-            updateWaSetting($pdo, 'msg_in_timing', $msgInTiming);
-            updateWaSetting($pdo, 'msg_late_timing', $msgLateTiming);
             updateWaSetting($pdo, 'msg_late_ref', $msgLateRef);
             updateWaSetting($pdo, 'msg_late_delay_minutes', (string)$msgLateDelay);
-            updateWaSetting($pdo, 'msg_out_timing', $msgOutTiming);
-            updateWaSetting($pdo, 'msg_out_late_timing', $msgOutLateTiming);
             updateWaSetting($pdo, 'msg_out_late_delay_minutes', (string)$msgOutLateDelay);
 
-            if (isset($_POST['template_in'])) updateWaSetting($pdo, 'template_in', trim($_POST['template_in']));
-            if (isset($_POST['template_late'])) updateWaSetting($pdo, 'template_late', trim($_POST['template_late']));
-            if (isset($_POST['template_out'])) updateWaSetting($pdo, 'template_out', trim($_POST['template_out']));
-            if (isset($_POST['template_out_late'])) updateWaSetting($pdo, 'template_out_late', trim($_POST['template_out_late']));
+            if (isset($_POST['template_in'])) updateWaSetting($pdo, 'template_in', $tmplIn);
+            if (isset($_POST['template_late'])) updateWaSetting($pdo, 'template_late', $tmplLate);
+            if (isset($_POST['template_out'])) updateWaSetting($pdo, 'template_out', $tmplOut);
+            if (isset($_POST['template_out_late'])) updateWaSetting($pdo, 'template_out_late', $tmplOutLate);
 
-            flash('success', 'Pengaturan 4 Jenis Pesan Otomatis, Waktu Pengiriman & Template berhasil diperbarui.');
-        } elseif ($isKepsek && $ksUnitId) {
-            // Kepala Sekolah mengatur status & waktu kirim 4 pesan untuk unitnya
-            $stmtUpUnit = $pdo->prepare("
-                UPDATE wa_unit_settings 
-                SET msg_in_enabled = ?, msg_late_enabled = ?, msg_out_enabled = ?, msg_out_late_enabled = ?,
-                    msg_late_delay_minutes = ?, msg_out_late_delay_minutes = ?, msg_late_ref = ?
-                WHERE unit_id = ?
-            ");
-            $stmtUpUnit->execute([$msgIn, $msgLate, $msgOut, $msgOutLate, $msgLateDelay, $msgOutLateDelay, $msgLateRef, $ksUnitId]);
-            flash('success', "Pengaturan status & waktu pengiriman pesan untuk Unit {$ksUnitName} berhasil diperbarui.");
+            recordActivityAudit($pdo, 'whatsapp', 'UPDATE', 'wa_settings', 1, 
+                "Update Pengaturan 4 Pesan & Template WhatsApp Global", null, null, null);
+
+            flash('success', 'Pengaturan 4 Jenis Pesan Otomatis & Template Global berhasil diperbarui.');
+            redirect('index.php?tab=messages&unit_id=global');
         }
-
-        redirect('index.php?tab=messages');
     }
 
     // 3. Toggle Status Pembatasan Unit (Super Admin & Kepala Sekolah)
@@ -367,21 +410,154 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // =========================================================================
 // QUERY DATA TAMPILAN
 // =========================================================================
-$activeTab = $_GET['tab'] ?? ($isKepsek ? 'students' : 'settings');
+$activeTab = $_GET['tab'] ?? ($isSuperAdmin ? 'dashboard' : ($isKepsek ? 'students' : 'settings'));
 $waSettings = getWaSettings($pdo);
 $ksUnitSettings = ($isKepsek && $ksUnitId) ? getWaUnitSettings($pdo, $ksUnitId) : null;
 
-$currentLateDelay = ($isKepsek && !empty($ksUnitSettings['msg_late_delay_minutes']))
-    ? (int)$ksUnitSettings['msg_late_delay_minutes']
-    : (int)($waSettings['msg_late_delay_minutes'] ?? 30);
+// =========================================================================
+// DATA DASHBOARD PEMAKAIAN WHATSAPP PER UNIT (SUPER ADMIN MONITORING)
+// =========================================================================
+$dashMonth = $_GET['dash_month'] ?? date('Y-m');
+$dashStartDate = $dashMonth . '-01';
+$dashEndDate = date('Y-m-t', strtotime($dashStartDate));
 
-$currentLateRef = ($isKepsek && !empty($ksUnitSettings['msg_late_ref']))
-    ? $ksUnitSettings['msg_late_ref']
+$dashUnitsData = [];
+$dashDailyData = [];
+$dashTypeTotals = [
+    'in' => 0,
+    'late' => 0,
+    'out' => 0,
+    'out_late' => 0,
+    'staff_recap' => 0,
+    'test' => 0
+];
+$dashGrandTotal = 0;
+$dashGrandSuccess = 0;
+$dashGrandFailed = 0;
+$fonnteDash = null;
+
+if ($activeTab === 'dashboard' && $isSuperAdmin) {
+    // 1. Data pemakaian per unit
+    $stmtDashUnits = $pdo->prepare("
+        SELECT 
+            u.id as unit_id,
+            u.unit as unit_name,
+            COUNT(wl.id) as total_messages,
+            SUM(CASE WHEN wl.status = 'success' THEN 1 ELSE 0 END) as total_success,
+            SUM(CASE WHEN wl.status = 'failed' THEN 1 ELSE 0 END) as total_failed,
+            SUM(CASE WHEN wl.message_type = 'in' THEN 1 ELSE 0 END) as count_in,
+            SUM(CASE WHEN wl.message_type = 'late' THEN 1 ELSE 0 END) as count_late,
+            SUM(CASE WHEN wl.message_type = 'out' THEN 1 ELSE 0 END) as count_out,
+            SUM(CASE WHEN wl.message_type = 'out_late' THEN 1 ELSE 0 END) as count_out_late,
+            SUM(CASE WHEN wl.message_type = 'staff_recap' THEN 1 ELSE 0 END) as count_staff_recap,
+            SUM(CASE WHEN wl.message_type = 'test' THEN 1 ELSE 0 END) as count_test
+        FROM units u
+        LEFT JOIN wa_message_logs wl ON wl.unit_id = u.id AND wl.sent_date BETWEEN ? AND ?
+        GROUP BY u.id, u.unit
+        ORDER BY total_messages DESC, u.id ASC
+    ");
+    $stmtDashUnits->execute([$dashStartDate, $dashEndDate]);
+    $dashUnitsData = $stmtDashUnits->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($dashUnitsData as $du) {
+        $dashGrandTotal += (int)$du['total_messages'];
+        $dashGrandSuccess += (int)$du['total_success'];
+        $dashGrandFailed += (int)$du['total_failed'];
+        $dashTypeTotals['in'] += (int)$du['count_in'];
+        $dashTypeTotals['late'] += (int)$du['count_late'];
+        $dashTypeTotals['out'] += (int)$du['count_out'];
+        $dashTypeTotals['out_late'] += (int)$du['count_out_late'];
+        $dashTypeTotals['staff_recap'] += (int)$du['count_staff_recap'];
+        $dashTypeTotals['test'] += (int)$du['count_test'];
+    }
+
+    // 2. Data tren harian
+    $stmtDaily = $pdo->prepare("
+        SELECT sent_date, 
+               COUNT(*) as total,
+               SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count
+        FROM wa_message_logs
+        WHERE sent_date BETWEEN ? AND ?
+        GROUP BY sent_date
+        ORDER BY sent_date ASC
+    ");
+    $stmtDaily->execute([$dashStartDate, $dashEndDate]);
+    $dashDailyData = $stmtDaily->fetchAll(PDO::FETCH_ASSOC);
+
+    // 3. Status kuota Fonnte
+    if (!empty($waSettings['fonnte_token'])) {
+        $fonnteDash = checkFonnteDevice($waSettings['fonnte_token']);
+    }
+}
+
+// Penentuan Unit Target untuk Tab 2 (Kontrol 4 Pesan Otomatis)
+$msgTargetUnitId = null;
+$msgTargetUnitName = 'Template Global (Umum)';
+$targetUnitConf = null;
+$allUnits = [];
+
+if ($isKepsek && $ksUnitId) {
+    $msgTargetUnitId = $ksUnitId;
+    $msgTargetUnitName = $ksUnitName;
+    $targetUnitConf = getWaUnitSettings($pdo, $ksUnitId);
+} elseif ($isSuperAdmin) {
+    $allUnits = $pdo->query("SELECT id, unit FROM units ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+    $msgUnitParam = $_GET['msg_unit_id'] ?? $_GET['unit_id'] ?? 'global';
+    if ($msgUnitParam !== 'global' && is_numeric($msgUnitParam) && (int)$msgUnitParam > 0) {
+        $msgTargetUnitId = (int)$msgUnitParam;
+        $targetUnitConf = getWaUnitSettings($pdo, $msgTargetUnitId);
+        $stmtTu = $pdo->prepare("SELECT unit FROM units WHERE id = ?");
+        $stmtTu->execute([$msgTargetUnitId]);
+        $msgTargetUnitName = $stmtTu->fetchColumn() ?: "Unit #$msgTargetUnitId";
+    }
+}
+
+// Nilai sakelar 4 pesan saat ini
+$currentMsgIn = ($targetUnitConf !== null) 
+    ? (int)($targetUnitConf['msg_in_enabled'] ?? 1) 
+    : (int)($waSettings['msg_in_enabled'] ?? 1);
+
+$currentMsgLate = ($targetUnitConf !== null) 
+    ? (int)($targetUnitConf['msg_late_enabled'] ?? 1) 
+    : (int)($waSettings['msg_late_enabled'] ?? 1);
+
+$currentMsgOut = ($targetUnitConf !== null) 
+    ? (int)($targetUnitConf['msg_out_enabled'] ?? 1) 
+    : (int)($waSettings['msg_out_enabled'] ?? 1);
+
+$currentMsgOutLate = ($targetUnitConf !== null) 
+    ? (int)($targetUnitConf['msg_out_late_enabled'] ?? 1) 
+    : (int)($waSettings['msg_out_late_enabled'] ?? 1);
+
+// Waktu acuan & jeda pengiriman saat ini
+$currentLateRef = ($targetUnitConf && !empty($targetUnitConf['msg_late_ref']))
+    ? $targetUnitConf['msg_late_ref']
     : ($waSettings['msg_late_ref'] ?? 'student_late');
 
-$currentOutLateDelay = ($isKepsek && !empty($ksUnitSettings['msg_out_late_delay_minutes']))
-    ? (int)$ksUnitSettings['msg_out_late_delay_minutes']
+$currentLateDelay = ($targetUnitConf && isset($targetUnitConf['msg_late_delay_minutes']) && $targetUnitConf['msg_late_delay_minutes'] !== null && $targetUnitConf['msg_late_delay_minutes'] !== '')
+    ? (int)$targetUnitConf['msg_late_delay_minutes']
+    : (int)($waSettings['msg_late_delay_minutes'] ?? 30);
+
+$currentOutLateDelay = ($targetUnitConf && isset($targetUnitConf['msg_out_late_delay_minutes']) && $targetUnitConf['msg_out_late_delay_minutes'] !== null && $targetUnitConf['msg_out_late_delay_minutes'] !== '')
+    ? (int)$targetUnitConf['msg_out_late_delay_minutes']
     : (int)($waSettings['msg_out_late_delay_minutes'] ?? 45);
+
+// Template pesan saat ini (Prioritas: khusus unit, fallback: template global)
+$currentTmplIn = ($targetUnitConf && !empty($targetUnitConf['template_in']))
+    ? $targetUnitConf['template_in']
+    : ($waSettings['template_in'] ?? '');
+
+$currentTmplLate = ($targetUnitConf && !empty($targetUnitConf['template_late']))
+    ? $targetUnitConf['template_late']
+    : ($waSettings['template_late'] ?? '');
+
+$currentTmplOut = ($targetUnitConf && !empty($targetUnitConf['template_out']))
+    ? $targetUnitConf['template_out']
+    : ($waSettings['template_out'] ?? '');
+
+$currentTmplOutLate = ($targetUnitConf && !empty($targetUnitConf['template_out_late']))
+    ? $targetUnitConf['template_out_late']
+    : ($waSettings['template_out_late'] ?? '');
 
 $currentMsgInTiming = $waSettings['msg_in_timing'] ?? 'realtime';
 $currentMsgOutTiming = $waSettings['msg_out_timing'] ?? 'realtime';
@@ -645,6 +821,100 @@ input:checked + .slider:before {
     font-weight: 600;
     margin: 2px;
 }
+/* Responsive Dashboard Pemakaian WA */
+.dash-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+.dash-kpi-card {
+    margin: 0;
+    padding: 18px 20px;
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.dash-kpi-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 15px -3px rgba(0, 0, 0, 0.08);
+}
+.dash-kpi-val {
+    font-size: 28px;
+    font-weight: 800;
+    line-height: 1.1;
+}
+.dash-charts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 20px;
+    margin-bottom: 24px;
+}
+.dash-chart-box {
+    position: relative;
+    height: 270px;
+    width: 100%;
+}
+.dash-table-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 0 0 14px 14px;
+}
+@media (max-width: 992px) {
+    .dash-charts-grid {
+        grid-template-columns: 1fr;
+    }
+}
+@media (max-width: 768px) {
+    .dash-kpi-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+    }
+    .dash-kpi-card {
+        padding: 14px 16px;
+    }
+    .dash-kpi-val {
+        font-size: 22px;
+    }
+    .dash-chart-box {
+        height: 230px;
+    }
+    .wa-header-card {
+        padding: 16px 18px;
+    }
+    .wa-header-card h2 {
+        font-size: 18px !important;
+    }
+    .wa-tab-nav {
+        margin-bottom: 18px;
+    }
+    .wa-tab-link {
+        padding: 8px 14px;
+        font-size: 13px;
+    }
+    .dash-filter-form {
+        flex-direction: column;
+        align-items: stretch !important;
+        gap: 12px !important;
+    }
+    .dash-filter-group {
+        flex-direction: column;
+        align-items: stretch !important;
+        width: 100%;
+    }
+    .dash-filter-group input {
+        width: 100% !important;
+    }
+}
+@media (max-width: 480px) {
+    .dash-kpi-grid {
+        grid-template-columns: 1fr;
+    }
+    .dash-chart-box {
+        height: 210px;
+    }
+}
 </style>
 
 <!-- ========================================================================= -->
@@ -684,6 +954,9 @@ input:checked + .slider:before {
 <!-- ========================================================================= -->
 <div class="wa-tab-nav">
     <?php if ($isSuperAdmin): ?>
+        <a href="?tab=dashboard" class="wa-tab-link <?= $activeTab === 'dashboard' ? 'active' : '' ?>">
+            <i class="fa-solid fa-chart-pie"></i> Dashboard Pemakaian Unit
+        </a>
         <a href="?tab=settings" class="wa-tab-link <?= $activeTab === 'settings' ? 'active' : '' ?>">
             <i class="fa-solid fa-sliders"></i> Konfigurasi API Fonnte
         </a>
@@ -709,6 +982,306 @@ input:checked + .slider:before {
         <i class="fa-solid fa-clock-rotate-left"></i> Log Riwayat Notifikasi
     </a>
 </div>
+
+<!-- ========================================================================= -->
+<!-- TAB DASHBOARD: MONITORING PEMAKAIAN WHATSAPP PER UNIT (SUPER ADMIN ONLY)  -->
+<!-- ========================================================================= -->
+<?php if ($activeTab === 'dashboard' && $isSuperAdmin): ?>
+    <!-- FILTER PERIODE DASHBOARD -->
+    <div class="card dash-filter-bar" style="margin-bottom: 20px; padding: 16px 20px;">
+        <form method="GET" action="index.php" class="dash-filter-form" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px;">
+            <input type="hidden" name="tab" value="dashboard">
+            <div class="dash-filter-group" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <label style="margin: 0; font-weight: 700; color: #1e293b; font-size: 14px;">
+                    <i class="fa-solid fa-calendar-days" style="color: #10b981; margin-right: 6px;"></i> Pilih Periode Bulan:
+                </label>
+                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <input type="month" name="dash_month" value="<?= e($dashMonth) ?>" class="form-control" style="font-size: 13px; padding: 6px 12px; width: auto; border-radius: 8px;">
+                    <button type="submit" class="btn btn-primary" style="font-size: 13px; padding: 6px 14px; border-radius: 8px;">
+                        <i class="fa-solid fa-filter"></i> Terapkan
+                    </button>
+                    <?php if ($dashMonth !== date('Y-m')): ?>
+                        <a href="index.php?tab=dashboard" class="btn btn-light" style="font-size: 13px; padding: 6px 12px; border-radius: 8px;">Bulan Ini</a>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <div style="font-size: 13px; color: #64748b;">
+                Periode: <strong><?= date('d M Y', strtotime($dashStartDate)) ?></strong> s.d. <strong><?= date('d M Y', strtotime($dashEndDate)) ?></strong>
+            </div>
+        </form>
+    </div>
+
+    <!-- 4 KPI SUMMARY CARDS -->
+    <?php
+    $successRate = $dashGrandTotal > 0 ? round(($dashGrandSuccess / $dashGrandTotal) * 100, 1) : 0;
+    ?>
+    <div class="dash-kpi-grid">
+        <div class="dash-kpi-card" style="border-left: 4px solid #10b981;">
+            <div style="font-size:12px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">
+                Total Notifikasi Terkirim
+            </div>
+            <div class="dash-kpi-val" style="color: #0f172a;">
+                <?= number_format($dashGrandTotal) ?> <span style="font-size: 14px; font-weight: 500; color: #64748b;">Pesan</span>
+            </div>
+            <div style="font-size: 12px; color: #10b981; margin-top: 6px; font-weight: 600;">
+                <i class="fa-solid fa-paper-plane"></i> Seluruh Unit Terpantau
+            </div>
+        </div>
+
+        <div class="dash-kpi-card" style="border-left: 4px solid #0284c7;">
+            <div style="font-size:12px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">
+                Berhasil Terkirim (Success Rate)
+            </div>
+            <div class="dash-kpi-val" style="color: #0369a1;">
+                <?= number_format($dashGrandSuccess) ?> <span style="font-size: 14px; font-weight: 500; color: #64748b;">(<?= $successRate ?>%)</span>
+            </div>
+            <div style="font-size: 12px; color: #0284c7; margin-top: 6px; font-weight: 600;">
+                <i class="fa-solid fa-circle-check"></i> Tingkat Keberhasilan Pengiriman
+            </div>
+        </div>
+
+        <div class="dash-kpi-card" style="border-left: 4px solid #ef4444;">
+            <div style="font-size:12px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">
+                Notifikasi Gagal / Terkendala
+            </div>
+            <div class="dash-kpi-val" style="color: #b91c1c;">
+                <?= number_format($dashGrandFailed) ?> <span style="font-size: 14px; font-weight: 500; color: #64748b;">Pesan</span>
+            </div>
+            <div style="font-size: 12px; color: #ef4444; margin-top: 6px; font-weight: 600;">
+                <i class="fa-solid fa-triangle-exclamation"></i> <?= $dashGrandFailed > 0 ? 'Periksa nomor tidak valid / kuota' : 'Semua pesan lancar' ?>
+            </div>
+        </div>
+
+        <div class="dash-kpi-card" style="border-left: 4px solid #8b5cf6;">
+            <div style="font-size:12px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">
+                Sisa Kuota API Fonnte
+            </div>
+            <div class="dash-kpi-val" style="color: #6d28d9;">
+                <?= $fonnteDash && isset($fonnteDash['quota']) ? number_format($fonnteDash['quota']) : '-' ?> <span style="font-size: 14px; font-weight: 500; color: #64748b;">Pesan</span>
+            </div>
+            <div style="font-size: 12px; color: #7c3aed; margin-top: 6px; font-weight: 600;">
+                Status Alat: 
+                <?php if ($fonnteDash && !empty($fonnteDash['status'])): ?>
+                    <span class="badge" style="background:#dcfce7; color:#15803d; font-size:10px; padding:2px 6px;">Connected</span>
+                <?php else: ?>
+                    <span class="badge" style="background:#fee2e2; color:#b91c1c; font-size:10px; padding:2px 6px;">Disconnected</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+
+    <!-- CHARTS GRID -->
+    <div class="dash-charts-grid">
+        <div class="card" style="margin: 0; padding: 20px;">
+            <h4 style="margin: 0 0 14px 0; font-size: 15px; font-weight: 700; color: #1e293b;">
+                <i class="fa-solid fa-chart-column" style="color: #10b981; margin-right: 6px;"></i> Volume Notifikasi WhatsApp per Unit
+            </h4>
+            <div class="dash-chart-box">
+                <canvas id="chartUnitUsage"></canvas>
+            </div>
+        </div>
+
+        <div class="card" style="margin: 0; padding: 20px;">
+            <h4 style="margin: 0 0 14px 0; font-size: 15px; font-weight: 700; color: #1e293b;">
+                <i class="fa-solid fa-chart-pie" style="color: #8b5cf6; margin-right: 6px;"></i> Komposisi Tipe Pesan WhatsApp
+            </h4>
+            <div class="dash-chart-box">
+                <canvas id="chartTypeComposition"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- TABEL RINCIAN PEMAKAIAN SETIAP UNIT -->
+    <div class="card" style="margin-bottom: 24px;">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h3 style="margin: 0; font-size: 16px;"><i class="fa-solid fa-list-check" style="color: #10b981; margin-right: 8px;"></i> Rincian Pemakaian Notifikasi Setiap Unit</h3>
+                <small class="text-muted">Pantau pembagian pemakaian pesan (Masuk, Terlambat, Pulang, Belum Pulang, Rekapan Staff) per unit sekolah</small>
+            </div>
+        </div>
+
+        <div class="table-wrapper dash-table-container">
+            <table class="table" style="width: 100%; min-width: 780px; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #f8fafc; text-align: left; border-bottom: 2px solid #e2e8f0;">
+                        <th style="padding: 12px 14px;">Nama Unit</th>
+                        <th style="padding: 12px 14px; width: 180px;">Proporsi Pemakaian</th>
+                        <th style="padding: 12px 14px; text-align: center;">Total Pesan</th>
+                        <th style="padding: 12px 14px; text-align: center;">🟢 Masuk</th>
+                        <th style="padding: 12px 14px; text-align: center;">🔴 Telat</th>
+                        <th style="padding: 12px 14px; text-align: center;">🏁 Pulang</th>
+                        <th style="padding: 12px 14px; text-align: center;">⏱️ Belum Pulang</th>
+                        <th style="padding: 12px 14px; text-align: center;">📋 Rekap Staff</th>
+                        <th style="padding: 12px 14px; text-align: center;">Status Sukses</th>
+                        <th style="padding: 12px 14px; text-align: center;">Aksi</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($dashUnitsData)): ?>
+                        <tr><td colspan="10" style="text-align: center; padding: 24px; color: #64748b;">Belum ada data pemakaian WhatsApp pada periode ini.</td></tr>
+                    <?php endif; ?>
+
+                    <?php foreach ($dashUnitsData as $uData): ?>
+                        <?php 
+                        $uTotal = (int)$uData['total_messages'];
+                        $pct = $dashGrandTotal > 0 ? round(($uTotal / $dashGrandTotal) * 100, 1) : 0;
+                        ?>
+                        <tr style="border-bottom: 1px solid #f1f5f9;">
+                            <td style="padding: 12px 14px;">
+                                <strong style="color: #0f172a; font-size: 14px;"><?= e($uData['unit_name']) ?></strong>
+                            </td>
+                            <td style="padding: 12px 14px;">
+                                <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px; color: #64748b;">
+                                    <span><?= $pct ?>%</span>
+                                    <span><?= number_format($uTotal) ?> / <?= number_format($dashGrandTotal) ?></span>
+                                </div>
+                                <div style="background: #e2e8f0; border-radius: 999px; height: 7px; overflow: hidden;">
+                                    <div style="background: linear-gradient(90deg, #10b981, #059669); height: 100%; width: <?= $pct ?>%;"></div>
+                                </div>
+                            </td>
+                            <td style="padding: 12px 14px; text-align: center;">
+                                <span class="badge" style="background: #e0f2fe; color: #0369a1; font-weight: 700; font-size: 13px; padding: 4px 10px; border-radius: 6px;">
+                                    <?= number_format($uTotal) ?>
+                                </span>
+                            </td>
+                            <td style="padding: 12px 14px; text-align: center; font-weight: 600; color: #16a34a;">
+                                <?= number_format((int)$uData['count_in']) ?>
+                            </td>
+                            <td style="padding: 12px 14px; text-align: center; font-weight: 600; color: #dc2626;">
+                                <?= number_format((int)$uData['count_late']) ?>
+                            </td>
+                            <td style="padding: 12px 14px; text-align: center; font-weight: 600; color: #2563eb;">
+                                <?= number_format((int)$uData['count_out']) ?>
+                            </td>
+                            <td style="padding: 12px 14px; text-align: center; font-weight: 600; color: #d97706;">
+                                <?= number_format((int)$uData['count_out_late']) ?>
+                            </td>
+                            <td style="padding: 12px 14px; text-align: center; font-weight: 600; color: #7c3aed;">
+                                <?= number_format((int)$uData['count_staff_recap']) ?>
+                            </td>
+                            <td style="padding: 12px 14px; text-align: center;">
+                                <small>
+                                    <span style="color: #16a34a; font-weight: 700;"><?= number_format((int)$uData['total_success']) ?> Sukses</span>
+                                    <?php if ((int)$uData['total_failed'] > 0): ?>
+                                        <br><span style="color: #dc2626; font-weight: 700;"><?= number_format((int)$uData['total_failed']) ?> Gagal</span>
+                                    <?php endif; ?>
+                                </small>
+                            </td>
+                            <td style="padding: 12px 14px; text-align: center;">
+                                <a href="index.php?tab=logs&unit_id=<?= (int)$uData['unit_id'] ?>" class="btn btn-sm btn-light" style="font-size: 12px; padding: 4px 8px; text-decoration: none;">
+                                    <i class="fa-solid fa-list"></i> Lihat Log
+                                </a>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+                <tfoot>
+                    <tr style="background: #f8fafc; font-weight: 800; border-top: 2px solid #cbd5e1;">
+                        <td style="padding: 12px 14px;">TOTAL SEMUA UNIT</td>
+                        <td style="padding: 12px 14px;">100%</td>
+                        <td style="padding: 12px 14px; text-align: center; font-size: 14px; color: #0284c7;"><?= number_format($dashGrandTotal) ?></td>
+                        <td style="padding: 12px 14px; text-align: center; color: #16a34a;"><?= number_format($dashTypeTotals['in']) ?></td>
+                        <td style="padding: 12px 14px; text-align: center; color: #dc2626;"><?= number_format($dashTypeTotals['late']) ?></td>
+                        <td style="padding: 12px 14px; text-align: center; color: #2563eb;"><?= number_format($dashTypeTotals['out']) ?></td>
+                        <td style="padding: 12px 14px; text-align: center; color: #d97706;"><?= number_format($dashTypeTotals['out_late']) ?></td>
+                        <td style="padding: 12px 14px; text-align: center; color: #7c3aed;"><?= number_format($dashTypeTotals['staff_recap']) ?></td>
+                        <td style="padding: 12px 14px; text-align: center;"><?= number_format($dashGrandSuccess) ?> Sukses</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </div>
+
+    <!-- SCRIPT CHART.JS INITIALIZATION -->
+    <script>
+    document.addEventListener("DOMContentLoaded", function () {
+        // Data Bar Chart Unit
+        const unitLabels = <?= json_encode(array_column($dashUnitsData, 'unit_name')) ?>;
+        const unitTotals = <?= json_encode(array_map('intval', array_column($dashUnitsData, 'total_messages'))) ?>;
+        const unitSuccess = <?= json_encode(array_map('intval', array_column($dashUnitsData, 'total_success'))) ?>;
+
+        const ctxUnit = document.getElementById('chartUnitUsage');
+        if (ctxUnit) {
+            new Chart(ctxUnit.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: unitLabels,
+                    datasets: [
+                        {
+                            label: 'Total Pesan',
+                            data: unitTotals,
+                            backgroundColor: 'rgba(16, 185, 129, 0.7)',
+                            borderColor: '#10b981',
+                            borderWidth: 1,
+                            borderRadius: 6
+                        },
+                        {
+                            label: 'Berhasil',
+                            data: unitSuccess,
+                            backgroundColor: 'rgba(2, 132, 199, 0.7)',
+                            borderColor: '#0284c7',
+                            borderWidth: 1,
+                            borderRadius: 6
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: { precision: 0 }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Data Doughnut Chart Tipe Pesan
+        const ctxType = document.getElementById('chartTypeComposition');
+        if (ctxType) {
+            new Chart(ctxType.getContext('2d'), {
+                type: 'doughnut',
+                data: {
+                    labels: ['🟢 Masuk', '🔴 Telat Masuk', '🏁 Pulang', '⏱️ Belum Pulang', '📋 Rekap Staff', '🧪 Test'],
+                    datasets: [{
+                        data: [
+                            <?= (int)$dashTypeTotals['in'] ?>,
+                            <?= (int)$dashTypeTotals['late'] ?>,
+                            <?= (int)$dashTypeTotals['out'] ?>,
+                            <?= (int)$dashTypeTotals['out_late'] ?>,
+                            <?= (int)$dashTypeTotals['staff_recap'] ?>,
+                            <?= (int)$dashTypeTotals['test'] ?>
+                        ],
+                        backgroundColor: [
+                            '#16a34a',
+                            '#dc2626',
+                            '#2563eb',
+                            '#d97706',
+                            '#8b5cf6',
+                            '#94a3b8'
+                        ],
+                        borderWidth: 2,
+                        borderColor: '#ffffff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: { boxWidth: 14, font: { size: 12 } }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    </script>
+<?php endif; ?>
 
 <!-- ========================================================================= -->
 <!-- TAB 1: KONFIGURASI API FONNTE (SUPER ADMIN ONLY)                          -->
@@ -818,7 +1391,10 @@ input:checked + .slider:before {
         <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
             <div>
                 <h3 style="margin: 0;"><i class="fa-solid fa-toggle-on" style="color: #10b981; margin-right: 8px;"></i> Kontrol 4 Jenis Pesan Notifikasi Otomatis</h3>
-                <small>Super Admin dan Kepala Sekolah dapat mematikan pesan tertentu sewaktu-waktu (misal ada libur khusus, ujian, atau acara yang tidak perlu absen).</small>
+                <small>
+                    Pengaturan template dan status pesan WhatsApp dapat disesuaikan untuk masing-masing unit sekolah 
+                    <?= $msgTargetUnitId ? "— <strong>Sedang Mengatur: " . e($msgTargetUnitName) . "</strong>" : "— <strong>Template Master Global</strong>" ?>
+                </small>
             </div>
             <form method="POST" style="margin: 0;">
                 <input type="hidden" name="action" value="run_manual_check">
@@ -828,10 +1404,38 @@ input:checked + .slider:before {
             </form>
         </div>
 
+        <!-- PILIHAN UNIT (KHUSUS SUPER ADMIN) ATAU BANNER UNIT (KEPALA SEKOLAH) -->
+        <?php if ($isSuperAdmin): ?>
+            <div style="background: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 12px 20px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <span style="font-size: 12.5px; font-weight: 700; color: #475569; margin-right: 4px;">Pilih Unit Pengaturan Pesan:</span>
+                <a href="index.php?tab=messages&unit_id=global" 
+                   class="btn <?= $msgTargetUnitId === null ? 'btn-primary' : 'btn-light' ?>" 
+                   style="font-size: 12px; padding: 5px 12px; border-radius: 6px; font-weight: 600;">
+                    🌐 Template Global (Default)
+                </a>
+                <?php foreach ($allUnits as $u): ?>
+                    <a href="index.php?tab=messages&unit_id=<?= $u['id'] ?>" 
+                       class="btn <?= $msgTargetUnitId === (int)$u['id'] ? 'btn-primary' : 'btn-light' ?>" 
+                       style="font-size: 12px; padding: 5px 12px; border-radius: 6px; font-weight: 600;">
+                        🏫 <?= e($u['unit']) ?>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+        <?php elseif ($isKepsek): ?>
+            <div style="background: #f0fdf4; border-bottom: 1px solid #bbf7d0; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                <div>
+                    <strong style="color: #15803d; font-size: 13.5px;"><i class="fa-solid fa-building-columns"></i> Pengaturan Pesan Unit: <?= e($ksUnitName) ?></strong>
+                    <p style="margin: 2px 0 0 0; color: #166534; font-size: 12px;">Anda memiliki wewenang penuh untuk mengubah pesan otomatis dan jeda waktu khusus untuk Unit <?= e($ksUnitName) ?>.</p>
+                </div>
+                <span style="background: #15803d; color: white; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700;">Akses Unit Anda</span>
+            </div>
+        <?php endif; ?>
+
         <form method="POST">
             <input type="hidden" name="action" value="save_message_settings">
+            <input type="hidden" name="target_unit_id" value="<?= $msgTargetUnitId !== null ? $msgTargetUnitId : 'global' ?>">
 
-            <div style="background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-size: 13px; color: #1e3a8a;">
+            <div style="background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 16px; border-radius: 8px; margin: 20px 20px 15px 20px; font-size: 13px; color: #1e3a8a;">
                 <strong>Variabel Template yang dapat digunakan:</strong><br>
                 <span class="msg-tag">{nama_siswa}</span>
                 <span class="msg-tag">{nis}</span>
@@ -846,7 +1450,7 @@ input:checked + .slider:before {
             </div>
 
             <!-- PESAN 1: ABSEN MASUK -->
-            <div class="msg-card">
+            <div class="msg-card" style="margin: 15px 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                     <div>
                         <span style="background: #dcfce7; color: #15803d; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 800; text-transform: uppercase;">PESAN 1</span>
@@ -859,21 +1463,22 @@ input:checked + .slider:before {
                         </div>
                     </div>
                     <label class="switch">
-                        <input type="checkbox" name="msg_in_enabled" value="1" <?= (!empty($waSettings['msg_in_enabled']) && $waSettings['msg_in_enabled'] === '1') ? 'checked' : '' ?>>
+                        <input type="checkbox" name="msg_in_enabled" value="1" <?= $currentMsgIn === 1 ? 'checked' : '' ?>>
                         <span class="slider"></span>
                     </label>
                 </div>
                 <input type="hidden" name="msg_in_timing" value="realtime">
-                <?php if ($isSuperAdmin): ?>
-                    <div class="form-group" style="margin-top: 12px;">
-                        <label style="font-size: 12px; font-weight: 600;">Template Pesan Absen Masuk:</label>
-                        <textarea name="template_in" rows="4" style="font-family: monospace; font-size: 12.5px;"><?= htmlspecialchars($waSettings['template_in'] ?? '') ?></textarea>
-                    </div>
-                <?php endif; ?>
+                <div class="form-group" style="margin-top: 12px;">
+                    <label style="font-size: 12.5px; font-weight: 700; color: #1e293b;">
+                        Template Pesan Absen Masuk <?= $msgTargetUnitId ? "Unit " . e($msgTargetUnitName) : "(Global)" ?>:
+                    </label>
+                    <textarea name="template_in" rows="4" style="font-family: monospace; font-size: 12.5px;" placeholder="<?= htmlspecialchars($waSettings['template_in'] ?? '') ?>"><?= htmlspecialchars($currentTmplIn) ?></textarea>
+                    <small style="color: #64748b;">Jika dikosongkan, sistem otomatis memakai format template global.</small>
+                </div>
             </div>
 
             <!-- PESAN 2: TERLAMBAT / BELUM HADIR (SESUDAH JAM MASUK) -->
-            <div class="msg-card" style="border-left: 5px solid #f59e0b;">
+            <div class="msg-card" style="margin: 15px 20px; border-left: 5px solid #f59e0b;">
                 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                     <div>
                         <span style="background: #fef3c7; color: #b45309; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 800; text-transform: uppercase;">PESAN 2</span>
@@ -881,7 +1486,7 @@ input:checked + .slider:before {
                         <small style="color: #64748b;">Terkirim otomatis ke orang tua jika siswa belum melakukan scan absensi masuk setelah jam yang ditentukan.</small>
                     </div>
                     <label class="switch">
-                        <input type="checkbox" name="msg_late_enabled" value="1" <?= (!empty($waSettings['msg_late_enabled']) && $waSettings['msg_late_enabled'] === '1') ? 'checked' : '' ?>>
+                        <input type="checkbox" name="msg_late_enabled" value="1" <?= $currentMsgLate === 1 ? 'checked' : '' ?>>
                         <span class="slider"></span>
                     </label>
                 </div>
@@ -915,21 +1520,19 @@ input:checked + .slider:before {
                             <button type="button" class="btn btn-sm" onclick="document.getElementById('input_late_delay').value=90" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fcd34d; cursor: pointer;">1.5 Jam</button>
                         </div>
                     </div>
-                    <div style="margin-top: 10px; font-size: 12px; color: #b45309; line-height: 1.5;">
-                        <i class="fa-solid fa-circle-info"></i> <strong>Contoh Penerapan:</strong> Jika batas telat jam <strong>07:00</strong> dan jeda disetel <strong><?= e($currentLateDelay) ?> Menit</strong>, maka pada pukul <strong><?= date('H:i', strtotime("+{$currentLateDelay} minutes", strtotime('07:00:00'))) ?></strong> sistem otomatis mengirim notifikasi kepada orang tua yang anaknya belum ada data absen masuk.
-                    </div>
                 </div>
 
-                <?php if ($isSuperAdmin): ?>
-                    <div class="form-group">
-                        <label style="font-size: 12px; font-weight: 600;">Template Pesan Belum Hadir (Sesudah Jam Masuk):</label>
-                        <textarea name="template_late" rows="4" style="font-family: monospace; font-size: 12.5px;"><?= htmlspecialchars($waSettings['template_late'] ?? '') ?></textarea>
-                    </div>
-                <?php endif; ?>
+                <div class="form-group">
+                    <label style="font-size: 12.5px; font-weight: 700; color: #1e293b;">
+                        Template Pesan Belum Hadir (Sesudah Jam Masuk) <?= $msgTargetUnitId ? "Unit " . e($msgTargetUnitName) : "(Global)" ?>:
+                    </label>
+                    <textarea name="template_late" rows="4" style="font-family: monospace; font-size: 12.5px;" placeholder="<?= htmlspecialchars($waSettings['template_late'] ?? '') ?>"><?= htmlspecialchars($currentTmplLate) ?></textarea>
+                    <small style="color: #64748b;">Jika dikosongkan, sistem otomatis memakai format template global.</small>
+                </div>
             </div>
 
             <!-- PESAN 3: ABSEN PULANG -->
-            <div class="msg-card">
+            <div class="msg-card" style="margin: 15px 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                     <div>
                         <span style="background: #e0e7ff; color: #4338ca; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 800; text-transform: uppercase;">PESAN 3</span>
@@ -942,21 +1545,22 @@ input:checked + .slider:before {
                         </div>
                     </div>
                     <label class="switch">
-                        <input type="checkbox" name="msg_out_enabled" value="1" <?= (!empty($waSettings['msg_out_enabled']) && $waSettings['msg_out_enabled'] === '1') ? 'checked' : '' ?>>
+                        <input type="checkbox" name="msg_out_enabled" value="1" <?= $currentMsgOut === 1 ? 'checked' : '' ?>>
                         <span class="slider"></span>
                     </label>
                 </div>
                 <input type="hidden" name="msg_out_timing" value="realtime">
-                <?php if ($isSuperAdmin): ?>
-                    <div class="form-group" style="margin-top: 12px;">
-                        <label style="font-size: 12px; font-weight: 600;">Template Pesan Absen Pulang:</label>
-                        <textarea name="template_out" rows="4" style="font-family: monospace; font-size: 12.5px;"><?= htmlspecialchars($waSettings['template_out'] ?? '') ?></textarea>
-                    </div>
-                <?php endif; ?>
+                <div class="form-group" style="margin-top: 12px;">
+                    <label style="font-size: 12.5px; font-weight: 700; color: #1e293b;">
+                        Template Pesan Absen Pulang <?= $msgTargetUnitId ? "Unit " . e($msgTargetUnitName) : "(Global)" ?>:
+                    </label>
+                    <textarea name="template_out" rows="4" style="font-family: monospace; font-size: 12.5px;" placeholder="<?= htmlspecialchars($waSettings['template_out'] ?? '') ?>"><?= htmlspecialchars($currentTmplOut) ?></textarea>
+                    <small style="color: #64748b;">Jika dikosongkan, sistem otomatis memakai format template global.</small>
+                </div>
             </div>
 
             <!-- PESAN 4: PERINGATAN KONFIRMASI LEWAT JAM PULANG -->
-            <div class="msg-card" style="border-left: 5px solid #ef4444;">
+            <div class="msg-card" style="margin: 15px 20px; border-left: 5px solid #ef4444;">
                 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                     <div>
                         <span style="background: #fee2e2; color: #b91c1c; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 800; text-transform: uppercase;">PESAN 4</span>
@@ -964,7 +1568,7 @@ input:checked + .slider:before {
                         <small style="color: #64748b;">Terkirim ke orang tua jika setelah jam pulang anaknya belum absen pulang untuk konfirmasi apakah anak sudah sampai di rumah.</small>
                     </div>
                     <label class="switch">
-                        <input type="checkbox" name="msg_out_late_enabled" value="1" <?= (!empty($waSettings['msg_out_late_enabled']) && $waSettings['msg_out_late_enabled'] === '1') ? 'checked' : '' ?>>
+                        <input type="checkbox" name="msg_out_late_enabled" value="1" <?= $currentMsgOutLate === 1 ? 'checked' : '' ?>>
                         <span class="slider"></span>
                     </label>
                 </div>
@@ -997,22 +1601,22 @@ input:checked + .slider:before {
                             <button type="button" class="btn btn-sm" onclick="document.getElementById('input_out_delay').value=90" style="font-size: 11px; padding: 3px 8px; background: white; border: 1px solid #fca5a5; cursor: pointer;">1.5 Jam</button>
                         </div>
                     </div>
-                    <div style="margin-top: 10px; font-size: 12px; color: #b91c1c; line-height: 1.5;">
-                        <i class="fa-solid fa-circle-info"></i> <strong>Contoh Penerapan:</strong> Jika jadwal pulang sekolah jam <strong>15:30</strong> dan jeda disetel <strong><?= e($currentOutLateDelay) ?> Menit</strong>, maka pada pukul <strong><?= date('H:i', strtotime("+{$currentOutLateDelay} minutes", strtotime('15:30:00'))) ?></strong> sistem otomatis mengirim pesan konfirmasi kepada orang tua siswa yang belum tap pulang.
-                    </div>
                 </div>
 
-                <?php if ($isSuperAdmin): ?>
-                    <div class="form-group">
-                        <label style="font-size: 12px; font-weight: 600;">Template Pesan Konfirmasi Kepulangan (Lewat Jam Pulang):</label>
-                        <textarea name="template_out_late" rows="4" style="font-family: monospace; font-size: 12.5px;"><?= htmlspecialchars($waSettings['template_out_late'] ?? '') ?></textarea>
-                    </div>
-                <?php endif; ?>
+                <div class="form-group">
+                    <label style="font-size: 12.5px; font-weight: 700; color: #1e293b;">
+                        Template Pesan Konfirmasi Kepulangan (Lewat Jam Pulang) <?= $msgTargetUnitId ? "Unit " . e($msgTargetUnitName) : "(Global)" ?>:
+                    </label>
+                    <textarea name="template_out_late" rows="4" style="font-family: monospace; font-size: 12.5px;" placeholder="<?= htmlspecialchars($waSettings['template_out_late'] ?? '') ?>"><?= htmlspecialchars($currentTmplOutLate) ?></textarea>
+                    <small style="color: #64748b;">Jika dikosongkan, sistem otomatis memakai format template global.</small>
+                </div>
             </div>
 
-            <button type="submit" class="btn btn-primary" style="background: #059669; border-color: #059669; padding: 10px 24px;">
-                <i class="fa-solid fa-floppy-disk"></i> Simpan Pengaturan Pesan
-            </button>
+            <div style="padding: 10px 20px 20px 20px;">
+                <button type="submit" class="btn btn-primary" style="background: #059669; border-color: #059669; padding: 10px 24px; font-weight: 700;">
+                    <i class="fa-solid fa-floppy-disk"></i> Simpan Pengaturan Pesan <?= $msgTargetUnitId ? "Unit " . e($msgTargetUnitName) : "(Global)" ?>
+                </button>
+            </div>
         </form>
     </div>
 <?php endif; ?>

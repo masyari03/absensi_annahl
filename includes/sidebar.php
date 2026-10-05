@@ -100,6 +100,8 @@ $menuUrlMap = [
     'reports_overtimes'    => '/overtimes/index.php',
     'access_control'       => '/kelola/index.php',
     'user_activity'        => '/kelola/activity.php',
+    'activity_logs'        => '/kelola/audit_logs.php',
+    'auto_attendance'      => '/kelola/auto_attendance.php',
     'data_cctv'            => '/cctv/index.php',
     'whatsapp_notif'       => '/whatsapp/index.php',
 ];

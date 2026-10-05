@@ -132,14 +132,27 @@ if ($recentLog) {
 }
 
 // Helper untuk mengambil jadwal harian aktif
-function getDeviceDailyActivity(PDO $pdo, int $unitId, string $dateToday, int $dayCode): ?array {
-    $stmt = $pdo->prepare("SELECT * FROM activities WHERE activity_date = ? AND unit_id = ? LIMIT 1");
-    $stmt->execute([$dateToday, $unitId]);
+function getDeviceDailyActivity(PDO $pdo, int $unitId, string $dateToday, int $dayCode, string $targetType = 'student'): ?array {
+    $stmt = $pdo->prepare("
+        SELECT * FROM activities 
+        WHERE activity_date = ? AND unit_id = ? 
+          AND (target_type = ? OR target_type = 'all' OR target_type IS NULL) 
+        ORDER BY (target_type = ?) DESC, id ASC 
+        LIMIT 1
+    ");
+    $stmt->execute([$dateToday, $unitId, $targetType, $targetType]);
     $act = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$act) {
-        $stmtWeek = $pdo->prepare("SELECT * FROM weekly_schedules WHERE day_code = ? AND unit_id = ? AND is_active = 'active' LIMIT 1");
-        $stmtWeek->execute([$dayCode, $unitId]);
+        $stmtWeek = $pdo->prepare("
+            SELECT * FROM weekly_schedules 
+            WHERE day_code = ? AND unit_id = ? AND is_active = 'active' 
+              AND (target_type = ? OR target_type IS NULL) 
+              AND (schedule_type = 'reguler' OR schedule_type IS NULL) 
+            ORDER BY (grade_id IS NULL AND class_group_id IS NULL) DESC, id ASC 
+            LIMIT 1
+        ");
+        $stmtWeek->execute([$dayCode, $unitId, $targetType]);
         $weekly = $stmtWeek->fetch(PDO::FETCH_ASSOC);
         
         if ($weekly) {
@@ -148,16 +161,16 @@ function getDeviceDailyActivity(PDO $pdo, int $unitId, string $dateToday, int $d
 
             $stmtIns = $pdo->prepare("
                 INSERT INTO activities 
-                (academic_year_id, unit_id, name, activity_date, student_in, student_late, student_out, staff_in, staff_late, staff_out, status) 
-                VALUES (?, ?, 'KBM Reguler', ?, ?, ?, ?, ?, ?, ?, 'active')
+                (academic_year_id, unit_id, target_type, name, activity_date, student_in, student_late, student_out, staff_in, staff_late, staff_out, status) 
+                VALUES (?, ?, ?, 'Jadwal Reguler', ?, ?, ?, ?, ?, ?, ?, 'active')
             ");
             $stmtIns->execute([
-                $ayId, $unitId, $dateToday, 
+                $ayId, $unitId, $targetType, $dateToday, 
                 $weekly['student_in'], $weekly['student_late'], $weekly['student_out'], 
                 $weekly['staff_in'], $weekly['staff_late'], $weekly['staff_out']
             ]);
             
-            $stmt->execute([$dateToday, $unitId]);
+            $stmt->execute([$dateToday, $unitId, $targetType, $targetType]);
             $act = $stmt->fetch(PDO::FETCH_ASSOC);
         }
     }
@@ -189,7 +202,7 @@ try {
         $staffHomeUnit = (int)($staff['unit_id'] ?? $device['unit_id']);
 
         // Jadwal diambil dari Home Unit staff agar aturan jam kerjanya sesuai tugasnya
-        $activity = getDeviceDailyActivity($pdo, $staffHomeUnit, $dateToday, $dayCode);
+        $activity = getDeviceDailyActivity($pdo, $staffHomeUnit, $dateToday, $dayCode, 'staff');
         if (!$activity || $activity['status'] !== 'active') {
             $pdo->rollBack();
             // Catat log
@@ -204,61 +217,155 @@ try {
             ]);
         }
 
-        $jamMasukDetik = strtotime($activity['staff_in']);
-        $jamPulangDetik = strtotime($activity['staff_out']);
-        $bukaMasuk = strtotime('-2 hours', $jamMasukDetik);
-        $tutupMasuk = strtotime('+3 hours', $jamMasukDetik);
-        $bukaPulang = strtotime('+4 hours', $jamMasukDetik);
-        $tutupPulang = strtotime('+7 hours', $jamPulangDetik);
+        $staffShift = function_exists('getStaffShiftSchedule')
+            ? getStaffShiftSchedule($pdo, $staffId, $staffHomeUnit, (int)$dayCode, $timeNow)
+            : ['has_schedule' => false, 'is_overnight' => false];
+        $isOvernight = !empty($staffShift['is_overnight']);
 
-        // Kunci baris absensi staff hari ini (SELECT ... FOR UPDATE)
-        $checkStmt = $pdo->prepare("
-            SELECT id, time_in, time_out, status 
-            FROM staff_attendances 
-            WHERE staff_id = ? AND attendance_date = ? 
-            FOR UPDATE
-        ");
-        $checkStmt->execute([$staffId, $dateToday]);
-        $record = $checkStmt->fetch(PDO::FETCH_ASSOC);
+        // =====================================================================
+        // ALGORITMA SHIFT MALAM SECURITY CROSS-MIDNIGHT (18:00 - 06:00) DI ESP32
+        // =====================================================================
+        if ($isOvernight) {
+            $yesterday = date('Y-m-d', strtotime('-1 day'));
 
-        $timeInEmpty = !$record || empty($record['time_in']) || $record['time_in'] === '00:00:00';
-        $timeOutEmpty = !$record || empty($record['time_out']) || $record['time_out'] === '00:00:00';
+            // Pagi hari (04:00 - 11:30): Pulang shift malam kemarin
+            if ($timeNowSeconds >= strtotime('04:00:00') && $timeNowSeconds <= strtotime('11:30:00')) {
+                $checkYest = $pdo->prepare("
+                    SELECT id, activity_id, time_in, time_out, status 
+                    FROM staff_attendances 
+                    WHERE staff_id = ? AND attendance_date = ? 
+                    FOR UPDATE
+                ");
+                $checkYest->execute([$staffId, $yesterday]);
+                $yestRecord = $checkYest->fetch(PDO::FETCH_ASSOC);
 
-        $scanDirection = '';
-        $badge = '';
-        $msg = '';
+                $scanDirection = 'pulang';
 
-        if ($timeNowSeconds <= $tutupMasuk) {
-            // Sesi Masuk
-            $scanDirection = 'masuk';
-            $statusKehadiran = ($timeNow > $activity['staff_late']) ? 'terlambat' : 'tepat_waktu';
-            $badge = ($statusKehadiran === 'tepat_waktu') ? 'TEPAT WAKTU' : 'TERLAMBAT';
+                if ($yestRecord && (empty($yestRecord['time_out']) || $yestRecord['time_out'] === '00:00:00')) {
+                    $pdo->prepare("UPDATE staff_attendances SET time_out = ? WHERE id = ?")
+                        ->execute([$timeNow, $yestRecord['id']]);
 
-            if (!$record) {
-                $pdo->prepare("
-                    INSERT INTO staff_attendances 
-                    (staff_id, activity_id, attendance_date, time_in, scan_code, status) 
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ")->execute([$staffId, $activity['id'], $dateToday, $timeNow, "ESP32:{$deviceId}:{$scanCode}", $statusKehadiran]);
-                $msg = "Absen Masuk Berhasil ({$badge})";
-            } elseif ($timeInEmpty) {
-                $pdo->prepare("
-                    UPDATE staff_attendances 
-                    SET time_in = ?, scan_code = ?, status = ?, keterangan = NULL 
-                    WHERE id = ?
-                ")->execute([$timeNow, "ESP32:{$deviceId}:{$scanCode}", $statusKehadiran, $record['id']]);
-                $msg = "Absen Masuk Berhasil ({$badge})";
+                    $targetJamPulang = strtotime($staffShift['staff_out'] ?? '06:00:00');
+                    if ($timeNowSeconds >= ($targetJamPulang + 3600)) {
+                        $badge = 'LEMBUR';
+                        $pdo->prepare("INSERT INTO staff_overtimes (staff_id, activity_id, overtime_date, time_out, created_at) VALUES (?, ?, ?, ?, NOW())")
+                            ->execute([$staffId, $yestRecord['activity_id'], $yesterday, $timeNow]);
+                    } else {
+                        $badge = 'PULANG MALAM';
+                    }
+                    $msg = "Absen Pulang Shift Malam Berhasil ({$badge})";
+                } elseif ($yestRecord && !empty($yestRecord['time_out']) && $yestRecord['time_out'] !== '00:00:00') {
+                    $pdo->commit();
+                    apiResponse('already', "Anda sudah absen pulang shift malam sebelumnya ({$yestRecord['time_out']}).", [
+                        'name' => $staff['name'],
+                        'user_type' => 'staff',
+                        'led' => 'green_solid',
+                        'beep' => 1
+                    ]);
+                } else {
+                    $actId = $activity ? $activity['id'] : 1;
+                    $pdo->prepare("INSERT INTO staff_attendances (staff_id, activity_id, attendance_date, time_in, time_out, scan_code, status, keterangan) VALUES (?, ?, ?, NULL, ?, ?, 'terlambat', 'Hanya Absen Pulang Shift Malam')")
+                        ->execute([$staffId, $actId, $yesterday, $timeNow, "ESP32:{$deviceId}:{$scanCode}"]);
+                    $msg = "Absen Pulang Shift Malam Berhasil Dicatat";
+                    $badge = 'PULANG MALAM';
+                }
+            } elseif ($timeNowSeconds >= strtotime('16:00:00')) {
+                // Masuk shift malam
+                $scanDirection = 'masuk';
+                $statusKehadiran = ($timeNow > ($staffShift['staff_late'] ?? '18:30:00')) ? 'terlambat' : 'tepat_waktu';
+                $badge = ($statusKehadiran === 'tepat_waktu') ? 'TEPAT WAKTU' : 'TERLAMBAT';
+
+                $checkToday = $pdo->prepare("SELECT id, time_in, time_out, status FROM staff_attendances WHERE staff_id = ? AND attendance_date = ? FOR UPDATE");
+                $checkToday->execute([$staffId, $dateToday]);
+                $recToday = $checkToday->fetch(PDO::FETCH_ASSOC);
+
+                $actId = $activity ? $activity['id'] : 1;
+                if (!$recToday) {
+                    $pdo->prepare("INSERT INTO staff_attendances (staff_id, activity_id, attendance_date, time_in, scan_code, status, keterangan) VALUES (?, ?, ?, ?, ?, ?, 'Shift Malam')")
+                        ->execute([$staffId, $actId, $dateToday, $timeNow, "ESP32:{$deviceId}:{$scanCode}", $statusKehadiran]);
+                    $msg = "Absen Masuk Shift Malam Berhasil ({$badge})";
+                } elseif (empty($recToday['time_in']) || $recToday['time_in'] === '00:00:00') {
+                    $pdo->prepare("UPDATE staff_attendances SET time_in = ?, scan_code = ?, status = ?, keterangan = 'Shift Malam' WHERE id = ?")
+                        ->execute([$timeNow, "ESP32:{$deviceId}:{$scanCode}", $statusKehadiran, $recToday['id']]);
+                    $msg = "Absen Masuk Shift Malam Berhasil ({$badge})";
+                } else {
+                    $pdo->commit();
+                    apiResponse('already', "Anda sudah berhasil absen masuk shift malam hari ini ({$recToday['time_in']}).", [
+                        'name' => $staff['name'],
+                        'user_type' => 'staff',
+                        'led' => 'green_solid',
+                        'beep' => 1
+                    ]);
+                }
             } else {
-                $pdo->commit();
-                apiResponse('already', "Anda sudah berhasil absen masuk hari ini ({$record['time_in']}).", [
-                    'name'      => $staff['name'],
+                $pdo->rollBack();
+                apiResponse('outside_schedule', "Bukan jam dinas shift malam (Jadwal: 18:00 - 06:00).", [
+                    'name' => $staff['name'],
                     'user_type' => 'staff',
-                    'time_in'   => $record['time_in'],
-                    'led'       => 'green_solid',
-                    'beep'      => 1
+                    'led' => 'red_blink',
+                    'beep' => 2
                 ]);
             }
         } else {
+            $jamMasukStr = $staffShift['staff_in'] ?? $activity['staff_in'];
+            $jamPulangStr = $staffShift['staff_out'] ?? $activity['staff_out'];
+            $jamTelatStr = $staffShift['staff_late'] ?? $activity['staff_late'];
+
+            $jamMasukDetik = strtotime($jamMasukStr);
+            $jamPulangDetik = strtotime($jamPulangStr);
+            $bukaMasuk = strtotime('-2 hours', $jamMasukDetik);
+            $tutupMasuk = strtotime('+3 hours', $jamMasukDetik);
+            $bukaPulang = strtotime('+4 hours', $jamMasukDetik);
+            $tutupPulang = strtotime('+7 hours', $jamPulangDetik);
+
+            // Kunci baris absensi staff hari ini (SELECT ... FOR UPDATE)
+            $checkStmt = $pdo->prepare("
+                SELECT id, time_in, time_out, status 
+                FROM staff_attendances 
+                WHERE staff_id = ? AND attendance_date = ? 
+                FOR UPDATE
+            ");
+            $checkStmt->execute([$staffId, $dateToday]);
+            $record = $checkStmt->fetch(PDO::FETCH_ASSOC);
+
+            $timeInEmpty = !$record || empty($record['time_in']) || $record['time_in'] === '00:00:00';
+            $timeOutEmpty = !$record || empty($record['time_out']) || $record['time_out'] === '00:00:00';
+
+            $scanDirection = '';
+            $badge = '';
+            $msg = '';
+
+            if ($timeNowSeconds <= $tutupMasuk) {
+                // Sesi Masuk
+                $scanDirection = 'masuk';
+                $statusKehadiran = ($timeNow > $jamTelatStr) ? 'terlambat' : 'tepat_waktu';
+                $badge = ($statusKehadiran === 'tepat_waktu') ? 'TEPAT WAKTU' : 'TERLAMBAT';
+
+                if (!$record) {
+                    $pdo->prepare("
+                        INSERT INTO staff_attendances 
+                        (staff_id, activity_id, attendance_date, time_in, scan_code, status) 
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ")->execute([$staffId, $activity['id'], $dateToday, $timeNow, "ESP32:{$deviceId}:{$scanCode}", $statusKehadiran]);
+                    $msg = "Absen Masuk Berhasil ({$badge})";
+                } elseif ($timeInEmpty) {
+                    $pdo->prepare("
+                        UPDATE staff_attendances 
+                        SET time_in = ?, scan_code = ?, status = ?, keterangan = NULL 
+                        WHERE id = ?
+                    ")->execute([$timeNow, "ESP32:{$deviceId}:{$scanCode}", $statusKehadiran, $record['id']]);
+                    $msg = "Absen Masuk Berhasil ({$badge})";
+                } else {
+                    $pdo->commit();
+                    apiResponse('already', "Anda sudah berhasil absen masuk hari ini ({$record['time_in']}).", [
+                        'name'      => $staff['name'],
+                        'user_type' => 'staff',
+                        'time_in'   => $record['time_in'],
+                        'led'       => 'green_solid',
+                        'beep'      => 1
+                    ]);
+                }
+            } else {
             // Sesi Pulang
             $scanDirection = 'pulang';
             $badge = 'PULANG';
@@ -300,7 +407,8 @@ try {
                     'beep'      => 1
                 ]);
             }
-        }
+        } // end of non-overnight else
+    } // end of isOvernight else
 
         // Catat ke log ESP32
         $pdo->prepare("
@@ -348,7 +456,15 @@ try {
         $studentUnit = (int)$student['unit_id'];
 
         $activity = getDeviceDailyActivity($pdo, $studentUnit, $dateToday, $dayCode);
-        if (!$activity || $activity['status'] !== 'active') {
+        $effSched = function_exists('getStudentEffectiveSchedule')
+            ? getStudentEffectiveSchedule($pdo, $studentId, $studentUnit, $dateToday, $dayCode)
+            : ['has_schedule' => false];
+
+        $studentInTime = ($effSched['has_schedule'] && !empty($effSched['student_in'])) ? $effSched['student_in'] : ($activity['student_in'] ?? null);
+        $studentLateTime = ($effSched['has_schedule'] && !empty($effSched['student_late'])) ? $effSched['student_late'] : ($activity['student_late'] ?? null);
+        $studentOutTime = ($effSched['has_schedule'] && !empty($effSched['student_out'])) ? $effSched['student_out'] : ($activity['student_out'] ?? null);
+
+        if (!$activity || $activity['status'] !== 'active' || empty($studentInTime) || empty($studentOutTime)) {
             $pdo->rollBack();
             $pdo->prepare("INSERT INTO iot_attendance_logs (device_id, unit_id, scan_type, scan_code, user_type, user_id, status, response_message) VALUES (?, ?, ?, ?, 'student', ?, 'error', 'Tidak ada jadwal KBM')")
                 ->execute([$deviceId, $device['unit_id'], $scanType, $scanCode, $studentId]);
@@ -361,8 +477,8 @@ try {
             ]);
         }
 
-        $jamMasukDetik = strtotime($activity['student_in']);
-        $jamPulangDetik = strtotime($activity['student_out']);
+        $jamMasukDetik = strtotime($studentInTime);
+        $jamPulangDetik = strtotime($studentOutTime);
         $tutupMasuk = strtotime('+3 hours', $jamMasukDetik);
 
         // Kunci baris absensi siswa hari ini
@@ -384,7 +500,7 @@ try {
 
         if ($timeNowSeconds <= $tutupMasuk) {
             $scanDirection = 'masuk';
-            $statusKehadiran = ($timeNow > $activity['student_late']) ? 'terlambat' : 'tepat_waktu';
+            $statusKehadiran = ($timeNow > $studentLateTime) ? 'terlambat' : 'tepat_waktu';
             $badge = ($statusKehadiran === 'tepat_waktu') ? 'TEPAT WAKTU' : 'TERLAMBAT';
 
             if (!$record) {

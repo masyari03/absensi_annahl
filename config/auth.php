@@ -75,3 +75,10 @@ if (!function_exists('currentRole')) {
         return $_SESSION['role'] ?? null;
     }
 }
+
+if (!function_exists('currentUserName')) {
+    function currentUserName()
+    {
+        return $_SESSION['name'] ?? $_SESSION['username'] ?? null;
+    }
+}

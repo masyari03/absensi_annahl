@@ -573,3 +573,631 @@ if (!function_exists('formatTimeAgo')) {
         return date('d/m/Y H:i', $time);
     }
 }
+
+// =========================================================================
+// SISTEM LOG AKTIVITAS & AUDIT TRAIL DATA DENGAN FITUR ROLLBACK
+// =========================================================================
+
+if (!function_exists('recordActivityAudit')) {
+    function recordActivityAudit(
+        PDO $pdo, 
+        string $module, 
+        string $action, 
+        string $tableName, 
+        $recordId, 
+        ?string $description = '', 
+        ?array $oldData = null, 
+        ?array $newData = null, 
+        ?int $unitId = null
+    ): ?int {
+        if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
+            @session_start();
+        }
+
+        if (empty($description)) {
+            $description = "$action pada $tableName #" . ($recordId ?: '-');
+        }
+
+        $userId = function_exists('currentUserId') ? (currentUserId() ?: null) : ($_SESSION['user_id'] ?? null);
+        $username = function_exists('currentUserName') ? (currentUserName() ?: 'System') : ($_SESSION['username'] ?? 'System');
+        $role = function_exists('currentRole') ? (currentRole() ?: 'system') : ($_SESSION['role'] ?? 'system');
+        $ip = function_exists('getClientIp') ? getClientIp() : ($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1');
+
+        // Jika unitId tidak diberikan, coba cari dari oldData atau newData
+        if ($unitId === null) {
+            $unitId = $oldData['unit_id'] ?? $newData['unit_id'] ?? null;
+        }
+
+        try {
+            $stmt = $pdo->prepare("
+                INSERT INTO activity_audit_logs 
+                (user_id, username, role, unit_id, module, action, table_name, record_id, description, old_data, new_data, ip_address, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            ");
+            $stmt->execute([
+                $userId,
+                $username,
+                $role,
+                $unitId ? (int)$unitId : null,
+                $module,
+                $action,
+                $tableName,
+                $recordId ? (int)$recordId : null,
+                $description,
+                $oldData ? json_encode($oldData, JSON_UNESCAPED_UNICODE) : null,
+                $newData ? json_encode($newData, JSON_UNESCAPED_UNICODE) : null,
+                $ip
+            ]);
+            return (int)$pdo->lastInsertId();
+        } catch (Exception $e) {
+            error_log('Audit Log Error: ' . $e->getMessage());
+            return null;
+        }
+    }
+}
+
+if (!function_exists('rollbackActivityAudit')) {
+    function rollbackActivityAudit(PDO $pdo, int $auditLogId, string $operator = 'Super Admin'): array
+    {
+        $stmt = $pdo->prepare("SELECT * FROM activity_audit_logs WHERE id = ?");
+        $stmt->execute([$auditLogId]);
+        $log = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$log) {
+            return ['success' => false, 'message' => 'Log aktivitas tidak ditemukan.'];
+        }
+
+        if ((int)$log['is_rolled_back'] === 1) {
+            return ['success' => false, 'message' => 'Aktivitas ini sudah pernah di-rollback sebelumnya pada ' . $log['rolled_back_at']];
+        }
+
+        $table = preg_replace('/[^a-zA-Z0-9_]/', '', $log['table_name']);
+        $action = $log['action'];
+        $oldData = !empty($log['old_data']) ? json_decode($log['old_data'], true) : null;
+        $newData = !empty($log['new_data']) ? json_decode($log['new_data'], true) : null;
+        $recordId = (int)$log['record_id'];
+
+        $pdo->beginTransaction();
+        try {
+            if ($action === 'DELETE') {
+                if (!$oldData || !is_array($oldData)) {
+                    throw new Exception('Data cadangan (snapshot lama) tidak tersedia untuk rollback penghapusan ini.');
+                }
+
+                // Cek apakah tabel memiliki deleted_at
+                $colsStmt = $pdo->query("SHOW COLUMNS FROM `{$table}` LIKE 'deleted_at'");
+                $hasDeletedAt = (bool)$colsStmt->fetch();
+
+                if ($hasDeletedAt && !empty($oldData['id'])) {
+                    // Coba cek apakah row masih ada tapi deleted_at terisi
+                    $checkRow = $pdo->prepare("SELECT id FROM `{$table}` WHERE id = ?");
+                    $checkRow->execute([$oldData['id']]);
+                    if ($checkRow->fetch()) {
+                        $pdo->prepare("UPDATE `{$table}` SET deleted_at = NULL WHERE id = ?")->execute([$oldData['id']]);
+                    } else {
+                        // Re-insert row
+                        $oldData['deleted_at'] = null;
+                        $fields = array_keys($oldData);
+                        $placeholders = implode(',', array_fill(0, count($fields), '?'));
+                        $colNames = implode('`,`', $fields);
+                        $stmtIns = $pdo->prepare("INSERT INTO `{$table}` (`{$colNames}`) VALUES ({$placeholders})");
+                        $stmtIns->execute(array_values($oldData));
+                    }
+                } else {
+                    // Re-insert row
+                    $fields = array_keys($oldData);
+                    $placeholders = implode(',', array_fill(0, count($fields), '?'));
+                    $colNames = implode('`,`', $fields);
+                    $stmtIns = $pdo->prepare("INSERT INTO `{$table}` (`{$colNames}`) VALUES ({$placeholders})");
+                    $stmtIns->execute(array_values($oldData));
+                }
+            } elseif ($action === 'BULK_DELETE') {
+                if (!$oldData || !is_array($oldData)) {
+                    throw new Exception('Data snapshot massal tidak ditemukan.');
+                }
+                foreach ($oldData as $item) {
+                    if (is_array($item)) {
+                        $fields = array_keys($item);
+                        $placeholders = implode(',', array_fill(0, count($fields), '?'));
+                        $colNames = implode('`,`', $fields);
+                        $stmtIns = $pdo->prepare("INSERT IGNORE INTO `{$table}` (`{$colNames}`) VALUES ({$placeholders})");
+                        $stmtIns->execute(array_values($item));
+                    }
+                }
+            } elseif ($action === 'UPDATE') {
+                if (!$oldData || !is_array($oldData)) {
+                    throw new Exception('Data snapshot sebelum perubahan tidak tersedia.');
+                }
+                $setClauses = [];
+                $params = [];
+                foreach ($oldData as $col => $val) {
+                    if ($col === 'id') continue;
+                    $setClauses[] = "`{$col}` = ?";
+                    $params[] = $val;
+                }
+                $params[] = $recordId ?: $oldData['id'];
+                $sqlUp = "UPDATE `{$table}` SET " . implode(', ', $setClauses) . " WHERE id = ?";
+                $pdo->prepare($sqlUp)->execute($params);
+            } elseif ($action === 'CREATE') {
+                // Rollback CREATE = hapus data yang baru dibuat
+                if ($recordId > 0) {
+                    $colsStmt = $pdo->query("SHOW COLUMNS FROM `{$table}` LIKE 'deleted_at'");
+                    if ($colsStmt->fetch()) {
+                        $pdo->prepare("UPDATE `{$table}` SET deleted_at = NOW() WHERE id = ?")->execute([$recordId]);
+                    } else {
+                        $pdo->prepare("DELETE FROM `{$table}` WHERE id = ?")->execute([$recordId]);
+                    }
+                }
+            }
+
+            // Tandai log ini sudah di-rollback
+            $stmtMark = $pdo->prepare("
+                UPDATE activity_audit_logs 
+                SET is_rolled_back = 1, rolled_back_at = NOW(), rolled_back_by = ? 
+                WHERE id = ?
+            ");
+            $stmtMark->execute([$operator, $auditLogId]);
+
+            // Catat log audit untuk tindakan rollback itu sendiri
+            $opUserId = function_exists('currentUserId') ? (currentUserId() ?: null) : ($_SESSION['user_id'] ?? null);
+            $opRole = function_exists('currentRole') ? (currentRole() ?: 'super_admin') : ($_SESSION['role'] ?? 'super_admin');
+            $opIp = function_exists('getClientIp') ? getClientIp() : ($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1');
+
+            $stmtLogRoll = $pdo->prepare("
+                INSERT INTO activity_audit_logs 
+                (user_id, username, role, unit_id, module, action, table_name, record_id, description, ip_address, created_at)
+                VALUES (?, ?, ?, ?, 'rollback', 'ROLLBACK', ?, ?, ?, ?, NOW())
+            ");
+            $stmtLogRoll->execute([
+                $opUserId,
+                $operator,
+                $opRole,
+                $log['unit_id'],
+                $table,
+                $recordId,
+                "Memulihkan (Rollback) aktivitas ID #{$auditLogId}: {$log['description']}",
+                $opIp
+            ]);
+
+            $pdo->commit();
+            return ['success' => true, 'message' => "Berhasil me-rollback data untuk: {$log['description']}"];
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            return ['success' => false, 'message' => 'Gagal melakukan rollback: ' . $e->getMessage()];
+        }
+    }
+}
+
+// =========================================================================
+// SISTEM CEK KONTROL ABSEN OTOMATIS (AUTO-ALPHA EXCLUSION)
+// =========================================================================
+
+if (!function_exists('isAutoAttendanceDisabled')) {
+    function isAutoAttendanceDisabled(
+        PDO $pdo, 
+        ?int $unitId = null, 
+        ?int $gradeId = null, 
+        ?int $classGroupId = null, 
+        ?int $studentId = null, 
+        ?int $staffId = null,
+        bool $forceReload = false
+    ): bool {
+        static $rulesCache = null;
+        if ($rulesCache === null || $forceReload) {
+            try {
+                $stmt = $pdo->query("SELECT scope_type, target_id FROM auto_attendance_exclusions WHERE is_disabled = 1");
+                $rulesCache = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Exception $e) {
+                $rulesCache = [];
+            }
+        }
+
+        foreach ($rulesCache as $r) {
+            $st = $r['scope_type'];
+            $tid = (int)$r['target_id'];
+
+            if ($st === 'global') return true;
+            if ($unitId !== null && $st === 'unit' && $tid === (int)$unitId) return true;
+            if ($gradeId !== null && $st === 'grade' && $tid === (int)$gradeId) return true;
+            if ($classGroupId !== null && $st === 'class_group' && $tid === (int)$classGroupId) return true;
+            if ($studentId !== null && $st === 'student' && $tid === (int)$studentId) return true;
+            if ($staffId !== null && $st === 'staff' && $tid === (int)$staffId) return true;
+        }
+
+        return false;
+    }
+}
+
+// =========================================================================
+// JADWAL EFEKTIF SISWA (REGULER, ESKUL, AKTIVITAS KHUSUS)
+// Aturan:
+// - Jam Masuk: ambil yang paling awal (min) jika ada beberapa jadwal
+// - Jam Pulang: ambil yang paling akhir (max) jika ada beberapa jadwal
+// =========================================================================
+if (!function_exists('getStudentEffectiveSchedule')) {
+    function getStudentEffectiveSchedule(PDO $pdo, int $studentId, int $unitId, string $dateToday, int $dayCode): array {
+        // 1. Ambil jadwal harian reguler dari activities atau weekly_schedules
+        $stmtAct = $pdo->prepare("SELECT * FROM activities WHERE activity_date = ? AND unit_id = ? AND status = 'active' AND is_holiday = 'no' ORDER BY id ASC");
+        $stmtAct->execute([$dateToday, $unitId]);
+        $activities = $stmtAct->fetchAll(PDO::FETCH_ASSOC);
+
+        $schedules = [];
+
+        if (!empty($activities)) {
+            foreach ($activities as $act) {
+                $schedules[] = [
+                    'source' => 'activity',
+                    'name' => $act['name'],
+                    'student_in' => $act['student_in'],
+                    'student_late' => $act['student_late'],
+                    'student_out' => $act['student_out']
+                ];
+            }
+        } else {
+            // Resolusi berjenjang jadwal reguler siswa: Subkelas -> Grade -> Seluruh Unit
+            $cgId = 0;
+            $gId = 0;
+            try {
+                $stmtEnroll = $pdo->prepare("
+                    SELECT se.class_group_id, cg.grade_id 
+                    FROM student_enrollments se 
+                    INNER JOIN class_groups cg ON cg.id = se.class_group_id
+                    WHERE se.student_id = ? AND se.status = 'active' 
+                    LIMIT 1
+                ");
+                $stmtEnroll->execute([$studentId]);
+                $enroll = $stmtEnroll->fetch(PDO::FETCH_ASSOC);
+                if ($enroll) {
+                    $cgId = (int)$enroll['class_group_id'];
+                    $gId = (int)$enroll['grade_id'];
+                }
+            } catch (Exception $e) {}
+
+            $stmtWeek = $pdo->prepare("
+                SELECT * FROM weekly_schedules 
+                WHERE unit_id = ? 
+                  AND day_code = ? 
+                  AND is_active = 'active' 
+                  AND (target_type = 'student' OR target_type IS NULL)
+                  AND (schedule_type = 'reguler' OR schedule_type IS NULL)
+                  AND (
+                      class_group_id = ?
+                      OR (grade_id = ? AND (class_group_id IS NULL OR class_group_id = 0))
+                      OR ((grade_id IS NULL OR grade_id = 0) AND (class_group_id IS NULL OR class_group_id = 0))
+                  )
+                ORDER BY 
+                  CASE 
+                    WHEN class_group_id = ? AND class_group_id > 0 THEN 1
+                    WHEN grade_id = ? AND grade_id > 0 THEN 2
+                    ELSE 3
+                  END ASC, 
+                  id DESC 
+                LIMIT 1
+            ");
+            $stmtWeek->execute([$unitId, $dayCode, $cgId, $gId, $cgId, $gId]);
+            $weekly = $stmtWeek->fetch(PDO::FETCH_ASSOC);
+
+            if (!$weekly) {
+                // Fallback untuk kompatibilitas data lama
+                $stmtFb = $pdo->prepare("SELECT * FROM weekly_schedules WHERE unit_id = ? AND day_code = ? AND (schedule_type = 'reguler' OR schedule_type IS NULL) AND is_active = 'active' ORDER BY id DESC LIMIT 1");
+                $stmtFb->execute([$unitId, $dayCode]);
+                $weekly = $stmtFb->fetch(PDO::FETCH_ASSOC);
+            }
+
+            if ($weekly) {
+                $schedules[] = [
+                    'source' => 'reguler',
+                    'name' => $weekly['name'] ?: 'KBM Reguler',
+                    'student_in' => $weekly['student_in'],
+                    'student_late' => $weekly['student_late'],
+                    'student_out' => $weekly['student_out']
+                ];
+            }
+        }
+
+        // 2. Ambil jadwal eskul siswa yang aktif pada hari ini
+        $stmtEskul = $pdo->prepare("
+            SELECT ws.* 
+            FROM weekly_schedules ws
+            INNER JOIN weekly_schedule_students wss ON wss.weekly_schedule_id = ws.id
+            WHERE wss.student_id = ? AND ws.day_code = ? AND ws.schedule_type = 'eskul' AND ws.is_active = 'active'
+        ");
+        $stmtEskul->execute([$studentId, $dayCode]);
+        $eskuls = $stmtEskul->fetchAll(PDO::FETCH_ASSOC);
+
+        $eskulNames = [];
+        foreach ($eskuls as $esk) {
+            $eskulNames[] = $esk['name'];
+            $schedules[] = [
+                'source' => 'eskul',
+                'name' => $esk['name'],
+                'student_in' => $esk['student_in'],
+                'student_late' => $esk['student_late'],
+                'student_out' => $esk['student_out']
+            ];
+        }
+
+        if (empty($schedules)) {
+            return [
+                'has_schedule' => false,
+                'student_in' => null,
+                'student_late' => null,
+                'student_out' => null,
+                'eskul_names' => []
+            ];
+        }
+
+        // 3. Tentukan jam masuk paling awal (min) dan jam pulang paling akhir (max)
+        $earliestIn = null;
+        $lateForEarliest = null;
+        $latestOut = null;
+        $earliestScheduleName = '';
+        $latestScheduleName = '';
+
+        foreach ($schedules as $s) {
+            if (!empty($s['student_in'])) {
+                if ($earliestIn === null || $s['student_in'] < $earliestIn) {
+                    $earliestIn = $s['student_in'];
+                    $lateForEarliest = $s['student_late'] ?? $s['student_in'];
+                    $earliestScheduleName = $s['name'];
+                }
+            }
+            if (!empty($s['student_out'])) {
+                if ($latestOut === null || $s['student_out'] > $latestOut) {
+                    $latestOut = $s['student_out'];
+                    $latestScheduleName = $s['name'];
+                }
+            }
+        }
+
+        return [
+            'has_schedule' => true,
+            'student_in' => $earliestIn,
+            'student_late' => $lateForEarliest,
+            'student_out' => $latestOut,
+            'earliest_schedule_name' => $earliestScheduleName,
+            'latest_schedule_name' => $latestScheduleName,
+            'has_eskul' => !empty($eskulNames),
+            'eskul_names' => $eskulNames,
+            'all_schedules' => $schedules
+        ];
+    }
+}
+
+// =========================================================================
+// JADWAL & SHIFT STAFF (TERMASUK SHIFT MALAM SECURITY CROSS-MIDNIGHT & ANTI-TABRAKAN)
+// =========================================================================
+if (!function_exists('getStaffShiftSchedule')) {
+    function getStaffShiftSchedule(PDO $pdo, int $staffId, int $unitId, int $dayCode, ?string $currentTime = null): array {
+        if ($currentTime === null) {
+            $currentTime = date('H:i:s');
+        }
+        $yesterday = date('Y-m-d', strtotime('-1 day'));
+        $today = date('Y-m-d');
+        $currentSeconds = strtotime($currentTime);
+
+        // 1. PRIORITAS 1: Cek apakah staff ini secara spesifik ditugaskan ke shift tertentu
+        if ($staffId > 0) {
+            $stmtAssigned = $pdo->prepare("
+                SELECT ws.* 
+                FROM weekly_schedules ws
+                INNER JOIN weekly_schedule_staff wss ON wss.weekly_schedule_id = ws.id
+                WHERE wss.staff_id = ? AND ws.day_code = ? AND ws.is_active = 'active'
+                LIMIT 1
+            ");
+            $stmtAssigned->execute([$staffId, $dayCode]);
+            $assignedSched = $stmtAssigned->fetch(PDO::FETCH_ASSOC);
+
+            if ($assignedSched) {
+                $isOvernight = !empty($assignedSched['is_overnight']) || ($assignedSched['staff_in'] > $assignedSched['staff_out']);
+                return [
+                    'has_schedule' => true,
+                    'id' => (int)$assignedSched['id'],
+                    'schedule_id' => (int)$assignedSched['id'],
+                    'is_overnight' => $isOvernight,
+                    'staff_in' => $assignedSched['staff_in'],
+                    'staff_late' => $assignedSched['staff_late'],
+                    'staff_out' => $assignedSched['staff_out'],
+                    'name' => $assignedSched['name'] ?: 'Shift Staff',
+                    'assignment_type' => 'specific_staff'
+                ];
+            }
+        }
+
+        // 2. PRIORITAS 2: Deteksi Status Presensi Nyata (Cegah Tabrakan Shift 1 vs Shift 2)
+        // A. Cek apakah ada sesi shift malam kemarin yang masih terbuka (belum scan pulang)
+        $hasYesterdayOpenNightShift = false;
+        if ($staffId > 0 && $currentSeconds >= strtotime('04:00:00') && $currentSeconds <= strtotime('12:00:00')) {
+            $stmtYestOpen = $pdo->prepare("
+                SELECT id FROM staff_attendances 
+                WHERE staff_id = ? AND attendance_date = ? 
+                  AND time_in IS NOT NULL AND time_in != '00:00:00'
+                  AND (time_out IS NULL OR time_out = '00:00:00')
+                LIMIT 1
+            ");
+            $stmtYestOpen->execute([$staffId, $yesterday]);
+            if ($stmtYestOpen->fetchColumn()) {
+                $hasYesterdayOpenNightShift = true;
+            }
+        }
+
+        if ($hasYesterdayOpenNightShift) {
+            // Ambil jadwal shift malam untuk unit ini
+            $stmtNight = $pdo->prepare("
+                SELECT * FROM weekly_schedules 
+                WHERE unit_id = ? AND is_active = 'active' AND (target_type = 'staff' OR target_type IS NULL)
+                  AND (is_overnight = 1 OR staff_in > staff_out)
+                ORDER BY id ASC LIMIT 1
+            ");
+            $stmtNight->execute([$unitId]);
+            $nightSched = $stmtNight->fetch(PDO::FETCH_ASSOC);
+            if ($nightSched) {
+                return [
+                    'has_schedule' => true,
+                    'id' => (int)$nightSched['id'],
+                    'schedule_id' => (int)$nightSched['id'],
+                    'is_overnight' => true,
+                    'staff_in' => $nightSched['staff_in'],
+                    'staff_late' => $nightSched['staff_late'],
+                    'staff_out' => $nightSched['staff_out'],
+                    'name' => $nightSched['name'] ?: 'Shift Malam Security',
+                    'assignment_type' => 'open_night_shift'
+                ];
+            }
+        }
+
+        // B. Cek apakah ada sesi shift siang hari ini yang sedang berjalan (sudah scan masuk, belum scan pulang)
+        $hasTodayOpenDayShift = false;
+        if ($staffId > 0 && $currentSeconds >= strtotime('15:00:00') && $currentSeconds <= strtotime('22:00:00')) {
+            $stmtTodayOpen = $pdo->prepare("
+                SELECT id FROM staff_attendances 
+                WHERE staff_id = ? AND attendance_date = ? 
+                  AND time_in IS NOT NULL AND time_in != '00:00:00'
+                  AND (time_out IS NULL OR time_out = '00:00:00')
+                LIMIT 1
+            ");
+            $stmtTodayOpen->execute([$staffId, $today]);
+            if ($stmtTodayOpen->fetchColumn()) {
+                $hasTodayOpenDayShift = true;
+            }
+        }
+
+        if ($hasTodayOpenDayShift) {
+            // Ambil jadwal shift siang (non-overnight) untuk unit ini
+            $stmtDay = $pdo->prepare("
+                SELECT * FROM weekly_schedules 
+                WHERE unit_id = ? AND day_code = ? AND is_active = 'active' AND (target_type = 'staff' OR target_type IS NULL)
+                  AND (is_overnight = 0 AND staff_in <= staff_out)
+                ORDER BY id ASC LIMIT 1
+            ");
+            $stmtDay->execute([$unitId, $dayCode]);
+            $daySched = $stmtDay->fetch(PDO::FETCH_ASSOC);
+            if ($daySched) {
+                return [
+                    'has_schedule' => true,
+                    'id' => (int)$daySched['id'],
+                    'schedule_id' => (int)$daySched['id'],
+                    'is_overnight' => false,
+                    'staff_in' => $daySched['staff_in'],
+                    'staff_late' => $daySched['staff_late'],
+                    'staff_out' => $daySched['staff_out'],
+                    'name' => $daySched['name'] ?: 'Shift Siang Security',
+                    'assignment_type' => 'open_day_shift'
+                ];
+            }
+        }
+
+        // 3. PRIORITAS 3: Berdasarkan Kedekatan Jam Kedatangan (Masuk Shift Terdekat)
+        $stmtAll = $pdo->prepare("
+            SELECT * FROM weekly_schedules 
+            WHERE unit_id = ? AND day_code = ? AND is_active = 'active' AND (target_type = 'staff' OR target_type IS NULL)
+            ORDER BY is_overnight ASC, id ASC
+        ");
+        $stmtAll->execute([$unitId, $dayCode]);
+        $allShifts = $stmtAll->fetchAll(PDO::FETCH_ASSOC);
+
+        if (empty($allShifts)) {
+            return [
+                'has_schedule' => false,
+                'id' => 0,
+                'schedule_id' => 0,
+                'is_overnight' => false,
+                'staff_in' => '07:00:00',
+                'staff_late' => '07:30:00',
+                'staff_out' => '16:00:00',
+                'name' => 'Default Staff'
+            ];
+        }
+
+        if (count($allShifts) === 1) {
+            $s = $allShifts[0];
+            $isOvernight = !empty($s['is_overnight']) || ($s['staff_in'] > $s['staff_out']);
+            return [
+                'has_schedule' => true,
+                'id' => (int)$s['id'],
+                'schedule_id' => (int)$s['id'],
+                'is_overnight' => $isOvernight,
+                'staff_in' => $s['staff_in'],
+                'staff_late' => $s['staff_late'],
+                'staff_out' => $s['staff_out'],
+                'name' => $s['name'] ?: 'Shift Staff'
+            ];
+        }
+
+        // Jika terdapat lebih dari 1 shift (misal Shift 1 Siang 06:00 vs Shift 2 Malam 18:00):
+        $selectedShift = null;
+        $minDiff = PHP_INT_MAX;
+
+        foreach ($allShifts as $s) {
+            $shiftInSec = strtotime($s['staff_in']);
+            $diff = abs($currentSeconds - $shiftInSec);
+            if ($diff > 43200) {
+                $diff = 86400 - $diff;
+            }
+            if ($diff < $minDiff) {
+                $minDiff = $diff;
+                $selectedShift = $s;
+            }
+        }
+
+        $s = $selectedShift ?: $allShifts[0];
+        $isOvernight = !empty($s['is_overnight']) || ($s['staff_in'] > $s['staff_out']);
+        return [
+            'has_schedule' => true,
+            'id' => (int)$s['id'],
+            'schedule_id' => (int)$s['id'],
+            'is_overnight' => $isOvernight,
+            'staff_in' => $s['staff_in'],
+            'staff_late' => $s['staff_late'],
+            'staff_out' => $s['staff_out'],
+            'name' => $s['name'] ?: 'Shift Staff'
+        ];
+    }
+}
+
+if (!function_exists('getDailyActivity')) {
+    function getDailyActivity(PDO $pdo, int $unitId, string $dateToday, int $dayCode, string $targetType = 'student'): ?array {
+        $stmt = $pdo->prepare("
+            SELECT * FROM activities 
+            WHERE activity_date = ? AND unit_id = ? 
+              AND (target_type = ? OR target_type = 'all' OR target_type IS NULL) 
+            ORDER BY (target_type = ?) DESC, id ASC 
+            LIMIT 1
+        ");
+        $stmt->execute([$dateToday, $unitId, $targetType, $targetType]);
+        $activity = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$activity) {
+            $stmtWeek = $pdo->prepare("
+                SELECT * FROM weekly_schedules 
+                WHERE day_code = ? AND unit_id = ? AND is_active = 'active' 
+                  AND (target_type = ? OR target_type IS NULL) 
+                  AND (schedule_type = 'reguler' OR schedule_type IS NULL) 
+                ORDER BY (grade_id IS NULL AND class_group_id IS NULL) DESC, id ASC 
+                LIMIT 1
+            ");
+            $stmtWeek->execute([$dayCode, $unitId, $targetType]);
+            $weekly = $stmtWeek->fetch(PDO::FETCH_ASSOC);
+            
+            if ($weekly) {
+                $stmtAy = $pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1");
+                $ay = $stmtAy->fetch(PDO::FETCH_ASSOC);
+                $ayId = $ay ? $ay['id'] : 1;
+
+                $insertAct = $pdo->prepare("
+                    INSERT INTO activities 
+                    (academic_year_id, unit_id, target_type, name, activity_date, student_in, student_late, student_out, staff_in, staff_late, staff_out, status) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                ");
+                $insertAct->execute([
+                    $ayId, $unitId, $targetType, "Jadwal Reguler", $dateToday, 
+                    $weekly['student_in'], $weekly['student_late'], $weekly['student_out'], 
+                    $weekly['staff_in'], $weekly['staff_late'], $weekly['staff_out']
+                ]);
+                $stmt->execute([$dateToday, $unitId, $targetType, $targetType]);
+                $activity = $stmt->fetch(PDO::FETCH_ASSOC);
+            }
+        }
+        return $activity ?: null;
+    }
+}
