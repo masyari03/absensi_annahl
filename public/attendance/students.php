@@ -99,18 +99,25 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['quick_record_
         $enrId = (int)$enrData['id'];
         $sUnitId = (int)$enrData['unit_id'];
 
-        // Cek batasan hak akses unit untuk Kepala Sekolah
-        if ($currentRole === 'kepala_sekolah') {
-            $stmtCheckUnit = $pdo->prepare("SELECT 1 FROM admin_unit_permissions WHERE user_id = ? AND unit_id = ? LIMIT 1");
-            $stmtCheckUnit->execute([$userId, $sUnitId]);
-            $isUnitAllowed = (bool)$stmtCheckUnit->fetchColumn();
-            if (!$isUnitAllowed) {
-                $stmtCheckStaffUnit = $pdo->prepare("SELECT 1 FROM staff WHERE user_id = ? AND unit_id = ? LIMIT 1");
-                $stmtCheckStaffUnit->execute([$userId, $sUnitId]);
-                $isUnitAllowed = (bool)$stmtCheckStaffUnit->fetchColumn();
-            }
-            if (!$isUnitAllowed) {
-                flash('error', 'Anda hanya memiliki wewenang mencatat kehadiran siswa di unit sekolah Anda.');
+        // Cek batasan hak akses jika bukan Super Admin (Kepala Sekolah, Admin Pemantau, atau Guru)
+        if ($currentRole !== 'super_admin') {
+            $stmtCheckAccess = $pdo->prepare("
+                SELECT 1 
+                FROM students s
+                INNER JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
+                INNER JOIN class_groups cg ON cg.id = se.class_group_id
+                INNER JOIN grades g ON g.id = cg.grade_id
+                WHERE s.id = ? AND (
+                    g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)
+                    OR g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?)
+                    OR cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?)
+                    OR g.unit_id IN (SELECT unit_id FROM staff WHERE user_id = ? AND unit_id IS NOT NULL)
+                )
+                LIMIT 1
+            ");
+            $stmtCheckAccess->execute([$stuId, $userId, $userId, $userId, $userId]);
+            if (!$stmtCheckAccess->fetchColumn()) {
+                flash('error', 'Anda hanya memiliki wewenang mencatat kehadiran siswa sesuai hak akses yang diberikan.');
                 redirect('students.php?' . http_build_query($_GET));
                 exit;
             }
@@ -280,8 +287,45 @@ if ($currentRole === 'super_admin') {
     $stmtCg = $pdo->prepare("SELECT cg.id, cg.name, g.grade FROM class_groups cg INNER JOIN grades g ON g.id = cg.grade_id WHERE g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?) OR g.unit_id = ? ORDER BY g.sort_order, cg.name");
     $stmtCg->execute([$userId, $unitId]);
     $classGroups = $stmtCg->fetchAll();
+} elseif ($currentRole === 'admin') {
+    // Role Admin Pemantau: Ambil grade dan class yang diberikan oleh Super Admin atau Kepala Sekolah
+    $stmtAdminUnit = $pdo->prepare("
+        SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? 
+        UNION 
+        SELECT unit_id FROM staff WHERE user_id = ? AND unit_id IS NOT NULL
+        UNION
+        SELECT g.unit_id FROM grades g INNER JOIN admin_grade_permissions agp ON agp.grade_id = g.id WHERE agp.user_id = ?
+        UNION
+        SELECT g.unit_id FROM class_groups cg INNER JOIN admin_class_permissions acp ON acp.class_group_id = cg.id INNER JOIN grades g ON g.id = cg.grade_id WHERE acp.user_id = ?
+        LIMIT 1
+    ");
+    $stmtAdminUnit->execute([$userId, $userId, $userId, $userId]);
+    $unitId = (int)($stmtAdminUnit->fetchColumn() ?: 0);
+
+    // Ambil grade yang diizinkan untuk Admin Pemantau
+    $stmtG = $pdo->prepare("
+        SELECT DISTINCT g.* FROM grades g 
+        WHERE g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?)
+           OR g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)
+           OR g.id IN (SELECT cg.grade_id FROM class_groups cg INNER JOIN admin_class_permissions acp ON acp.class_group_id = cg.id WHERE acp.user_id = ?)
+        ORDER BY g.sort_order, g.grade
+    ");
+    $stmtG->execute([$userId, $userId, $userId]);
+    $grades = $stmtG->fetchAll();
+
+    // Ambil subkelas yang diizinkan untuk Admin Pemantau
+    $stmtC = $pdo->prepare("
+        SELECT DISTINCT cg.id, cg.name, g.grade FROM class_groups cg
+        INNER JOIN grades g ON g.id = cg.grade_id
+        WHERE cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?)
+           OR g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?)
+           OR g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)
+        ORDER BY g.sort_order, cg.name
+    ");
+    $stmtC->execute([$userId, $userId, $userId]);
+    $classGroups = $stmtC->fetchAll();
 } else {
-    // Role staff / admin (Guru / Petugas Piket)
+    // Role staff (Guru)
     $stmtStaffUnit = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? UNION SELECT unit_id FROM staff WHERE user_id = ? AND unit_id IS NOT NULL LIMIT 1");
     $stmtStaffUnit->execute([$userId, $userId]);
     $sUnit = $stmtStaffUnit->fetchColumn();
@@ -482,7 +526,7 @@ if ($currentRole === 'super_admin') {
         FROM users u
         LEFT JOIN staff s ON s.user_id = u.id
         LEFT JOIN units un ON un.id = s.unit_id
-        WHERE u.deleted_at IS NULL AND u.role IN ('staff', 'admin')
+        WHERE u.deleted_at IS NULL AND u.role = 'staff'
         ORDER BY un.id ASC, u.name ASC
     ")->fetchAll(PDO::FETCH_ASSOC);
 }
@@ -496,7 +540,7 @@ require '../../includes/header.php';
     <div style="padding: 16px 20px;">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
             <h4 style="margin: 0; font-size: 14.5px; color: #1e293b; font-weight: 700;">
-                <i class="fa-solid fa-user-shield" style="color: #0284c7; margin-right: 6px;"></i> Pengaturan Hak Akses Absensi (Kepala Sekolah & Guru Petugas Piket)
+                <i class="fa-solid fa-user-shield" style="color: #0284c7; margin-right: 6px;"></i> Pengaturan Hak Akses Absensi (Kepala Sekolah, Admin Pemantau & Guru Petugas Piket)
             </h4>
             <button type="button" class="btn btn-sm btn-primary" onclick="openOfficerModal()" style="display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 6px; box-shadow: 0 2px 4px rgba(2,132,199,0.25);">
                 <i class="fa-solid fa-user-gear"></i> Kelola Guru Berwenang (Aksi Hadir / Piket)
@@ -524,7 +568,7 @@ require '../../includes/header.php';
                 </button>
             </form>
             <span style="font-size: 11.5px; color: #0369a1; background: #e0f2fe; padding: 5px 10px; border-radius: 6px; border: 1px solid #bae6fd;">
-                <i class="fa-solid fa-circle-check"></i> Kepala Sekolah otomatis memiliki wewenang aksi Hadir/Piket untuk unitnya.
+                <i class="fa-solid fa-circle-check"></i> Kepala Sekolah & Admin Pemantau otomatis memiliki wewenang aksi Hadir/Piket sesuai unit/kelas yang diberikan.
             </span>
         </div>
     </div>
@@ -538,7 +582,7 @@ require '../../includes/header.php';
                 <h3 style="margin: 0; font-size: 16px; color: #0f172a; font-weight: 700;">
                     <i class="fa-solid fa-user-check" style="color: #0284c7; margin-right: 6px;"></i> Berikan Wewenang Guru untuk Aksi Hadir / Piket
                 </h3>
-                <small style="color: #64748b;">Centang guru/staff tertentu yang diberi akses tombol Aksi Hadir / Absensi Cepat siswa terlewat.</small>
+                <small style="color: #64748b;">Centang guru (role staff) tertentu yang diberi akses tombol Aksi Hadir / Absensi Cepat siswa terlewat. (Kepala Sekolah & Admin Pemantau otomatis berhak sesuai unit/kelas yang diberikan).</small>
             </div>
             <button type="button" onclick="closeOfficerModal()" style="border: none; background: transparent; font-size: 20px; color: #94a3b8; cursor: pointer; padding: 0 6px;">&times;</button>
         </div>
@@ -664,7 +708,7 @@ function selectAllOfficers(checked) {
             </div>
             <?php endif; ?>
 
-            <?php if (in_array($currentRole, ['super_admin', 'kepala_sekolah'])): ?>
+            <?php if (in_array($currentRole, ['super_admin', 'kepala_sekolah', 'admin'])): ?>
             <div class="form-group">
                 <label>Grade</label>
                 <select name="grade_id">
@@ -750,18 +794,18 @@ function selectAllOfficers(checked) {
 <?php endif; ?>
 
 <div class="card">
+    <?php if ($canDelete): ?>
     <form method="POST" id="bulkDeleteForm" onsubmit="return confirmBulkDelete(event)">
         <input type="hidden" name="bulk_delete" value="1">
-        
-        <?php if ($canDelete): ?>
         <div style="padding: 15px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: flex-start;">
             <button type="submit" class="btn" style="background-color: #ef4444; color: white; font-size: 13px;">
                 🗑️ Hapus Data Terpilih
             </button>
         </div>
-        <?php endif; ?>
+    </form>
+    <?php endif; ?>
 
-        <div class="table-wrapper">
+    <div class="table-wrapper">
             <table>
                 <thead>
                     <tr>
@@ -799,7 +843,7 @@ function selectAllOfficers(checked) {
                         <?php if ($canDelete): ?>
                         <td style="text-align: center;">
                             <?php if ($hasRecord): ?>
-                                <input type="checkbox" name="attendance_ids[]" value="<?= $attendance['id'] ?>" class="checkItem">
+                                <input type="checkbox" name="attendance_ids[]" value="<?= $attendance['id'] ?>" class="checkItem" form="bulkDeleteForm">
                             <?php else: ?>
                                 <span style="color: #cbd5e1;">-</span>
                             <?php endif; ?>
@@ -900,7 +944,6 @@ function selectAllOfficers(checked) {
                 </tbody>
             </table>
         </div>
-    </form>
 </div>
 
 <script>
@@ -912,15 +955,28 @@ document.getElementById('selectAll')?.addEventListener('change', function(e) {
 
 // Konfirmasi Hapus Massal
 function confirmBulkDelete(e) {
-    let checked = document.querySelectorAll('.checkItem:checked').length;
-    if (checked === 0) {
+    let checked = document.querySelectorAll('.checkItem:checked');
+    if (checked.length === 0) {
         alert('Pilih minimal satu data absensi untuk dihapus.');
         e.preventDefault();
         return false;
     }
-    if(!confirm('Yakin ingin menghapus ' + checked + ' data absensi terpilih secara permanen?')) {
+    if (!confirm('Yakin ingin menghapus ' + checked.length + ' data absensi terpilih secara permanen?')) {
         e.preventDefault();
         return false;
+    }
+    // Safeguard lintas browser: pastikan semua ID yang dicentang terlampir pada form
+    const form = document.getElementById('bulkDeleteForm');
+    if (form) {
+        form.querySelectorAll('input[data-dynamic-id="1"]').forEach(el => el.remove());
+        checked.forEach(cb => {
+            let hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = 'attendance_ids[]';
+            hidden.value = cb.value;
+            hidden.setAttribute('data-dynamic-id', '1');
+            form.appendChild(hidden);
+        });
     }
     return true;
 }

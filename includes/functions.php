@@ -268,12 +268,11 @@ if (!function_exists('getStudentAccessCondition')) {
  */
 if (!function_exists('canExecuteQuickAttendance')) {
     function canExecuteQuickAttendance(PDO $pdo, int $userId, string $role): bool {
-        if ($role === 'super_admin') {
+        // Super Admin, Kepala Sekolah, dan Admin Pemantau otomatis berhak sesuai lingkup aksesnya
+        if ($role === 'super_admin' || $role === 'kepala_sekolah' || $role === 'admin') {
             return true;
         }
-        if ($role === 'kepala_sekolah') {
-            return true;
-        }
+        // Guru / Staff / role lain: periksa izin khusus yang diberikan Super Admin
         try {
             $stmt = $pdo->prepare("SELECT 1 FROM officer_attendance_permissions WHERE user_id = ? LIMIT 1");
             $stmt->execute([$userId]);
