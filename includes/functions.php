@@ -841,25 +841,36 @@ if (!function_exists('isAutoAttendanceDisabled')) {
 // =========================================================================
 if (!function_exists('getStudentEffectiveSchedule')) {
     function getStudentEffectiveSchedule(PDO $pdo, int $studentId, int $unitId, string $dateToday, int $dayCode): array {
-        // 1. Ambil jadwal harian reguler dari activities atau weekly_schedules
-        $stmtAct = $pdo->prepare("SELECT * FROM activities WHERE activity_date = ? AND unit_id = ? AND status = 'active' AND is_holiday = 'no' ORDER BY id ASC");
+        // 1. Cek apakah ada Activity Khusus buatan admin (bukan placeholder KBM otomatis)
+        // Aturan: Ketika ada activities khusus, jadwal pekanan tidak dianggap.
+        // Ketika activities kosong/hanya placeholder, maka jadwal pekanan diutamakan.
+        $stmtAct = $pdo->prepare("
+            SELECT * FROM activities 
+            WHERE activity_date = ? AND unit_id = ? AND status = 'active' AND is_holiday = 'no' 
+              AND (target_type = 'student' OR target_type = 'all' OR target_type IS NULL)
+              AND (is_auto_generated = 0 AND name NOT IN ('KBM Reguler', 'Jadwal Reguler Siswa', 'Jadwal Reguler Staff & Guru'))
+            ORDER BY id DESC LIMIT 1
+        ");
         $stmtAct->execute([$dateToday, $unitId]);
-        $activities = $stmtAct->fetchAll(PDO::FETCH_ASSOC);
+        $customActivity = $stmtAct->fetch(PDO::FETCH_ASSOC);
 
         $schedules = [];
 
-        if (!empty($activities)) {
-            foreach ($activities as $act) {
-                $schedules[] = [
-                    'source' => 'activity',
-                    'name' => $act['name'],
-                    'student_in' => $act['student_in'],
-                    'student_late' => $act['student_late'],
-                    'student_out' => $act['student_out']
-                ];
-            }
+        if ($customActivity && !empty($customActivity['student_in']) && $customActivity['student_in'] !== '00:00:00') {
+            // JIKA ADA ACTIVITY KHUSUS: Gunakan Activity, jadwal pekanan tidak dianggap
+            $lateTime = (!empty($customActivity['student_late']) && $customActivity['student_late'] !== '00:00:00')
+                ? $customActivity['student_late']
+                : date('H:i:s', strtotime('+15 minutes', strtotime($customActivity['student_in'])));
+
+            $schedules[] = [
+                'source' => 'activity',
+                'name' => $customActivity['name'],
+                'student_in' => $customActivity['student_in'],
+                'student_late' => $lateTime,
+                'student_out' => $customActivity['student_out']
+            ];
         } else {
-            // Resolusi berjenjang jadwal reguler siswa: Subkelas -> Grade -> Seluruh Unit
+            // JIKA ACTIVITIES KOSONG / HANYA PLACEHOLDER: JADWAL PEKANAN DIUTAMAKAN
             $cgId = 0;
             $gId = 0;
             try {
@@ -903,20 +914,42 @@ if (!function_exists('getStudentEffectiveSchedule')) {
             $weekly = $stmtWeek->fetch(PDO::FETCH_ASSOC);
 
             if (!$weekly) {
-                // Fallback untuk kompatibilitas data lama
+                // Fallback unit umum
                 $stmtFb = $pdo->prepare("SELECT * FROM weekly_schedules WHERE unit_id = ? AND day_code = ? AND (schedule_type = 'reguler' OR schedule_type IS NULL) AND is_active = 'active' ORDER BY id DESC LIMIT 1");
                 $stmtFb->execute([$unitId, $dayCode]);
                 $weekly = $stmtFb->fetch(PDO::FETCH_ASSOC);
             }
 
-            if ($weekly) {
+            if ($weekly && !empty($weekly['student_in']) && $weekly['student_in'] !== '00:00:00') {
+                $lateTime = (!empty($weekly['student_late']) && $weekly['student_late'] !== '00:00:00')
+                    ? $weekly['student_late']
+                    : date('H:i:s', strtotime('+15 minutes', strtotime($weekly['student_in'])));
+
                 $schedules[] = [
                     'source' => 'reguler',
                     'name' => $weekly['name'] ?: 'KBM Reguler',
                     'student_in' => $weekly['student_in'],
-                    'student_late' => $weekly['student_late'],
+                    'student_late' => $lateTime,
                     'student_out' => $weekly['student_out']
                 ];
+            } else {
+                // Fallback terakhir jika weekly belum diatur sama sekali tapi ada data activities
+                $stmtFallbackAct = $pdo->prepare("SELECT * FROM activities WHERE activity_date = ? AND unit_id = ? AND status = 'active' AND is_holiday = 'no' ORDER BY id DESC LIMIT 1");
+                $stmtFallbackAct->execute([$dateToday, $unitId]);
+                $fbAct = $stmtFallbackAct->fetch(PDO::FETCH_ASSOC);
+                if ($fbAct && !empty($fbAct['student_in']) && $fbAct['student_in'] !== '00:00:00') {
+                    $lateTime = (!empty($fbAct['student_late']) && $fbAct['student_late'] !== '00:00:00')
+                        ? $fbAct['student_late']
+                        : date('H:i:s', strtotime('+15 minutes', strtotime($fbAct['student_in'])));
+
+                    $schedules[] = [
+                        'source' => 'activity_fallback',
+                        'name' => $fbAct['name'],
+                        'student_in' => $fbAct['student_in'],
+                        'student_late' => $lateTime,
+                        'student_out' => $fbAct['student_out']
+                    ];
+                }
             }
         }
 
@@ -933,11 +966,15 @@ if (!function_exists('getStudentEffectiveSchedule')) {
         $eskulNames = [];
         foreach ($eskuls as $esk) {
             $eskulNames[] = $esk['name'];
+            $eskLate = (!empty($esk['student_late']) && $esk['student_late'] !== '00:00:00')
+                ? $esk['student_late']
+                : date('H:i:s', strtotime('+15 minutes', strtotime($esk['student_in'])));
+
             $schedules[] = [
                 'source' => 'eskul',
                 'name' => $esk['name'],
                 'student_in' => $esk['student_in'],
-                'student_late' => $esk['student_late'],
+                'student_late' => $eskLate,
                 'student_out' => $esk['student_out']
             ];
         }
@@ -960,14 +997,17 @@ if (!function_exists('getStudentEffectiveSchedule')) {
         $latestScheduleName = '';
 
         foreach ($schedules as $s) {
-            if (!empty($s['student_in'])) {
+            if (!empty($s['student_in']) && $s['student_in'] !== '00:00:00') {
                 if ($earliestIn === null || $s['student_in'] < $earliestIn) {
                     $earliestIn = $s['student_in'];
-                    $lateForEarliest = $s['student_late'] ?? $s['student_in'];
+                    $late = (!empty($s['student_late']) && $s['student_late'] !== '00:00:00') 
+                        ? $s['student_late'] 
+                        : date('H:i:s', strtotime('+15 minutes', strtotime($earliestIn)));
+                    $lateForEarliest = $late;
                     $earliestScheduleName = $s['name'];
                 }
             }
-            if (!empty($s['student_out'])) {
+            if (!empty($s['student_out']) && $s['student_out'] !== '00:00:00') {
                 if ($latestOut === null || $s['student_out'] > $latestOut) {
                     $latestOut = $s['student_out'];
                     $latestScheduleName = $s['name'];
@@ -980,6 +1020,7 @@ if (!function_exists('getStudentEffectiveSchedule')) {
             'student_in' => $earliestIn,
             'student_late' => $lateForEarliest,
             'student_out' => $latestOut,
+            'schedule_name' => $earliestScheduleName,
             'earliest_schedule_name' => $earliestScheduleName,
             'latest_schedule_name' => $latestScheduleName,
             'has_eskul' => !empty($eskulNames),

@@ -44,7 +44,7 @@ function runAutoAlpha($pdo, $unitId, $dateToday, $activityId, $excludeStudentId 
         $stmtSiswa->execute([$unitId, $dateToday]);
         $unmarkedStudents = $stmtSiswa->fetchAll(PDO::FETCH_ASSOC);
 
-        $insSiswa = $pdo->prepare("INSERT IGNORE INTO student_attendances (student_id, enrollment_id, activity_id, attendance_date, status, keterangan) VALUES (?, ?, ?, ?, 'terlambat', 'Otomatis (Belum Absen Masuk)')");
+        $insSiswa = $pdo->prepare("INSERT IGNORE INTO student_attendances (student_id, enrollment_id, activity_id, attendance_date, status, keterangan) VALUES (?, ?, ?, ?, 'alpha', 'Otomatis (Tidak Hadir / Alpha)')");
         foreach ($unmarkedStudents as $st) {
             if (function_exists('isAutoAttendanceDisabled') && isAutoAttendanceDisabled($pdo, (int)$unitId, (int)$st['grade_id'], (int)$st['class_group_id'], (int)$st['id'])) {
                 continue;
@@ -78,7 +78,7 @@ function runAutoAlpha($pdo, $unitId, $dateToday, $activityId, $excludeStudentId 
         $stmtStaff->execute([$unitId, $dateToday]);
         $unmarkedStaff = $stmtStaff->fetchAll(PDO::FETCH_ASSOC);
 
-        $insStaff = $pdo->prepare("INSERT IGNORE INTO staff_attendances (staff_id, activity_id, attendance_date, status, keterangan) VALUES (?, ?, ?, 'terlambat', 'Otomatis (Belum Absen Masuk)')");
+        $insStaff = $pdo->prepare("INSERT IGNORE INTO staff_attendances (staff_id, activity_id, attendance_date, status, keterangan) VALUES (?, ?, ?, 'alpha', 'Otomatis (Tidak Hadir / Alpha)')");
         foreach ($unmarkedStaff as $stf) {
             if (function_exists('isAutoAttendanceDisabled') && isAutoAttendanceDisabled($pdo, (int)$unitId, null, null, null, (int)$stf['id'])) {
                 continue;
@@ -91,83 +91,102 @@ function runAutoAlpha($pdo, $unitId, $dateToday, $activityId, $excludeStudentId 
 // FUNGSI MENGAMBIL JADWAL AKTIVITAS (MEMBEDAKAN SISWA VS STAFF)
 if (!function_exists('getDailyActivity')) {
     function getDailyActivity($pdo, $unitId, $dateToday, $dayCode, $targetType = 'student') {
+        // 1. Cek apakah ada Activity Khusus buatan admin (bukan placeholder KBM otomatis)
+        // Aturan: Ketika ada activities khusus, jadwal pekanan tidak dianggap.
         $stmt = $pdo->prepare("
             SELECT * FROM activities 
             WHERE activity_date = ? AND unit_id = ? 
               AND (target_type = ? OR target_type = 'all' OR target_type IS NULL) 
-            ORDER BY (target_type = ?) DESC, id ASC 
+              AND status = 'active' AND is_holiday = 'no'
+              AND (is_auto_generated = 0 AND name NOT IN ('KBM Reguler', 'Jadwal Reguler Siswa', 'Jadwal Reguler Staff & Guru'))
+            ORDER BY id DESC 
             LIMIT 1
         ");
-        $stmt->execute([$dateToday, $unitId, $targetType, $targetType]);
-        $activity = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stmt->execute([$dateToday, $unitId, $targetType]);
+        $customActivity = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if (!$activity) {
-            $stmtWeek = $pdo->prepare("
+        if ($customActivity) {
+            return $customActivity;
+        }
+
+        // 2. Jika activities kosong (tidak ada kegiatan khusus): JADWAL PEKANAN DIUTAMAKAN
+        $stmtWeek = $pdo->prepare("
+            SELECT * FROM weekly_schedules 
+            WHERE day_code = ? AND unit_id = ? AND is_active = 'active' 
+              AND (target_type = ? OR target_type IS NULL) 
+              AND (schedule_type = 'reguler' OR schedule_type IS NULL) 
+            ORDER BY (grade_id IS NULL AND class_group_id IS NULL) DESC, id ASC 
+            LIMIT 1
+        ");
+        $stmtWeek->execute([$dayCode, $unitId, $targetType]);
+        $weekly = $stmtWeek->fetch(PDO::FETCH_ASSOC);
+
+        if (!$weekly && $targetType === 'staff') {
+            $stmtFallback = $pdo->prepare("
                 SELECT * FROM weekly_schedules 
                 WHERE day_code = ? AND unit_id = ? AND is_active = 'active' 
-                  AND (target_type = ? OR target_type IS NULL) 
-                  AND (schedule_type = 'reguler' OR schedule_type IS NULL) 
-                ORDER BY (grade_id IS NULL AND class_group_id IS NULL) DESC, id ASC 
-                LIMIT 1
+                  AND (staff_in IS NOT NULL AND staff_in != '00:00:00')
+                ORDER BY id ASC LIMIT 1
             ");
-            $stmtWeek->execute([$dayCode, $unitId, $targetType]);
-            $weekly = $stmtWeek->fetch(PDO::FETCH_ASSOC);
+            $stmtFallback->execute([$dayCode, $unitId]);
+            $weekly = $stmtFallback->fetch(PDO::FETCH_ASSOC);
+        }
 
-            // Fallback 1: Jika staff tapi belum ada target_type = 'staff', cari jadwal legacy dengan staff_in valid
-            if (!$weekly && $targetType === 'staff') {
-                $stmtFallback = $pdo->prepare("
-                    SELECT * FROM weekly_schedules 
-                    WHERE day_code = ? AND unit_id = ? AND is_active = 'active' 
-                      AND (staff_in IS NOT NULL AND staff_in != '00:00:00')
-                    ORDER BY id ASC LIMIT 1
-                ");
-                $stmtFallback->execute([$dayCode, $unitId]);
-                $weekly = $stmtFallback->fetch(PDO::FETCH_ASSOC);
-            }
+        $studentIn = $weekly['student_in'] ?? '06:30:00';
+        $studentLate = (!empty($weekly['student_late']) && $weekly['student_late'] !== '00:00:00') 
+            ? $weekly['student_late'] 
+            : date('H:i:s', strtotime('+15 minutes', strtotime($studentIn)));
+        $studentOut = $weekly['student_out'] ?? '15:30:00';
 
-            // Fallback 2: Jika masih kosong untuk staff, ambil template hari lain di unit yang sama atau default jam kerja
-            if (!$weekly && $targetType === 'staff') {
-                $stmtAny = $pdo->prepare("
-                    SELECT * FROM weekly_schedules 
-                    WHERE unit_id = ? AND is_active = 'active' 
-                      AND (target_type = 'staff' OR (staff_in IS NOT NULL AND staff_in != '00:00:00'))
-                    ORDER BY id ASC LIMIT 1
-                ");
-                $stmtAny->execute([$unitId]);
-                $anyStaff = $stmtAny->fetch(PDO::FETCH_ASSOC);
+        $staffIn = $weekly['staff_in'] ?? '06:45:00';
+        $staffLate = (!empty($weekly['staff_late']) && $weekly['staff_late'] !== '00:00:00') 
+            ? $weekly['staff_late'] 
+            : '07:00:00';
+        $staffOut = $weekly['staff_out'] ?? '15:30:00';
 
-                $weekly = [
-                    'student_in'   => '00:00:00',
-                    'student_late' => '00:00:00',
-                    'student_out'  => '00:00:00',
-                    'staff_in'     => $anyStaff['staff_in'] ?? '06:45:00',
-                    'staff_late'   => $anyStaff['staff_late'] ?? '07:00:00',
-                    'staff_out'    => $anyStaff['staff_out'] ?? '15:30:00',
-                    'name'         => 'Jadwal Reguler Staff'
-                ];
-            }
-            
-            if ($weekly) {
-                $stmtAy = $pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1");
-                $ay = $stmtAy->fetch(PDO::FETCH_ASSOC);
-                $ayId = $ay ? $ay['id'] : 1;
+        // Pastikan placeholder di tabel activities ada & aktif untuk foreign key activity_id
+        $stmtExist = $pdo->prepare("
+            SELECT * FROM activities 
+            WHERE activity_date = ? AND unit_id = ? 
+              AND (target_type = ? OR target_type = 'all' OR target_type IS NULL)
+            ORDER BY id DESC LIMIT 1
+        ");
+        $stmtExist->execute([$dateToday, $unitId, $targetType]);
+        $activity = $stmtExist->fetch(PDO::FETCH_ASSOC);
 
-                $actName = ($targetType === 'staff') ? "Jadwal Reguler Staff & Guru" : "Jadwal Reguler Siswa";
+        if (!$activity) {
+            $stmtAy = $pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1");
+            $ay = $stmtAy->fetch(PDO::FETCH_ASSOC);
+            $ayId = (int)($ay ? $ay['id'] : 1);
+            $actName = ($targetType === 'staff') ? "Jadwal Reguler Staff & Guru" : "KBM Reguler";
 
-                $insertAct = $pdo->prepare("
-                    INSERT INTO activities 
-                    (academic_year_id, unit_id, target_type, name, activity_date, student_in, student_late, student_out, staff_in, staff_late, staff_out, status) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
-                ");
-                $insertAct->execute([
-                    $ayId, $unitId, $targetType, $actName, $dateToday, 
-                    $weekly['student_in'] ?? '00:00:00', $weekly['student_late'] ?? '00:00:00', $weekly['student_out'] ?? '00:00:00', 
-                    $weekly['staff_in'] ?? '06:45:00', $weekly['staff_late'] ?? '07:00:00', $weekly['staff_out'] ?? '15:30:00'
-                ]);
-                $stmt->execute([$dateToday, $unitId, $targetType, $targetType]);
-                $activity = $stmt->fetch(PDO::FETCH_ASSOC);
+            $insertAct = $pdo->prepare("
+                INSERT INTO activities 
+                (academic_year_id, unit_id, target_type, name, activity_date, student_in, student_late, student_out, staff_in, staff_late, staff_out, status, is_auto_generated) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1)
+            ");
+            $insertAct->execute([
+                $ayId, $unitId, $targetType, $actName, $dateToday, 
+                $studentIn, $studentLate, $studentOut, 
+                $staffIn, $staffLate, $staffOut
+            ]);
+            $stmtExist->execute([$dateToday, $unitId, $targetType]);
+            $activity = $stmtExist->fetch(PDO::FETCH_ASSOC);
+        } else {
+            // Jika placeholder ada tapi closed atau jamnya berbeda dengan weekly_schedules, aktifkan & sinkronkan
+            if ($activity['status'] !== 'active' || $activity['is_auto_generated'] == 1) {
+                $pdo->prepare("
+                    UPDATE activities 
+                    SET status = 'active', student_in = ?, student_late = ?, student_out = ?, is_auto_generated = 1 
+                    WHERE id = ?
+                ")->execute([$studentIn, $studentLate, $studentOut, $activity['id']]);
+                $activity['status'] = 'active';
+                $activity['student_in'] = $studentIn;
+                $activity['student_late'] = $studentLate;
+                $activity['student_out'] = $studentOut;
             }
         }
+
         return $activity;
     }
 }
@@ -203,9 +222,15 @@ try {
             ? getStudentEffectiveSchedule($pdo, (int)$student['id'], (int)$student['unit_id'], $dateToday, $dayCode)
             : ['has_schedule' => false];
 
-        $studentInTime = ($effSched['has_schedule'] && !empty($effSched['student_in'])) ? $effSched['student_in'] : ($activity['student_in'] ?? null);
-        $studentLateTime = ($effSched['has_schedule'] && !empty($effSched['student_late'])) ? $effSched['student_late'] : ($activity['student_late'] ?? null);
-        $studentOutTime = ($effSched['has_schedule'] && !empty($effSched['student_out'])) ? $effSched['student_out'] : ($activity['student_out'] ?? null);
+        $studentInTime = ($effSched['has_schedule'] && !empty($effSched['student_in']) && $effSched['student_in'] !== '00:00:00') ? $effSched['student_in'] : ($activity['student_in'] ?? null);
+        $studentLateTime = ($effSched['has_schedule'] && !empty($effSched['student_late']) && $effSched['student_late'] !== '00:00:00') ? $effSched['student_late'] : ($activity['student_late'] ?? null);
+        $studentOutTime = ($effSched['has_schedule'] && !empty($effSched['student_out']) && $effSched['student_out'] !== '00:00:00') ? $effSched['student_out'] : ($activity['student_out'] ?? null);
+
+        if (empty($studentLateTime) || $studentLateTime === '00:00:00') {
+            $studentLateTime = (!empty($studentInTime) && $studentInTime !== '00:00:00') 
+                ? date('H:i:s', strtotime('+15 minutes', strtotime($studentInTime))) 
+                : '07:15:00';
+        }
 
         if (!$activity || $activity['status'] !== 'active' || empty($studentInTime) || empty($studentOutTime)) { 
             $responseData = ['type'=>'student', 'name'=>$student['name'], 'nis'=>$student['nis'], 'class_name'=>$student['class_name'], 'photo'=>$student['photo'], 'time'=>$timeNow, 'badge_text'=>'ℹ TIDAK ADA JADWAL', 'badge_class'=>'late', 'already'=>true, 'message'=>'Hari Ini Tidak Ada Jadwal'];
@@ -281,7 +306,10 @@ try {
                         $badgeClass = 'ontime'; 
                     }
 
-                    runAutoAlpha($pdo, $student['unit_id'], $dateToday, $activity['id'], (int)$student['id'], 0);
+                    // Jalankan auto-alpha HANYA jika waktu sekarang sudah melewati jam pulang resmi unit
+                    if ($waktuSekarangDetik >= $jamPulangDetik) {
+                        runAutoAlpha($pdo, $student['unit_id'], $dateToday, $activity['id'], (int)$student['id'], 0);
+                    }
 
                     // Re-sync record status to prevent any race condition
                     $check->execute([$student['id'], $dateToday]);
@@ -564,7 +592,10 @@ try {
                             elseif ($selisihPulang >= (1 * 3600)) { $badgeText = '⏱ LEMBUR YAA'; $badgeClass = 'ontime'; }
                             else { $badgeText = '✓ TEPAT WAKTU'; $badgeClass = 'ontime'; }
 
-                            runAutoAlpha($pdo, $staff['unit_id'], $dateToday, $activity['id'], 0, (int)$staff['id']);
+                            // Jalankan auto-alpha staff HANYA jika waktu sekarang sudah melewati jam pulang resmi unit
+                            if ($waktuSekarangDetik >= $jamPulangDetik) {
+                                runAutoAlpha($pdo, $staff['unit_id'], $dateToday, $activity['id'], 0, (int)$staff['id']);
+                            }
 
                             // Re-sync record status to prevent any race condition
                             $check->execute([$staff['id'], $dateToday]);

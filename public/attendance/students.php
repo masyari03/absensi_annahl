@@ -74,6 +74,7 @@ $ksCanEditTime = $pdo->query("SELECT setting_value FROM system_settings WHERE se
 // Cek Wewenang Aksi Hadir / Cepat (Super Admin, Kepala Sekolah, dan Guru Terpilih)
 $canQuickRecord = canExecuteQuickAttendance($pdo, (int)$userId, $currentRole);
 $canDelete = ($currentRole === 'super_admin' || ($currentRole === 'kepala_sekolah' && $ksCanDelete));
+$canBulkAction = ($canDelete || $currentRole === 'super_admin');
 
 // ==============================================================================
 // PROSES CATAT KEHADIRAN CEPAT PETUGAS (QUICK ATTENDANCE)
@@ -245,6 +246,53 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['bulk_delete']
     }
 }
 
+// ==============================================================================
+// PROSES UPDATE STATUS MASSAL (BULK UPDATE - HANYA SUPER ADMIN)
+// ==============================================================================
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['bulk_update_status'])) {
+    if ($currentRole !== 'super_admin') {
+        flash('error', 'Hanya Super Admin yang berhak melakukan update status absensi secara massal.');
+        redirect('students.php?' . http_build_query($_GET));
+        exit;
+    }
+
+    $ids = array_filter(array_map('intval', $_POST['attendance_ids'] ?? []));
+    $targetStatus = in_array($_POST['bulk_target_status'] ?? '', ['tepat_waktu', 'terlambat', 'izin', 'sakit']) 
+        ? $_POST['bulk_target_status'] 
+        : 'tepat_waktu';
+    $customKet = trim($_POST['bulk_keterangan'] ?? '');
+
+    if (empty($ids)) {
+        flash('error', 'Pilih minimal satu data absensi siswa untuk diperbarui statusnya.');
+    } else {
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        if ($targetStatus === 'tepat_waktu') {
+            $ketText = $customKet !== '' ? $customKet : 'Koreksi Super Admin (Tepat Waktu)';
+            $stmtUpd = $pdo->prepare("
+                UPDATE student_attendances 
+                SET status = 'tepat_waktu',
+                    time_in = COALESCE(NULLIF(time_in, '00:00:00'), '07:00:00'),
+                    keterangan = ?
+                WHERE id IN ($placeholders)
+            ");
+            $stmtUpd->execute(array_merge([$ketText], $ids));
+        } else {
+            $ketText = $customKet !== '' ? $customKet : ('Koreksi Super Admin (' . ucwords(str_replace('_', ' ', $targetStatus)) . ')');
+            $stmtUpd = $pdo->prepare("
+                UPDATE student_attendances 
+                SET status = ?,
+                    keterangan = ?
+                WHERE id IN ($placeholders)
+            ");
+            $stmtUpd->execute(array_merge([$targetStatus, $ketText], $ids));
+        }
+
+        flash('success', 'Berhasil memperbarui status ' . count($ids) . ' data absensi siswa menjadi: ' . strtoupper(str_replace('_', ' ', $targetStatus)) . '.');
+    }
+    redirect('students.php?' . http_build_query($_GET));
+    exit;
+}
+
 $name = trim($_GET['name'] ?? '');
 $status = $_GET['status'] ?? '';
 $dateStart = $_GET['date_start'] ?? date('Y-m-d');
@@ -369,9 +417,11 @@ if ($isDayView) {
         $neededSchedules = $stmtWk->fetchAll(PDO::FETCH_ASSOC);
 
         $ayId = $pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1")->fetchColumn() ?: 1;
-        $insertAct = $pdo->prepare("INSERT INTO activities (academic_year_id, unit_id, name, activity_date, student_in, student_late, student_out, staff_in, staff_late, staff_out, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')");
+        $insertAct = $pdo->prepare("INSERT INTO activities (academic_year_id, unit_id, name, activity_date, student_in, student_late, student_out, staff_in, staff_late, staff_out, status, is_auto_generated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1)");
+        $updateAct = $pdo->prepare("UPDATE activities SET student_in = ?, student_late = ?, student_out = ?, status = 'active' WHERE activity_date = ? AND unit_id = ? AND is_auto_generated = 1");
 
         foreach ($neededSchedules as $ns) {
+            $sLate = (!empty($ns['student_late']) && $ns['student_late'] !== '00:00:00') ? $ns['student_late'] : date('H:i:s', strtotime('+15 minutes', strtotime($ns['student_in'])));
             if (!in_array($ns['unit_id'], $existingActs)) {
                 try {
                     $insertAct->execute([
@@ -380,13 +430,18 @@ if ($isDayView) {
                         "KBM Reguler",
                         $dateStart,
                         $ns['student_in'],
-                        $ns['student_late'],
+                        $sLate,
                         $ns['student_out'],
                         $ns['staff_in'],
                         $ns['staff_late'],
                         $ns['staff_out']
                     ]);
                     $existingActs[] = $ns['unit_id'];
+                } catch (Exception $e) {}
+            } else {
+                // Sinkronkan jam jika merupakan placeholder otomatis
+                try {
+                    $updateAct->execute([$ns['student_in'], $sLate, $ns['student_out'], $dateStart, $ns['unit_id']]);
                 } catch (Exception $e) {}
             }
         }
@@ -794,13 +849,38 @@ function selectAllOfficers(checked) {
 <?php endif; ?>
 
 <div class="card">
-    <?php if ($canDelete): ?>
-    <form method="POST" id="bulkDeleteForm" onsubmit="return confirmBulkDelete(event)">
-        <input type="hidden" name="bulk_delete" value="1">
-        <div style="padding: 15px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: flex-start;">
-            <button type="submit" class="btn" style="background-color: #ef4444; color: white; font-size: 13px;">
-                🗑️ Hapus Data Terpilih
-            </button>
+    <?php if ($canBulkAction): ?>
+    <form method="POST" id="bulkActionForm" style="margin: 0;">
+        <div style="padding: 12px 18px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; background: #f8fafc;">
+            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <?php if ($canDelete): ?>
+                <button type="submit" name="bulk_delete" value="1" onclick="return confirmBulkDelete(event)" class="btn" style="background-color: #ef4444; color: white; font-size: 12.5px; padding: 7px 14px; border-radius: 6px;">
+                    🗑️ Hapus Terpilih
+                </button>
+                <?php endif; ?>
+
+                <?php if ($currentRole === 'super_admin'): ?>
+                <div style="display: flex; gap: 8px; align-items: center; background: white; padding: 5px 12px; border-radius: 8px; border: 1px solid #cbd5e1; box-shadow: 0 1px 2px rgba(0,0,0,0.05); flex-wrap: wrap;">
+                    <span style="font-size: 12px; font-weight: 700; color: #1e293b;">
+                        <i class="fa-solid fa-user-pen" style="color: #0284c7;"></i> Update Bulk (Super Admin):
+                    </span>
+                    <select name="bulk_target_status" id="bulkTargetStatus" style="font-size: 12px; padding: 5px 10px; border-radius: 6px; border: 1px solid #cbd5e1; font-weight: 600; color: #0f172a;">
+                        <option value="tepat_waktu">✅ Ubah Jadi Tepat Waktu (Tidak Terlambat)</option>
+                        <option value="terlambat">⚠️ Ubah Jadi Terlambat</option>
+                        <option value="izin">📝 Ubah Jadi Izin</option>
+                        <option value="sakit">🏥 Ubah Jadi Sakit</option>
+                    </select>
+                    <input type="text" name="bulk_keterangan" id="bulkKeterangan" placeholder="Keterangan opsional..." style="font-size: 12px; padding: 5px 8px; border-radius: 6px; border: 1px solid #cbd5e1; width: 170px;">
+                    <button type="submit" name="bulk_update_status" value="1" onclick="return confirmBulkUpdate(event)" class="btn btn-success" style="font-size: 12px; padding: 6px 14px; border-radius: 6px; font-weight: 700;">
+                        <i class="fa-solid fa-check-double"></i> Update Status
+                    </button>
+                </div>
+                <?php endif; ?>
+            </div>
+
+            <div style="font-size: 12.5px; color: #64748b; font-weight: 600;">
+                <span id="selectedCount" style="color: #0284c7; font-weight: 800; font-size: 14px;">0</span> data dipilih
+            </div>
         </div>
     </form>
     <?php endif; ?>
@@ -809,7 +889,7 @@ function selectAllOfficers(checked) {
             <table>
                 <thead>
                     <tr>
-                        <?php if ($canDelete): ?>
+                        <?php if ($canBulkAction): ?>
                         <th style="width: 40px; text-align: center;">
                             <input type="checkbox" id="selectAll" title="Pilih Semua">
                         </th>
@@ -828,7 +908,7 @@ function selectAllOfficers(checked) {
                 <tbody>
                     <?php if (empty($attendances)): ?>
                     <tr>
-                        <td colspan="<?= $canDelete ? ($currentRole === 'super_admin' ? 10 : 9) : ($currentRole === 'super_admin' ? 9 : 8) ?>" style="text-align: center; padding: 30px; color: #94a3b8;">
+                        <td colspan="<?= $canBulkAction ? ($currentRole === 'super_admin' ? 10 : 9) : ($currentRole === 'super_admin' ? 9 : 8) ?>" style="text-align: center; padding: 30px; color: #94a3b8;">
                             <i class="fa-solid fa-clipboard-question" style="font-size: 30px; margin-bottom: 10px; display: block; color: #cbd5e1;"></i>
                             Tidak ada data siswa ditemukan untuk kriteria filter ini.
                         </td>
@@ -840,10 +920,10 @@ function selectAllOfficers(checked) {
                         $isBelumAbsen = !$hasRecord || empty($attendance['status']) || in_array($attendance['status'], ['tidak_absen', 'alpha']);
                     ?>
                     <tr style="<?= $isBelumAbsen ? 'background-color: #fffbf5;' : '' ?>">
-                        <?php if ($canDelete): ?>
+                        <?php if ($canBulkAction): ?>
                         <td style="text-align: center;">
                             <?php if ($hasRecord): ?>
-                                <input type="checkbox" name="attendance_ids[]" value="<?= $attendance['id'] ?>" class="checkItem" form="bulkDeleteForm">
+                                <input type="checkbox" name="attendance_ids[]" value="<?= $attendance['id'] ?>" class="checkItem" form="bulkActionForm">
                             <?php else: ?>
                                 <span style="color: #cbd5e1;">-</span>
                             <?php endif; ?>
@@ -947,11 +1027,36 @@ function selectAllOfficers(checked) {
 </div>
 
 <script>
-// Script untuk Handle Checkbox Pilih Semua
+// Script untuk Handle Checkbox Pilih Semua & Counter Live
+function updateSelectedCount() {
+    let checked = document.querySelectorAll('.checkItem:checked');
+    let cntEl = document.getElementById('selectedCount');
+    if (cntEl) cntEl.textContent = checked.length;
+}
+
 document.getElementById('selectAll')?.addEventListener('change', function(e) {
     let checkboxes = document.querySelectorAll('.checkItem');
     checkboxes.forEach(cb => cb.checked = e.target.checked);
+    updateSelectedCount();
 });
+
+document.querySelectorAll('.checkItem').forEach(cb => {
+    cb.addEventListener('change', updateSelectedCount);
+});
+
+// Helper untuk pastikan semua checkbox terpilih terlampir pada form saat submit
+function attachSelectedIdsToForm(form, checkedBoxes) {
+    if (!form) return;
+    form.querySelectorAll('input[data-dynamic-id="1"]').forEach(el => el.remove());
+    checkedBoxes.forEach(cb => {
+        let hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = 'attendance_ids[]';
+        hidden.value = cb.value;
+        hidden.setAttribute('data-dynamic-id', '1');
+        form.appendChild(hidden);
+    });
+}
 
 // Konfirmasi Hapus Massal
 function confirmBulkDelete(e) {
@@ -965,19 +1070,25 @@ function confirmBulkDelete(e) {
         e.preventDefault();
         return false;
     }
-    // Safeguard lintas browser: pastikan semua ID yang dicentang terlampir pada form
-    const form = document.getElementById('bulkDeleteForm');
-    if (form) {
-        form.querySelectorAll('input[data-dynamic-id="1"]').forEach(el => el.remove());
-        checked.forEach(cb => {
-            let hidden = document.createElement('input');
-            hidden.type = 'hidden';
-            hidden.name = 'attendance_ids[]';
-            hidden.value = cb.value;
-            hidden.setAttribute('data-dynamic-id', '1');
-            form.appendChild(hidden);
-        });
+    attachSelectedIdsToForm(document.getElementById('bulkActionForm'), checked);
+    return true;
+}
+
+// Konfirmasi Update Status Massal (Super Admin)
+function confirmBulkUpdate(e) {
+    let checked = document.querySelectorAll('.checkItem:checked');
+    if (checked.length === 0) {
+        alert('Pilih minimal satu data absensi siswa untuk diperbarui statusnya.');
+        e.preventDefault();
+        return false;
     }
+    let sel = document.getElementById('bulkTargetStatus');
+    let targetText = sel ? sel.options[sel.selectedIndex].text : 'status baru';
+    if (!confirm('Yakin ingin memperbarui status ' + checked.length + ' data absensi terpilih menjadi:\n' + targetText + '?')) {
+        e.preventDefault();
+        return false;
+    }
+    attachSelectedIdsToForm(document.getElementById('bulkActionForm'), checked);
     return true;
 }
 </script>

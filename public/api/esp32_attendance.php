@@ -133,80 +133,98 @@ if ($recentLog) {
 
 // Helper untuk mengambil jadwal harian aktif
 function getDeviceDailyActivity(PDO $pdo, int $unitId, string $dateToday, int $dayCode, string $targetType = 'student'): ?array {
+    // 1. Cek apakah ada Activity Khusus buatan admin (bukan placeholder KBM otomatis)
+    // Aturan: Ketika ada activities khusus, jadwal pekanan tidak dianggap.
     $stmt = $pdo->prepare("
         SELECT * FROM activities 
         WHERE activity_date = ? AND unit_id = ? 
           AND (target_type = ? OR target_type = 'all' OR target_type IS NULL) 
-        ORDER BY (target_type = ?) DESC, id ASC 
+          AND status = 'active' AND is_holiday = 'no'
+          AND (is_auto_generated = 0 AND name NOT IN ('KBM Reguler', 'Jadwal Reguler Siswa', 'Jadwal Reguler Staff & Guru'))
+        ORDER BY id DESC 
         LIMIT 1
     ");
-    $stmt->execute([$dateToday, $unitId, $targetType, $targetType]);
-    $act = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt->execute([$dateToday, $unitId, $targetType]);
+    $customActivity = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (!$act) {
-        $stmtWeek = $pdo->prepare("
+    if ($customActivity) {
+        return $customActivity;
+    }
+
+    // 2. Jika activities kosong: JADWAL PEKANAN DIUTAMAKAN
+    $stmtWeek = $pdo->prepare("
+        SELECT * FROM weekly_schedules 
+        WHERE day_code = ? AND unit_id = ? AND is_active = 'active' 
+          AND (target_type = ? OR target_type IS NULL) 
+          AND (schedule_type = 'reguler' OR schedule_type IS NULL) 
+        ORDER BY (grade_id IS NULL AND class_group_id IS NULL) DESC, id ASC 
+        LIMIT 1
+    ");
+    $stmtWeek->execute([$dayCode, $unitId, $targetType]);
+    $weekly = $stmtWeek->fetch(PDO::FETCH_ASSOC);
+
+    if (!$weekly && $targetType === 'staff') {
+        $stmtFallback = $pdo->prepare("
             SELECT * FROM weekly_schedules 
             WHERE day_code = ? AND unit_id = ? AND is_active = 'active' 
-              AND (target_type = ? OR target_type IS NULL) 
-              AND (schedule_type = 'reguler' OR schedule_type IS NULL) 
-            ORDER BY (grade_id IS NULL AND class_group_id IS NULL) DESC, id ASC 
-            LIMIT 1
+              AND (staff_in IS NOT NULL AND staff_in != '00:00:00')
+            ORDER BY id ASC LIMIT 1
         ");
-        $stmtWeek->execute([$dayCode, $unitId, $targetType]);
-        $weekly = $stmtWeek->fetch(PDO::FETCH_ASSOC);
+        $stmtFallback->execute([$dayCode, $unitId]);
+        $weekly = $stmtFallback->fetch(PDO::FETCH_ASSOC);
+    }
 
-        // Fallback 1: Jika staff tapi belum ada target_type = 'staff', cari jadwal legacy dengan staff_in valid
-        if (!$weekly && $targetType === 'staff') {
-            $stmtFallback = $pdo->prepare("
-                SELECT * FROM weekly_schedules 
-                WHERE day_code = ? AND unit_id = ? AND is_active = 'active' 
-                  AND (staff_in IS NOT NULL AND staff_in != '00:00:00')
-                ORDER BY id ASC LIMIT 1
-            ");
-            $stmtFallback->execute([$dayCode, $unitId]);
-            $weekly = $stmtFallback->fetch(PDO::FETCH_ASSOC);
-        }
+    $studentIn = $weekly['student_in'] ?? '06:30:00';
+    $studentLate = (!empty($weekly['student_late']) && $weekly['student_late'] !== '00:00:00') 
+        ? $weekly['student_late'] 
+        : date('H:i:s', strtotime('+15 minutes', strtotime($studentIn)));
+    $studentOut = $weekly['student_out'] ?? '15:30:00';
 
-        // Fallback 2: Jika masih kosong untuk staff, ambil template hari lain di unit yang sama atau default jam kerja
-        if (!$weekly && $targetType === 'staff') {
-            $stmtAny = $pdo->prepare("
-                SELECT * FROM weekly_schedules 
-                WHERE unit_id = ? AND is_active = 'active' 
-                  AND (target_type = 'staff' OR (staff_in IS NOT NULL AND staff_in != '00:00:00'))
-                ORDER BY id ASC LIMIT 1
-            ");
-            $stmtAny->execute([$unitId]);
-            $anyStaff = $stmtAny->fetch(PDO::FETCH_ASSOC);
+    $staffIn = $weekly['staff_in'] ?? '06:45:00';
+    $staffLate = (!empty($weekly['staff_late']) && $weekly['staff_late'] !== '00:00:00') 
+        ? $weekly['staff_late'] 
+        : '07:00:00';
+    $staffOut = $weekly['staff_out'] ?? '15:30:00';
 
-            $weekly = [
-                'student_in'   => '00:00:00',
-                'student_late' => '00:00:00',
-                'student_out'  => '00:00:00',
-                'staff_in'     => $anyStaff['staff_in'] ?? '06:45:00',
-                'staff_late'   => $anyStaff['staff_late'] ?? '07:00:00',
-                'staff_out'    => $anyStaff['staff_out'] ?? '15:30:00',
-                'name'         => 'Jadwal Reguler Staff'
-            ];
-        }
+    // Pastikan placeholder di tabel activities ada & aktif
+    $stmtExist = $pdo->prepare("
+        SELECT * FROM activities 
+        WHERE activity_date = ? AND unit_id = ? 
+          AND (target_type = ? OR target_type = 'all' OR target_type IS NULL)
+        ORDER BY id DESC LIMIT 1
+    ");
+    $stmtExist->execute([$dateToday, $unitId, $targetType]);
+    $act = $stmtExist->fetch(PDO::FETCH_ASSOC);
+
+    if (!$act) {
+        $stmtAy = $pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1");
+        $ayId = (int)($stmtAy->fetchColumn() ?: 1);
+        $actName = ($targetType === 'staff') ? "Jadwal Reguler Staff & Guru" : "KBM Reguler";
+
+        $stmtIns = $pdo->prepare("
+            INSERT INTO activities 
+            (academic_year_id, unit_id, target_type, name, activity_date, student_in, student_late, student_out, staff_in, staff_late, staff_out, status, is_auto_generated) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1)
+        ");
+        $stmtIns->execute([
+            $ayId, $unitId, $targetType, $actName, $dateToday, 
+            $studentIn, $studentLate, $studentOut, 
+            $staffIn, $staffLate, $staffOut
+        ]);
         
-        if ($weekly) {
-            $stmtAy = $pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1");
-            $ayId = (int)($stmtAy->fetchColumn() ?: 1);
-            $actName = ($targetType === 'staff') ? "Jadwal Reguler Staff & Guru" : "Jadwal Reguler Siswa";
-
-            $stmtIns = $pdo->prepare("
-                INSERT INTO activities 
-                (academic_year_id, unit_id, target_type, name, activity_date, student_in, student_late, student_out, staff_in, staff_late, staff_out, status) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
-            ");
-            $stmtIns->execute([
-                $ayId, $unitId, $targetType, $actName, $dateToday, 
-                $weekly['student_in'] ?? '00:00:00', $weekly['student_late'] ?? '00:00:00', $weekly['student_out'] ?? '00:00:00', 
-                $weekly['staff_in'] ?? '06:45:00', $weekly['staff_late'] ?? '07:00:00', $weekly['staff_out'] ?? '15:30:00'
-            ]);
-            
-            $stmt->execute([$dateToday, $unitId, $targetType, $targetType]);
-            $act = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stmtExist->execute([$dateToday, $unitId, $targetType]);
+        $act = $stmtExist->fetch(PDO::FETCH_ASSOC);
+    } else {
+        if ($act['status'] !== 'active' || $act['is_auto_generated'] == 1) {
+            $pdo->prepare("
+                UPDATE activities 
+                SET status = 'active', student_in = ?, student_late = ?, student_out = ?, is_auto_generated = 1 
+                WHERE id = ?
+            ")->execute([$studentIn, $studentLate, $studentOut, $act['id']]);
+            $act['status'] = 'active';
+            $act['student_in'] = $studentIn;
+            $act['student_late'] = $studentLate;
+            $act['student_out'] = $studentOut;
         }
     }
     return $act ?: null;
@@ -495,9 +513,15 @@ try {
             ? getStudentEffectiveSchedule($pdo, $studentId, $studentUnit, $dateToday, $dayCode)
             : ['has_schedule' => false];
 
-        $studentInTime = ($effSched['has_schedule'] && !empty($effSched['student_in'])) ? $effSched['student_in'] : ($activity['student_in'] ?? null);
-        $studentLateTime = ($effSched['has_schedule'] && !empty($effSched['student_late'])) ? $effSched['student_late'] : ($activity['student_late'] ?? null);
-        $studentOutTime = ($effSched['has_schedule'] && !empty($effSched['student_out'])) ? $effSched['student_out'] : ($activity['student_out'] ?? null);
+        $studentInTime = ($effSched['has_schedule'] && !empty($effSched['student_in']) && $effSched['student_in'] !== '00:00:00') ? $effSched['student_in'] : ($activity['student_in'] ?? null);
+        $studentLateTime = ($effSched['has_schedule'] && !empty($effSched['student_late']) && $effSched['student_late'] !== '00:00:00') ? $effSched['student_late'] : ($activity['student_late'] ?? null);
+        $studentOutTime = ($effSched['has_schedule'] && !empty($effSched['student_out']) && $effSched['student_out'] !== '00:00:00') ? $effSched['student_out'] : ($activity['student_out'] ?? null);
+
+        if (empty($studentLateTime) || $studentLateTime === '00:00:00') {
+            $studentLateTime = (!empty($studentInTime) && $studentInTime !== '00:00:00') 
+                ? date('H:i:s', strtotime('+15 minutes', strtotime($studentInTime))) 
+                : '07:15:00';
+        }
 
         if (!$activity || $activity['status'] !== 'active' || empty($studentInTime) || empty($studentOutTime)) {
             $pdo->rollBack();
