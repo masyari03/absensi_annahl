@@ -315,7 +315,7 @@ if ($currentRole === 'super_admin') {
 
     // Ambil subkelas yang diizinkan untuk Admin Pemantau
     $stmtC = $pdo->prepare("
-        SELECT DISTINCT cg.id, cg.name, g.grade FROM class_groups cg
+        SELECT DISTINCT cg.id, cg.name, g.grade, g.sort_order FROM class_groups cg
         INNER JOIN grades g ON g.id = cg.grade_id
         WHERE cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?)
            OR g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?)
