@@ -536,9 +536,23 @@ try {
             ]);
         }
 
-        $jamMasukDetik = strtotime($studentInTime);
-        $jamPulangDetik = strtotime($studentOutTime);
-        $tutupMasuk = strtotime('+3 hours', $jamMasukDetik);
+        $sessionLimits = getAttendanceSessionLimits($pdo, $studentUnit, $dateToday, $studentInTime, $studentOutTime);
+        $jamMasukDetik = $sessionLimits['jamMasukDetik'];
+        $jamPulangDetik = $sessionLimits['jamPulangDetik'];
+        $tutupMasuk = $sessionLimits['tutupMasuk'];
+        $tutupPulang = $sessionLimits['tutupPulang'];
+        $batasPulangCepat = $sessionLimits['batasPulangCepat'];
+        $batasTerlaluLamaDetik = $sessionLimits['batasTerlaluLamaDetik'];
+
+        if ($timeNowSeconds > $tutupPulang) {
+            $pdo->rollBack();
+            apiResponse('session_closed', "Sesi absensi hari ini sudah ditutup untuk {$student['name']}.", [
+                'name'      => $student['name'],
+                'user_type' => 'student',
+                'led'       => 'red_blink',
+                'beep'      => 2
+            ]);
+        }
 
         // Kunci baris absensi siswa hari ini
         $checkStmt = $pdo->prepare("
@@ -597,7 +611,13 @@ try {
         } else {
             // Sesi Pulang
             $scanDirection = 'pulang';
-            $badge = 'PULANG';
+            if ($timeNowSeconds < $batasPulangCepat) {
+                $badge = 'PULANG CEPAT';
+            } elseif (($timeNowSeconds - $jamPulangDetik) >= $batasTerlaluLamaDetik) {
+                $badge = 'PULANG TERLALU LAMA';
+            } else {
+                $badge = 'PULANG';
+            }
 
             if ($timeOutEmpty) {
                 if (!$record) {

@@ -10,6 +10,8 @@ checkUserAccess('attendance_students');
 $currentRole = currentRole();
 $pageTitle = 'Absensi Siswa';
 $userId = currentUserId();
+$ksUnitId = 0;
+$ksUnitName = '';
 
 // ==============================================================================
 // SISTEM PENGATURAN AKSES KEPALA SEKOLAH & GURU (AUTO-CREATE TABLE JIKA BELUM ADA)
@@ -63,6 +65,90 @@ if ($currentRole === 'super_admin' && isset($_POST['toggle_ks_access'])) {
     $val = $_POST['setting_value'] === '1' ? '0' : '1'; // Balikkan nilai (Toggle)
     $pdo->prepare("INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?")->execute([$key, $val, $val]);
     flash('success', 'Hak akses Kepala Sekolah berhasil diperbarui.');
+    redirect('students.php?' . http_build_query($_GET));
+    exit;
+}
+
+// 3. Proses Simpan Pengaturan Waktu, Pulang Cepat & Batas Kepulangan (Super Admin & Kepala Sekolah)
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_attendance_unit_settings'])) {
+    if (!in_array($currentRole, ['super_admin', 'kepala_sekolah'])) {
+        flash('error', 'Anda tidak memiliki hak akses untuk mengubah pengaturan waktu absensi.');
+        redirect('students.php?' . http_build_query($_GET));
+        exit;
+    }
+
+    $targetUnitId = (int)($_POST['settings_unit_id'] ?? 0);
+
+    // Jika Kepala Sekolah, verifikasi bahwa unit yang diatur adalah unit wewenangnya
+    if ($currentRole === 'kepala_sekolah') {
+        $stmtCheckKs = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? UNION SELECT unit_id FROM staff WHERE user_id = ? AND unit_id IS NOT NULL LIMIT 1");
+        $stmtCheckKs->execute([$userId, $userId]);
+        $userKsUnit = (int)$stmtCheckKs->fetchColumn();
+
+        if ($targetUnitId <= 0 || $targetUnitId !== $userKsUnit) {
+            flash('error', 'Akses ditolak: Anda hanya berwenang mengatur waktu absensi untuk unit Anda sendiri.');
+            redirect('students.php?' . http_build_query($_GET));
+            exit;
+        }
+    }
+
+    if ($targetUnitId <= 0) {
+        flash('error', 'Unit tidak valid.');
+        redirect('students.php?' . http_build_query($_GET));
+        exit;
+    }
+
+    // Validasi & Sanitasi Data
+    $earlyDepartureMode = in_array($_POST['early_departure_mode'] ?? '', ['offset_minutes', 'fixed_time']) ? $_POST['early_departure_mode'] : 'offset_minutes';
+    $earlyDepartureMinutes = max(0, min(360, (int)($_POST['early_departure_minutes'] ?? 0)));
+    $earlyDepartureTime = !empty($_POST['early_departure_time']) ? trim($_POST['early_departure_time']) : null;
+    if ($earlyDepartureTime && strlen($earlyDepartureTime) === 5) {
+        $earlyDepartureTime .= ':00';
+    }
+
+    $autoAttendanceMode = in_array($_POST['auto_attendance_mode'] ?? '', ['offset_minutes', 'fixed_time']) ? $_POST['auto_attendance_mode'] : 'offset_minutes';
+    $autoAttendanceMinutes = max(15, min(720, (int)($_POST['auto_attendance_minutes'] ?? 180)));
+    $autoAttendanceTime = !empty($_POST['auto_attendance_time']) ? trim($_POST['auto_attendance_time']) : null;
+    if ($autoAttendanceTime && strlen($autoAttendanceTime) === 5) {
+        $autoAttendanceTime .= ':00';
+    }
+
+    $checkoutWindowHours = max(0.5, min(24.0, (float)($_POST['checkout_window_hours'] ?? 4.0)));
+    $checkoutMaxDelayMinutes = max(0, min(720, (int)($_POST['checkout_max_delay_minutes'] ?? 60)));
+
+    try {
+        $stmtSave = $pdo->prepare("
+            INSERT INTO attendance_unit_settings 
+            (unit_id, early_departure_mode, early_departure_minutes, early_departure_time,
+             auto_attendance_mode, auto_attendance_minutes, auto_attendance_time,
+             checkout_window_hours, checkout_max_delay_minutes, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+             early_departure_mode = VALUES(early_departure_mode),
+             early_departure_minutes = VALUES(early_departure_minutes),
+             early_departure_time = VALUES(early_departure_time),
+             auto_attendance_mode = VALUES(auto_attendance_mode),
+             auto_attendance_minutes = VALUES(auto_attendance_minutes),
+             auto_attendance_time = VALUES(auto_attendance_time),
+             checkout_window_hours = VALUES(checkout_window_hours),
+             checkout_max_delay_minutes = VALUES(checkout_max_delay_minutes),
+             updated_by = VALUES(updated_by)
+        ");
+        $stmtSave->execute([
+            $targetUnitId, $earlyDepartureMode, $earlyDepartureMinutes, $earlyDepartureTime,
+            $autoAttendanceMode, $autoAttendanceMinutes, $autoAttendanceTime,
+            $checkoutWindowHours, $checkoutMaxDelayMinutes, $userId
+        ]);
+
+        if (function_exists('recordActivityAudit')) {
+            recordActivityAudit($pdo, 'attendance_settings', 'UPDATE', 'attendance_unit_settings', $targetUnitId, "Memperbarui Pengaturan Waktu Absensi Unit ID #{$targetUnitId}", null, $_POST, $targetUnitId);
+        }
+
+        flash('success', 'Pengaturan waktu absensi, pulang cepat, dan batas kepulangan berhasil disimpan.');
+    } catch (Exception $e) {
+        flash('error', 'Gagal menyimpan pengaturan: ' . $e->getMessage());
+    }
+
     redirect('students.php?' . http_build_query($_GET));
     exit;
 }
@@ -327,6 +413,12 @@ if ($currentRole === 'super_admin') {
         $ksUnitId = $stmtStaffU->fetchColumn();
     }
     $unitId = $ksUnitId ? (int)$ksUnitId : -1;
+    $ksUnitName = '';
+    if ($ksUnitId > 0) {
+        $stmtKsName = $pdo->prepare("SELECT unit FROM units WHERE id = ?");
+        $stmtKsName->execute([$ksUnitId]);
+        $ksUnitName = $stmtKsName->fetchColumn() ?: 'Unit Sekolah';
+    }
 
     $stmtGrades = $pdo->prepare("SELECT * FROM grades WHERE unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?) OR unit_id = ? ORDER BY sort_order, grade");
     $stmtGrades->execute([$userId, $unitId]);
@@ -586,6 +678,25 @@ if ($currentRole === 'super_admin') {
     ")->fetchAll(PDO::FETCH_ASSOC);
 }
 
+// Siapkan data pengaturan unit untuk Super Admin & Kepala Sekolah
+$allUnitSettings = [];
+if (in_array($currentRole, ['super_admin', 'kepala_sekolah'])) {
+    $stmtAllSettings = $pdo->query("
+        SELECT aus.*, u.unit as unit_name 
+        FROM attendance_unit_settings aus 
+        JOIN units u ON u.id = aus.unit_id
+    ");
+    foreach ($stmtAllSettings->fetchAll(PDO::FETCH_ASSOC) as $sRow) {
+        $allUnitSettings[$sRow['unit_id']] = $sRow;
+    }
+    foreach ($units as $u) {
+        if (!isset($allUnitSettings[$u['id']])) {
+            $allUnitSettings[$u['id']] = getAttendanceUnitSettings($pdo, (int)$u['id']);
+            $allUnitSettings[$u['id']]['unit_name'] = $u['unit'];
+        }
+    }
+}
+
 require '../../includes/header.php';
 ?>
 
@@ -597,12 +708,17 @@ require '../../includes/header.php';
             <h4 style="margin: 0; font-size: 14.5px; color: #1e293b; font-weight: 700;">
                 <i class="fa-solid fa-user-shield" style="color: #0284c7; margin-right: 6px;"></i> Pengaturan Hak Akses Absensi (Kepala Sekolah, Admin Pemantau & Guru Petugas Piket)
             </h4>
-            <button type="button" class="btn btn-sm btn-primary" onclick="openOfficerModal()" style="display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 6px; box-shadow: 0 2px 4px rgba(2,132,199,0.25);">
-                <i class="fa-solid fa-user-gear"></i> Kelola Guru Berwenang (Aksi Hadir / Piket)
-                <span class="badge" style="background: white; color: #0284c7; font-weight: 800; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 4px;">
-                    <?= $officerCount ?> Guru Aktif
-                </span>
-            </button>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                <button type="button" class="btn btn-sm" onclick="openTimeSettingsModal()" style="display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 6px; background: #0284c7; color: white; box-shadow: 0 2px 4px rgba(2,132,199,0.25);">
+                    <i class="fa-solid fa-clock"></i> Atur Waktu & Pulang Cepat
+                </button>
+                <button type="button" class="btn btn-sm btn-primary" onclick="openOfficerModal()" style="display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 6px; box-shadow: 0 2px 4px rgba(2,132,199,0.25);">
+                    <i class="fa-solid fa-user-gear"></i> Kelola Guru Berwenang (Aksi Hadir / Piket)
+                    <span class="badge" style="background: white; color: #0284c7; font-weight: 800; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 4px;">
+                        <?= $officerCount ?> Guru Aktif
+                    </span>
+                </button>
+            </div>
         </div>
         <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
             <span style="font-size: 12px; color: #64748b; font-weight: 600;">Hak Akses Kepala Sekolah:</span>
@@ -723,6 +839,23 @@ function selectAllOfficers(checked) {
     });
 }
 </script>
+<?php endif; ?>
+
+<?php if ($currentRole === 'kepala_sekolah' && $ksUnitId > 0): ?>
+<!-- PANEL PENGATURAN KEPALA SEKOLAH -->
+<div class="card" style="margin-bottom: 20px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px;">
+    <div style="padding: 14px 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+        <div>
+            <h4 style="margin: 0; font-size: 14.5px; color: #166534; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-sliders" style="color: #16a34a;"></i> Pengaturan Waktu Absensi Unit: <?= e($ksUnitName) ?>
+            </h4>
+            <small style="color: #4b5563; font-size: 12px;">Kelola waktu terhitung pulang cepat, jam otomatis absen (Alpha), dan batas akses kepulangan siswa unit Anda.</small>
+        </div>
+        <button type="button" class="btn btn-sm btn-success" onclick="openTimeSettingsModal(<?= $ksUnitId ?>)" style="display: inline-flex; align-items: center; gap: 7px; padding: 8px 16px; font-size: 12.5px; font-weight: 700; border-radius: 6px; box-shadow: 0 2px 4px rgba(22,163,74,0.25);">
+            <i class="fa-solid fa-clock"></i> Atur Waktu & Pulang Cepat (<?= e($ksUnitName) ?>)
+        </button>
+    </div>
+</div>
 <?php endif; ?>
 
 <div class="card">
@@ -1092,5 +1225,264 @@ function confirmBulkUpdate(e) {
     return true;
 }
 </script>
+
+<?php if (in_array($currentRole, ['super_admin', 'kepala_sekolah'])): ?>
+<!-- MODAL PENGATURAN WAKTU, PULANG CEPAT & BATAS KEPULANGAN -->
+<div class="modal-overlay" id="timeSettingsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15,23,42,0.65); z-index: 99999; justify-content: center; align-items: center; padding: 20px;" onclick="closeTimeSettingsModal()">
+    <div class="modal-box" onclick="event.stopPropagation()" style="background: white; border-radius: 14px; max-width: 620px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.35);">
+        <!-- Modal Header -->
+        <div style="padding: 18px 24px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: #f8fafc;">
+            <div>
+                <h3 style="margin: 0; font-size: 16.5px; color: #0f172a; font-weight: 800; display: flex; align-items: center; gap: 8px;">
+                    <i class="fa-solid fa-sliders" style="color: #0284c7;"></i> Pengaturan Waktu & Batas Absensi
+                </h3>
+                <small style="color: #64748b; font-size: 12px;">Atur waktu terhitung pulang cepat, otomatis absen (alpha), dan batas kepulangan siswa.</small>
+            </div>
+            <button type="button" onclick="closeTimeSettingsModal()" style="border: none; background: transparent; font-size: 22px; color: #94a3b8; cursor: pointer; padding: 0 6px;">&times;</button>
+        </div>
+
+        <!-- Modal Form -->
+        <form method="POST" style="overflow-y: auto; padding: 20px 24px; margin: 0; display: flex; flex-direction: column; gap: 16px;">
+            <input type="hidden" name="save_attendance_unit_settings" value="1">
+
+            <!-- Pilih Unit (Dropdown untuk Super Admin, Readonly untuk Kepala Sekolah) -->
+            <?php if ($currentRole === 'super_admin'): ?>
+            <div style="background: #f1f5f9; padding: 12px 16px; border-radius: 8px; border: 1px solid #cbd5e1;">
+                <label style="display: block; font-weight: 700; font-size: 13px; color: #1e293b; margin-bottom: 6px;">
+                    <i class="fa-solid fa-school" style="color: #0284c7;"></i> Pilih Unit yang Diatur:
+                </label>
+                <select name="settings_unit_id" id="settingsUnitSelect" onchange="onSettingUnitChange(this.value)" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-weight: 600; font-size: 13.5px; background: white;">
+                    <?php foreach ($units as $u): ?>
+                    <option value="<?= $u['id'] ?>"><?= e($u['unit']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <?php else: ?>
+            <input type="hidden" name="settings_unit_id" id="settingsUnitSelect" value="<?= $ksUnitId ?>">
+            <div style="background: #ecfdf5; padding: 10px 14px; border-radius: 8px; border: 1px solid #a7f3d0; display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-school" style="color: #10b981; font-size: 16px;"></i>
+                <span style="font-size: 13px; font-weight: 700; color: #065f46;">
+                    Unit: <?= e($ksUnitName) ?> (Sesuai Hak Akses Kepala Sekolah)
+                </span>
+            </div>
+            <?php endif; ?>
+
+            <!-- 1. PENGATURAN PULANG CEPAT -->
+            <div style="border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; background: #ffffff;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                    <span style="background: #fef3c7; color: #d97706; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px;">1</span>
+                    <label style="font-weight: 800; font-size: 13.5px; color: #1e293b; margin: 0;">
+                        Waktu Terhitung Pulang Cepat
+                    </label>
+                </div>
+                <p style="font-size: 11.5px; color: #64748b; margin: 0 0 10px 34px;">
+                    Tentukan kapan kepulangan siswa dihitung sebagai status <strong>PULANG CEPAT</strong>.
+                </p>
+
+                <div style="margin-left: 34px; display: flex; flex-direction: column; gap: 10px;">
+                    <label style="display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: #334155; cursor: pointer;">
+                        <input type="radio" name="early_departure_mode" value="offset_minutes" id="modeEarlyOffset" onchange="toggleEarlyMode()">
+                        <span>Berdasarkan Menit Sebelum Jam Pulang:</span>
+                    </label>
+                    <div id="earlyOffsetBox" style="margin-left: 24px; display: flex; align-items: center; gap: 8px;">
+                        <input type="number" name="early_departure_minutes" id="earlyDepartureMinutes" min="0" max="360" value="0" style="width: 85px; padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
+                        <span style="font-size: 12px; color: #475569;">menit sebelum jam pulang resmi</span>
+                    </div>
+                    <small style="margin-left: 24px; font-size: 11px; color: #64748b;">
+                        * Isikan <strong>0</strong> untuk tepat saat jam pulang (default sistem). Jika diisi misal <strong>15</strong>, scan sebelum <em>(jam pulang - 15 menit)</em> akan terhitung Pulang Cepat (toleransi 15 menit).
+                    </small>
+
+                    <label style="display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: #334155; cursor: pointer; margin-top: 6px;">
+                        <input type="radio" name="early_departure_mode" value="fixed_time" id="modeEarlyFixed" onchange="toggleEarlyMode()">
+                        <span>Berdasarkan Jam Pasti / Spesifik:</span>
+                    </label>
+                    <div id="earlyFixedBox" style="margin-left: 24px; display: flex; align-items: center; gap: 8px;">
+                        <input type="time" name="early_departure_time" id="earlyDepartureTime" step="1" style="width: 140px; padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
+                        <span style="font-size: 12px; color: #475569;">WIB (Scan sebelum jam ini dihitung pulang cepat)</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. PENGATURAN OTOMATIS ABSEN (AUTO-ALPHA / BATAS SESI MASUK) -->
+            <div style="border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; background: #ffffff;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                    <span style="background: #e0f2fe; color: #0284c7; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px;">2</span>
+                    <label style="font-weight: 800; font-size: 13.5px; color: #1e293b; margin: 0;">
+                        Otomatis Absen & Batas Sesi Masuk
+                    </label>
+                </div>
+                <p style="font-size: 11.5px; color: #64748b; margin: 0 0 10px 34px;">
+                    Tentukan kapan sesi masuk ditutup, siswa yang belum hadir otomatis dicatat <strong>Alpha</strong>, dan scanner beralih ke sesi kepulangan.
+                </p>
+
+                <div style="margin-left: 34px; display: flex; flex-direction: column; gap: 10px;">
+                    <label style="display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: #334155; cursor: pointer;">
+                        <input type="radio" name="auto_attendance_mode" value="offset_minutes" id="modeAutoOffset" onchange="toggleAutoMode()">
+                        <span>Berapa Menit / Jam Setelah Jam Masuk:</span>
+                    </label>
+                    <div id="autoOffsetBox" style="margin-left: 24px; display: flex; align-items: center; gap: 8px;">
+                        <input type="number" name="auto_attendance_minutes" id="autoAttendanceMinutes" min="15" max="720" value="180" style="width: 85px; padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
+                        <span style="font-size: 12px; color: #475569;">menit setelah jam masuk (Contoh: 180 menit = 3 jam)</span>
+                    </div>
+
+                    <label style="display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: #334155; cursor: pointer; margin-top: 6px;">
+                        <input type="radio" name="auto_attendance_mode" value="fixed_time" id="modeAutoFixed" onchange="toggleAutoMode()">
+                        <span>Mulai Jam Tertentu (Spesifik):</span>
+                    </label>
+                    <div id="autoFixedBox" style="margin-left: 24px; display: flex; align-items: center; gap: 8px;">
+                        <input type="time" name="auto_attendance_time" id="autoAttendanceTime" step="1" style="width: 140px; padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
+                        <span style="font-size: 12px; color: #475569;">WIB (Contoh: 09:30:00 atau 10:00:00)</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3. PENGATURAN BATAS AKSES KEPULANGAN -->
+            <div style="border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; background: #ffffff;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                    <span style="background: #f3e8ff; color: #7e22ce; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px;">3</span>
+                    <label style="font-weight: 800; font-size: 13.5px; color: #1e293b; margin: 0;">
+                        Batas Akses Kepulangan (Setelah Berapa Jam)
+                    </label>
+                </div>
+                <p style="font-size: 11.5px; color: #64748b; margin: 0 0 10px 34px;">
+                    Tentukan berapa jam setelah jam kepulangan scanner masih menerima absensi pulang sebelum sesi dinyatakan habis / ditutup.
+                </p>
+
+                <div style="margin-left: 34px; display: flex; flex-direction: column; gap: 12px;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <input type="number" name="checkout_window_hours" id="checkoutWindowHours" min="0.5" max="24" step="0.5" value="4.0" style="width: 85px; padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
+                        <span style="font-size: 12px; color: #334155; font-weight: 600;">jam setelah jam kepulangan resmi</span>
+                    </div>
+                    <small style="font-size: 11px; color: #64748b;">
+                        * Contoh: jika jam kepulangan adalah 15:30 dan diisi <strong>3.0</strong> jam, maka scan pulang diterima hingga pukul 18:30. Lewat dari jam tersebut scanner menampilkan <em>"Sesi Habis"</em>.
+                    </small>
+
+                    <div style="display: flex; align-items: center; gap: 10px; margin-top: 4px; padding-top: 10px; border-top: 1px dashed #e2e8f0;">
+                        <span style="font-size: 12px; color: #475569;">Batas Terhitung "Pulang Terlalu Lama":</span>
+                        <input type="number" name="checkout_max_delay_minutes" id="checkoutMaxDelayMinutes" min="0" max="720" value="60" style="width: 75px; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12.5px;">
+                        <span style="font-size: 12px; color: #475569;">menit</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer Buttons -->
+            <div style="display: flex; justify-content: flex-end; gap: 10px; padding-top: 10px; border-top: 1px solid #e2e8f0;">
+                <button type="button" onclick="closeTimeSettingsModal()" class="btn btn-secondary" style="font-size: 13px; padding: 8px 16px; border-radius: 6px;">Batal</button>
+                <button type="submit" class="btn btn-primary" style="font-size: 13px; padding: 8px 20px; border-radius: 6px; font-weight: 700; background: #0284c7;">
+                    <i class="fa-solid fa-floppy-disk"></i> Simpan Pengaturan
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+const unitSettingsData = <?= json_encode($allUnitSettings, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
+
+function openTimeSettingsModal(preferredUnitId) {
+    let sel = document.getElementById('settingsUnitSelect');
+    if (preferredUnitId && sel && sel.tagName === 'SELECT') {
+        sel.value = preferredUnitId;
+    }
+    let uId = sel ? sel.value : <?= (int)($ksUnitId ?? 0) ?>;
+    onSettingUnitChange(uId);
+    let modal = document.getElementById('timeSettingsModal');
+    if (modal) {
+        modal.style.display = 'flex';
+    }
+}
+
+function closeTimeSettingsModal() {
+    let modal = document.getElementById('timeSettingsModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+function onSettingUnitChange(unitId) {
+    let data = (unitSettingsData && unitSettingsData[unitId]) ? unitSettingsData[unitId] : {
+        early_departure_mode: 'offset_minutes',
+        early_departure_minutes: 0,
+        early_departure_time: '',
+        auto_attendance_mode: 'offset_minutes',
+        auto_attendance_minutes: 180,
+        auto_attendance_time: '',
+        checkout_window_hours: 4.0,
+        checkout_max_delay_minutes: 60
+    };
+
+    // Early Departure
+    if (data.early_departure_mode === 'fixed_time') {
+        let el = document.getElementById('modeEarlyFixed');
+        if (el) el.checked = true;
+    } else {
+        let el = document.getElementById('modeEarlyOffset');
+        if (el) el.checked = true;
+    }
+    let edm = document.getElementById('earlyDepartureMinutes');
+    if (edm) edm.value = data.early_departure_minutes ?? 0;
+    let edt = document.getElementById('earlyDepartureTime');
+    if (edt) edt.value = (data.early_departure_time || '').substring(0, 8);
+
+    // Auto Attendance
+    if (data.auto_attendance_mode === 'fixed_time') {
+        let el = document.getElementById('modeAutoFixed');
+        if (el) el.checked = true;
+    } else {
+        let el = document.getElementById('modeAutoOffset');
+        if (el) el.checked = true;
+    }
+    let aam = document.getElementById('autoAttendanceMinutes');
+    if (aam) aam.value = data.auto_attendance_minutes ?? 180;
+    let aat = document.getElementById('autoAttendanceTime');
+    if (aat) aat.value = (data.auto_attendance_time || '').substring(0, 8);
+
+    // Checkout Window
+    let cwh = document.getElementById('checkoutWindowHours');
+    if (cwh) cwh.value = parseFloat(data.checkout_window_hours || 4.0);
+    let cmd = document.getElementById('checkoutMaxDelayMinutes');
+    if (cmd) cmd.value = parseInt(data.checkout_max_delay_minutes ?? 60);
+
+    toggleEarlyMode();
+    toggleAutoMode();
+}
+
+function toggleEarlyMode() {
+    let fixedEl = document.getElementById('modeEarlyFixed');
+    let isFixed = fixedEl ? fixedEl.checked : false;
+    let offsetBox = document.getElementById('earlyOffsetBox');
+    let fixedBox = document.getElementById('earlyFixedBox');
+    let offsetInp = document.getElementById('earlyDepartureMinutes');
+    let fixedInp = document.getElementById('earlyDepartureTime');
+
+    if (offsetBox) offsetBox.style.opacity = isFixed ? '0.4' : '1';
+    if (fixedBox) fixedBox.style.opacity = isFixed ? '1' : '0.4';
+    if (offsetInp) offsetInp.disabled = isFixed;
+    if (fixedInp) fixedInp.disabled = !isFixed;
+}
+
+function toggleAutoMode() {
+    let fixedEl = document.getElementById('modeAutoFixed');
+    let isFixed = fixedEl ? fixedEl.checked : false;
+    let offsetBox = document.getElementById('autoOffsetBox');
+    let fixedBox = document.getElementById('autoFixedBox');
+    let offsetInp = document.getElementById('autoAttendanceMinutes');
+    let fixedInp = document.getElementById('autoAttendanceTime');
+
+    if (offsetBox) offsetBox.style.opacity = isFixed ? '0.4' : '1';
+    if (fixedBox) fixedBox.style.opacity = isFixed ? '1' : '0.4';
+    if (offsetInp) offsetInp.disabled = isFixed;
+    if (fixedInp) fixedInp.disabled = !isFixed;
+}
+
+// Inisialisasi modal saat load
+document.addEventListener('DOMContentLoaded', function() {
+    let sel = document.getElementById('settingsUnitSelect');
+    if (sel) {
+        onSettingUnitChange(sel.value);
+    }
+});
+</script>
+<?php endif; ?>
 
 <?php require '../../includes/footer.php'; ?>

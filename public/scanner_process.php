@@ -235,13 +235,15 @@ try {
         if (!$activity || $activity['status'] !== 'active' || empty($studentInTime) || empty($studentOutTime)) { 
             $responseData = ['type'=>'student', 'name'=>$student['name'], 'nis'=>$student['nis'], 'class_name'=>$student['class_name'], 'photo'=>$student['photo'], 'time'=>$timeNow, 'badge_text'=>'ℹ TIDAK ADA JADWAL', 'badge_class'=>'late', 'already'=>true, 'message'=>'Hari Ini Tidak Ada Jadwal'];
         } else {
-            $jamMasukDetik = strtotime($studentInTime);
-            $jamPulangDetik = strtotime($studentOutTime);
-            
-            $bukaMasuk = strtotime('-2 hours', $jamMasukDetik);
-            $tutupMasuk = strtotime('+3 hours', $jamMasukDetik);
-            $bukaPulang = strtotime('+3 hours', $jamMasukDetik);
-            $tutupPulang = strtotime('+7 hours', $jamPulangDetik);
+            $sessionLimits = getAttendanceSessionLimits($pdo, (int)$student['unit_id'], $dateToday, $studentInTime, $studentOutTime);
+            $jamMasukDetik = $sessionLimits['jamMasukDetik'];
+            $jamPulangDetik = $sessionLimits['jamPulangDetik'];
+            $bukaMasuk = $sessionLimits['bukaMasuk'];
+            $tutupMasuk = $sessionLimits['tutupMasuk'];
+            $bukaPulang = $sessionLimits['bukaPulang'];
+            $tutupPulang = $sessionLimits['tutupPulang'];
+            $batasPulangCepat = $sessionLimits['batasPulangCepat'];
+            $batasTerlaluLamaDetik = $sessionLimits['batasTerlaluLamaDetik'];
 
             if ($waktuSekarangDetik < $bukaMasuk) {
                 $responseData = ['type'=>'student', 'name'=>$student['name'], 'nis'=>$student['nis'], 'class_name'=>$student['class_name'], 'photo'=>$student['photo'], 'time'=>$timeNow, 'badge_text'=>'✓ KEPAGIAN', 'badge_class'=>'ontime', 'scan_type'=>'masuk', 'already'=>true, 'message'=>'Belum waktunya absen masuk!'];
@@ -292,13 +294,13 @@ try {
                     $scanType = 'pulang';
                     $selisihPulang = $waktuSekarangDetik - $jamPulangDetik; 
 
-                    if ($selisihPulang < 0) { 
+                    if ($waktuSekarangDetik < $batasPulangCepat) { 
                         $badgeText = '⚠ PULANG CEPAT'; 
                         $badgeClass = 'late'; 
                         if ($effSched['has_eskul']) {
                             $message = 'Perhatian: Siswa terdaftar pada eskul (' . implode(', ', $effSched['eskul_names']) . ') s.d. ' . substr($studentOutTime, 0, 5);
                         }
-                    } elseif ($selisihPulang >= (1 * 3600)) { 
+                    } elseif ($selisihPulang >= $batasTerlaluLamaDetik) { 
                         $badgeText = '⚠ PULANG TERLALU LAMA'; 
                         $badgeClass = 'late'; 
                     } else { 
@@ -306,8 +308,8 @@ try {
                         $badgeClass = 'ontime'; 
                     }
 
-                    // Jalankan auto-alpha HANYA jika waktu sekarang sudah melewati jam pulang resmi unit
-                    if ($waktuSekarangDetik >= $jamPulangDetik) {
+                    // Jalankan auto-alpha HANYA jika waktu sekarang sudah mencapai batas tutup sesi masuk / otomatis absen
+                    if ($waktuSekarangDetik >= $tutupMasuk) {
                         runAutoAlpha($pdo, $student['unit_id'], $dateToday, $activity['id'], (int)$student['id'], 0);
                     }
 
