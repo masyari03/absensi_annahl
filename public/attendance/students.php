@@ -12,51 +12,174 @@ $pageTitle = 'Absensi Siswa';
 $userId = currentUserId();
 
 // ==============================================================================
-// SISTEM PENGATURAN AKSES KEPALA SEKOLAH (AUTO-CREATE TABLE JIKA BELUM ADA)
+// SISTEM PENGATURAN AKSES KEPALA SEKOLAH & GURU (AUTO-CREATE TABLE JIKA BELUM ADA)
 // ==============================================================================
 $pdo->exec("CREATE TABLE IF NOT EXISTS system_settings (
     setting_key VARCHAR(50) PRIMARY KEY,
     setting_value VARCHAR(255)
 )");
 
-// Proses Toggle Akses (Hanya Super Admin yang bisa melakukan ini)
+$pdo->exec("CREATE TABLE IF NOT EXISTS officer_attendance_permissions (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    granted_by BIGINT UNSIGNED NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_user_officer (user_id),
+    CONSTRAINT fk_officer_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+// 1. Proses Simpan Hak Akses Guru untuk Aksi Hadir / Piket (Hanya Super Admin)
+if ($currentRole === 'super_admin' && isset($_POST['save_officer_permissions'])) {
+    $selectedUserIds = array_filter(array_map('intval', $_POST['officer_user_ids'] ?? []));
+    $pdo->beginTransaction();
+    try {
+        $pdo->exec("DELETE FROM officer_attendance_permissions");
+        if (!empty($selectedUserIds)) {
+            $stmtInsert = $pdo->prepare("INSERT INTO officer_attendance_permissions (user_id, granted_by) VALUES (?, ?)");
+            $stmtGrantMenu = $pdo->prepare("INSERT IGNORE INTO user_menu_access (user_id, menu_id) VALUES (?, 17)"); // menu 17 = attendance_students
+            foreach ($selectedUserIds as $uId) {
+                if ($uId > 0) {
+                    $stmtInsert->execute([$uId, $userId]);
+                    $stmtGrantMenu->execute([$uId]);
+                    if (function_exists('refreshUserPermissions')) {
+                        refreshUserPermissions($pdo, $uId);
+                    }
+                }
+            }
+        }
+        $pdo->commit();
+        flash('success', 'Hak akses petugas absensi untuk guru berhasil diperbarui (' . count($selectedUserIds) . ' guru diberikan wewenang).');
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        flash('error', 'Gagal memperbarui hak akses guru: ' . $e->getMessage());
+    }
+    redirect('students.php?' . http_build_query($_GET));
+    exit;
+}
+
+// 2. Proses Toggle Akses Kepala Sekolah (Hanya Super Admin yang bisa melakukan ini)
 if ($currentRole === 'super_admin' && isset($_POST['toggle_ks_access'])) {
     $key = $_POST['setting_key'];
     $val = $_POST['setting_value'] === '1' ? '0' : '1'; // Balikkan nilai (Toggle)
     $pdo->prepare("INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?")->execute([$key, $val, $val]);
     flash('success', 'Hak akses Kepala Sekolah berhasil diperbarui.');
-    redirect('students.php');
+    redirect('students.php?' . http_build_query($_GET));
+    exit;
 }
 
 // Ambil Status Akses Saat Ini
 $ksCanDelete = $pdo->query("SELECT setting_value FROM system_settings WHERE setting_key = 'ks_delete_attendance'")->fetchColumn() === '1';
 $ksCanEditTime = $pdo->query("SELECT setting_value FROM system_settings WHERE setting_key = 'ks_edit_time'")->fetchColumn() === '1';
 
-// Logika Siapa yang Boleh Hapus
+// Cek Wewenang Aksi Hadir / Cepat (Super Admin, Kepala Sekolah, dan Guru Terpilih)
+$canQuickRecord = canExecuteQuickAttendance($pdo, (int)$userId, $currentRole);
 $canDelete = ($currentRole === 'super_admin' || ($currentRole === 'kepala_sekolah' && $ksCanDelete));
 
 // ==============================================================================
 // PROSES CATAT KEHADIRAN CEPAT PETUGAS (QUICK ATTENDANCE)
 // ==============================================================================
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['quick_record_attendance'])) {
+    if (!$canQuickRecord) {
+        flash('error', 'Anda tidak memiliki hak akses untuk mencatat kehadiran siswa.');
+        redirect('students.php?' . http_build_query($_GET));
+        exit;
+    }
+
     $stuId = (int)$_POST['quick_student_id'];
     $actId = (int)$_POST['quick_activity_id'];
     $attDate = $_POST['quick_date'] ?? date('Y-m-d');
-    $newStat = $_POST['quick_status'] ?? 'tepat_waktu';
-    $ket = trim($_POST['quick_keterangan'] ?? 'Dicatat Petugas');
-    $timeIn = in_array($newStat, ['tepat_waktu', 'terlambat']) ? date('H:i:s') : null;
+    $timeNow = date('H:i:s');
+    $timeIn = ($attDate === date('Y-m-d')) ? $timeNow : '07:00:00';
 
-    $stmtEnr = $pdo->prepare("SELECT id FROM student_enrollments WHERE student_id = ? AND status = 'active' LIMIT 1");
+    $stmtEnr = $pdo->prepare("SELECT se.id, g.unit_id FROM student_enrollments se JOIN class_groups cg ON cg.id = se.class_group_id JOIN grades g ON g.id = cg.grade_id WHERE se.student_id = ? AND se.status = 'active' LIMIT 1");
     $stmtEnr->execute([$stuId]);
-    $enrId = $stmtEnr->fetchColumn();
+    $enrData = $stmtEnr->fetch(PDO::FETCH_ASSOC);
 
-    if ($enrId) {
+    if ($enrData) {
+        $enrId = (int)$enrData['id'];
+        $sUnitId = (int)$enrData['unit_id'];
+
+        // Cek batasan hak akses unit untuk Kepala Sekolah
+        if ($currentRole === 'kepala_sekolah') {
+            $stmtCheckUnit = $pdo->prepare("SELECT 1 FROM admin_unit_permissions WHERE user_id = ? AND unit_id = ? LIMIT 1");
+            $stmtCheckUnit->execute([$userId, $sUnitId]);
+            $isUnitAllowed = (bool)$stmtCheckUnit->fetchColumn();
+            if (!$isUnitAllowed) {
+                $stmtCheckStaffUnit = $pdo->prepare("SELECT 1 FROM staff WHERE user_id = ? AND unit_id = ? LIMIT 1");
+                $stmtCheckStaffUnit->execute([$userId, $sUnitId]);
+                $isUnitAllowed = (bool)$stmtCheckStaffUnit->fetchColumn();
+            }
+            if (!$isUnitAllowed) {
+                flash('error', 'Anda hanya memiliki wewenang mencatat kehadiran siswa di unit sekolah Anda.');
+                redirect('students.php?' . http_build_query($_GET));
+                exit;
+            }
+        }
+
+        // Tentukan batas jam terlambat siswa secara akurat
+        $dayCode = (int)date('N', strtotime($attDate));
+        $studentLateTime = null;
+
+        // 1. Cek dari jadwal efektif (termasuk eskul / KBM)
+        if (function_exists('getStudentEffectiveSchedule')) {
+            $effSched = getStudentEffectiveSchedule($pdo, $stuId, $sUnitId, $attDate, $dayCode);
+            if (!empty($effSched['has_schedule']) && !empty($effSched['student_late']) && $effSched['student_late'] !== '00:00:00') {
+                $studentLateTime = $effSched['student_late'];
+            }
+        }
+
+        // 2. Cek dari activity jika ada
+        if (!$studentLateTime && $actId > 0) {
+            $stmtActCheck = $pdo->prepare("SELECT student_late, student_in FROM activities WHERE id = ? LIMIT 1");
+            $stmtActCheck->execute([$actId]);
+            $actRow = $stmtActCheck->fetch(PDO::FETCH_ASSOC);
+            if ($actRow && !empty($actRow['student_late']) && $actRow['student_late'] !== '00:00:00') {
+                $studentLateTime = $actRow['student_late'];
+            } elseif ($actRow && !empty($actRow['student_in']) && $actRow['student_in'] !== '00:00:00') {
+                $studentLateTime = $actRow['student_in'];
+            }
+        }
+
+        // 3. Cek dari weekly_schedules unit
+        if (!$studentLateTime && $sUnitId > 0) {
+            $stmtWkCheck = $pdo->prepare("
+                SELECT student_late, student_in 
+                FROM weekly_schedules 
+                WHERE unit_id = ? AND day_code = ? AND is_active = 'active' AND (target_type = 'student' OR target_type IS NULL) 
+                ORDER BY id DESC LIMIT 1
+            ");
+            $stmtWkCheck->execute([$sUnitId, $dayCode]);
+            $wkRow = $stmtWkCheck->fetch(PDO::FETCH_ASSOC);
+            if ($wkRow && !empty($wkRow['student_late']) && $wkRow['student_late'] !== '00:00:00') {
+                $studentLateTime = $wkRow['student_late'];
+            } elseif ($wkRow && !empty($wkRow['student_in']) && $wkRow['student_in'] !== '00:00:00') {
+                $studentLateTime = $wkRow['student_in'];
+            }
+        }
+
+        // Fallback default jika tidak terkonfigurasi
+        if (!$studentLateTime) {
+            $studentLateTime = '07:15:00';
+        }
+
+        // Bandingkan jam sekarang dengan batas terlambat
+        $reqStatus = $_POST['quick_status'] ?? 'auto';
+        if (in_array($reqStatus, ['auto', 'hadir', 'tepat_waktu', 'terlambat'])) {
+            if ($timeIn > $studentLateTime) {
+                $newStat = 'terlambat';
+                $ket = 'Dicatat Petugas (Terlambat)';
+            } else {
+                $newStat = 'tepat_waktu';
+                $ket = 'Dicatat Petugas';
+            }
+        } else {
+            $newStat = $reqStatus;
+            $ket = trim($_POST['quick_keterangan'] ?? 'Dicatat Petugas');
+            $timeIn = in_array($newStat, ['izin', 'sakit', 'alpa']) ? null : $timeIn;
+        }
+
         // Jika activity_id belum ada, cari atau buat
         if (!$actId) {
-            $stmtStuUnit = $pdo->prepare("SELECT g.unit_id FROM students s JOIN student_enrollments se ON se.student_id = s.id JOIN class_groups cg ON cg.id = se.class_group_id JOIN grades g ON g.id = cg.grade_id WHERE s.id = ? LIMIT 1");
-            $stmtStuUnit->execute([$stuId]);
-            $sUnitId = (int)$stmtStuUnit->fetchColumn();
-
             $stmtAct = $pdo->prepare("SELECT id FROM activities WHERE activity_date = ? AND unit_id = ? LIMIT 1");
             $stmtAct->execute([$attDate, $sUnitId]);
             $actId = (int)$stmtAct->fetchColumn();
@@ -73,7 +196,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['quick_record_
             $pdo->prepare("INSERT INTO student_attendances (student_id, enrollment_id, activity_id, attendance_date, time_in, status, keterangan) VALUES (?, ?, ?, ?, ?, ?, ?)")
                 ->execute([$stuId, $enrId, $actId ?: 1, $attDate, $timeIn, $newStat, $ket]);
         }
-        flash('success', 'Kehadiran siswa berhasil dicatat oleh petugas.');
+
+        // Kirim notifikasi WhatsApp Fonnte jika fitur aktif
+        if (function_exists('sendStudentWaNotification') && in_array($newStat, ['tepat_waktu', 'terlambat'])) {
+            try {
+                sendStudentWaNotification($pdo, $stuId, 'in', [
+                    'jam_absen' => $timeIn,
+                    'status_kehadiran' => $newStat,
+                    'jam_batas' => $studentLateTime
+                ]);
+            } catch (Exception $e) {}
+        }
+
+        $labelStat = ($newStat === 'terlambat') ? 'TERLAMBAT' : ($newStat === 'tepat_waktu' ? 'TEPAT WAKTU' : ucfirst($newStat));
+        flash('success', "Kehadiran siswa berhasil dicatat sebagai {$labelStat}" . ($timeIn ? " (pukul {$timeIn})" : "") . ".");
     } else {
         flash('error', 'Siswa tidak memiliki enrollment aktif.');
     }
@@ -130,19 +266,39 @@ if ($currentRole === 'super_admin') {
     $stmtKs = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? LIMIT 1");
     $stmtKs->execute([$userId]);
     $ksUnitId = $stmtKs->fetchColumn();
+    if (!$ksUnitId) {
+        $stmtStaffU = $pdo->prepare("SELECT unit_id FROM staff WHERE user_id = ? LIMIT 1");
+        $stmtStaffU->execute([$userId]);
+        $ksUnitId = $stmtStaffU->fetchColumn();
+    }
     $unitId = $ksUnitId ? (int)$ksUnitId : -1;
 
-    $stmtGrades = $pdo->prepare("SELECT * FROM grades WHERE unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?) ORDER BY sort_order, grade");
-    $stmtGrades->execute([$userId]);
+    $stmtGrades = $pdo->prepare("SELECT * FROM grades WHERE unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?) OR unit_id = ? ORDER BY sort_order, grade");
+    $stmtGrades->execute([$userId, $unitId]);
     $grades = $stmtGrades->fetchAll();
     
-    $stmtCg = $pdo->prepare("SELECT cg.id, cg.name, g.grade FROM class_groups cg INNER JOIN grades g ON g.id = cg.grade_id WHERE g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?) ORDER BY g.sort_order, cg.name");
-    $stmtCg->execute([$userId]);
+    $stmtCg = $pdo->prepare("SELECT cg.id, cg.name, g.grade FROM class_groups cg INNER JOIN grades g ON g.id = cg.grade_id WHERE g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?) OR g.unit_id = ? ORDER BY g.sort_order, cg.name");
+    $stmtCg->execute([$userId, $unitId]);
     $classGroups = $stmtCg->fetchAll();
 } else {
-    $unitId = 0;
-    $grades = [];
-    $classGroups = [];
+    // Role staff / admin (Guru / Petugas Piket)
+    $stmtStaffUnit = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? UNION SELECT unit_id FROM staff WHERE user_id = ? AND unit_id IS NOT NULL LIMIT 1");
+    $stmtStaffUnit->execute([$userId, $userId]);
+    $sUnit = $stmtStaffUnit->fetchColumn();
+    $unitId = $sUnit ? (int)$sUnit : 0;
+
+    if ($unitId > 0) {
+        $stmtGrades = $pdo->prepare("SELECT * FROM grades WHERE unit_id = ? ORDER BY sort_order, grade");
+        $stmtGrades->execute([$unitId]);
+        $grades = $stmtGrades->fetchAll();
+
+        $stmtCg = $pdo->prepare("SELECT cg.id, cg.name, g.grade FROM class_groups cg INNER JOIN grades g ON g.id = cg.grade_id WHERE g.unit_id = ? ORDER BY g.sort_order, cg.name");
+        $stmtCg->execute([$unitId]);
+        $classGroups = $stmtCg->fetchAll();
+    } else {
+        $grades = [];
+        $classGroups = [];
+    }
 }
 
 $access = getStudentAccessCondition('g', 'cg');
@@ -227,6 +383,8 @@ if ($isDayView) {
             un.id AS unit_id,
             COALESCE(a.id, sa.activity_id) AS activity_id,
             COALESCE(a.name, 'KBM Reguler') AS activity_name,
+            a.student_late,
+            a.student_in,
             sa.id,
             COALESCE(sa.attendance_date, a.activity_date, ?) AS attendance_date,
             sa.time_in,
@@ -272,6 +430,8 @@ if ($isDayView) {
             sa.*, sa.student_id, s.name, s.nis, s.photo, 
             g.grade, cg.name AS class_name, 
             a.name AS activity_name,
+            a.student_late,
+            a.student_in,
             un.unit AS unit_name
         FROM student_attendances sa
         INNER JOIN students s ON s.id = sa.student_id
@@ -311,34 +471,159 @@ foreach ($attendances as $row) {
     }
 }
 
+// Siapkan data izin petugas untuk Super Admin
+$officerCount = (int)$pdo->query("SELECT COUNT(*) FROM officer_attendance_permissions")->fetchColumn();
+$staffList = [];
+if ($currentRole === 'super_admin') {
+    $staffList = $pdo->query("
+        SELECT u.id AS user_id, u.name, u.username, u.role, 
+               un.unit AS unit_name, s.id AS staff_id,
+               (SELECT 1 FROM officer_attendance_permissions WHERE user_id = u.id LIMIT 1) AS is_permitted
+        FROM users u
+        LEFT JOIN staff s ON s.user_id = u.id
+        LEFT JOIN units un ON un.id = s.unit_id
+        WHERE u.deleted_at IS NULL AND u.role IN ('staff', 'admin')
+        ORDER BY un.id ASC, u.name ASC
+    ")->fetchAll(PDO::FETCH_ASSOC);
+}
+
 require '../../includes/header.php';
 ?>
 
 <?php if ($currentRole === 'super_admin'): ?>
-<!-- PANEL PENGATURAN HAK AKSES KEPALA SEKOLAH -->
-<div class="card" style="margin-bottom: 20px; background: #f8fafc; border: 1px solid #cbd5e1;">
-    <div style="padding: 15px 20px;">
-        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #334155;">⚙️ Panel Akses: Hak Kepala Sekolah</h4>
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+<!-- PANEL PENGATURAN HAK AKSES -->
+<div class="card" style="margin-bottom: 20px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px;">
+    <div style="padding: 16px 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+            <h4 style="margin: 0; font-size: 14.5px; color: #1e293b; font-weight: 700;">
+                <i class="fa-solid fa-user-shield" style="color: #0284c7; margin-right: 6px;"></i> Pengaturan Hak Akses Absensi (Kepala Sekolah & Guru Petugas Piket)
+            </h4>
+            <button type="button" class="btn btn-sm btn-primary" onclick="openOfficerModal()" style="display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; font-size: 12px; font-weight: 700; border-radius: 6px; box-shadow: 0 2px 4px rgba(2,132,199,0.25);">
+                <i class="fa-solid fa-user-gear"></i> Kelola Guru Berwenang (Aksi Hadir / Piket)
+                <span class="badge" style="background: white; color: #0284c7; font-weight: 800; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 4px;">
+                    <?= $officerCount ?> Guru Aktif
+                </span>
+            </button>
+        </div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+            <span style="font-size: 12px; color: #64748b; font-weight: 600;">Hak Akses Kepala Sekolah:</span>
             <form method="POST" style="margin: 0;">
                 <input type="hidden" name="toggle_ks_access" value="1">
                 <input type="hidden" name="setting_key" value="ks_delete_attendance">
                 <input type="hidden" name="setting_value" value="<?= $ksCanDelete ? '1' : '0' ?>">
-                <button type="submit" class="btn <?= $ksCanDelete ? 'btn-success' : 'btn-danger' ?>" style="font-size: 12px; padding: 7px 12px;">
-                    Akses Hapus Absensi: <?= $ksCanDelete ? 'ON (Bisa Hapus)' : 'OFF (Terkunci)' ?>
+                <button type="submit" class="btn <?= $ksCanDelete ? 'btn-success' : 'btn-danger' ?>" style="font-size: 12px; padding: 6px 12px; border-radius: 6px;">
+                    Akses Hapus: <?= $ksCanDelete ? 'ON (Bisa Hapus)' : 'OFF (Terkunci)' ?>
                 </button>
             </form>
             <form method="POST" style="margin: 0;">
                 <input type="hidden" name="toggle_ks_access" value="1">
                 <input type="hidden" name="setting_key" value="ks_edit_time">
                 <input type="hidden" name="setting_value" value="<?= $ksCanEditTime ? '1' : '0' ?>">
-                <button type="submit" class="btn <?= $ksCanEditTime ? 'btn-success' : 'btn-danger' ?>" style="font-size: 12px; padding: 7px 12px;">
+                <button type="submit" class="btn <?= $ksCanEditTime ? 'btn-success' : 'btn-danger' ?>" style="font-size: 12px; padding: 6px 12px; border-radius: 6px;">
                     Akses Edit Jam: <?= $ksCanEditTime ? 'ON (Bisa Edit)' : 'OFF (Terkunci)' ?>
                 </button>
             </form>
+            <span style="font-size: 11.5px; color: #0369a1; background: #e0f2fe; padding: 5px 10px; border-radius: 6px; border: 1px solid #bae6fd;">
+                <i class="fa-solid fa-circle-check"></i> Kepala Sekolah otomatis memiliki wewenang aksi Hadir/Piket untuk unitnya.
+            </span>
         </div>
     </div>
 </div>
+
+<!-- MODAL KELOLA AKSES GURU (SUPER ADMIN) -->
+<div class="modal-overlay" id="officerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15,23,42,0.65); z-index: 99999; justify-content: center; align-items: center; padding: 20px;" onclick="closeOfficerModal()">
+    <div class="modal-box" onclick="event.stopPropagation()" style="background: white; border-radius: 12px; max-width: 650px; width: 100%; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.35);">
+        <div style="padding: 16px 22px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: #f8fafc;">
+            <div>
+                <h3 style="margin: 0; font-size: 16px; color: #0f172a; font-weight: 700;">
+                    <i class="fa-solid fa-user-check" style="color: #0284c7; margin-right: 6px;"></i> Berikan Wewenang Guru untuk Aksi Hadir / Piket
+                </h3>
+                <small style="color: #64748b;">Centang guru/staff tertentu yang diberi akses tombol Aksi Hadir / Absensi Cepat siswa terlewat.</small>
+            </div>
+            <button type="button" onclick="closeOfficerModal()" style="border: none; background: transparent; font-size: 20px; color: #94a3b8; cursor: pointer; padding: 0 6px;">&times;</button>
+        </div>
+        <form method="POST" style="display: flex; flex-direction: column; flex: 1; overflow: hidden; margin: 0;">
+            <input type="hidden" name="save_officer_permissions" value="1">
+            <div style="padding: 12px 22px; border-bottom: 1px solid #f1f5f9; background: white; display: flex; gap: 10px; align-items: center;">
+                <input type="text" id="officerSearchInput" placeholder="Cari nama guru atau username..." onkeyup="filterOfficers()" style="flex: 1; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
+                <button type="button" class="btn btn-sm" onclick="selectAllOfficers(true)" style="background: #e2e8f0; color: #334155; font-size: 11px; padding: 6px 10px;">Pilih Semua</button>
+                <button type="button" class="btn btn-sm" onclick="selectAllOfficers(false)" style="background: #e2e8f0; color: #334155; font-size: 11px; padding: 6px 10px;">Batal Semua</button>
+            </div>
+            <div style="flex: 1; overflow-y: auto; padding: 10px 22px;">
+                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid #e2e8f0; text-align: left; color: #64748b; font-size: 12px;">
+                            <th style="padding: 8px 4px; width: 45px; text-align: center;">Pilih</th>
+                            <th style="padding: 8px;">Nama Guru / Staff</th>
+                            <th style="padding: 8px;">Username</th>
+                            <th style="padding: 8px;">Role</th>
+                            <th style="padding: 8px;">Unit</th>
+                        </tr>
+                    </thead>
+                    <tbody id="officerTableBody">
+                        <?php if (empty($staffList)): ?>
+                            <tr>
+                                <td colspan="5" style="text-align: center; padding: 20px; color: #94a3b8;">Tidak ada data akun guru/staff ditemukan.</td>
+                            </tr>
+                        <?php else: ?>
+                            <?php foreach ($staffList as $stf): ?>
+                                <tr class="officerRow" style="border-bottom: 1px solid #f1f5f9;">
+                                    <td style="padding: 8px 4px; text-align: center;">
+                                        <input type="checkbox" name="officer_user_ids[]" value="<?= $stf['user_id'] ?>" class="officerCheckbox" <?= !empty($stf['is_permitted']) ? 'checked' : '' ?>>
+                                    </td>
+                                    <td style="padding: 8px; font-weight: 600; color: #1e293b;" class="officerName">
+                                        <?= e($stf['name']) ?>
+                                    </td>
+                                    <td style="padding: 8px; color: #64748b;">
+                                        <?= e($stf['username']) ?>
+                                    </td>
+                                    <td style="padding: 8px;">
+                                        <span class="badge" style="background: <?= $stf['role'] === 'admin' ? '#0284c7' : '#64748b' ?>; color: white; font-size: 10px;">
+                                            <?= e(strtoupper($stf['role'])) ?>
+                                        </span>
+                                    </td>
+                                    <td style="padding: 8px; color: #0284c7; font-weight: 600;">
+                                        <?= e($stf['unit_name'] ?? 'Semua Unit') ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+            <div style="padding: 14px 22px; border-top: 1px solid #e2e8f0; background: #f8fafc; display: flex; justify-content: flex-end; gap: 10px;">
+                <button type="button" class="btn btn-secondary" onclick="closeOfficerModal()" style="font-size: 13px; padding: 8px 16px;">Batal</button>
+                <button type="submit" class="btn btn-primary" style="font-size: 13px; padding: 8px 20px; font-weight: 700;">Simpan Hak Akses</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openOfficerModal() {
+    const m = document.getElementById('officerModal');
+    if (m) m.style.display = 'flex';
+}
+function closeOfficerModal() {
+    const m = document.getElementById('officerModal');
+    if (m) m.style.display = 'none';
+}
+function filterOfficers() {
+    const q = (document.getElementById('officerSearchInput')?.value || '').toLowerCase();
+    document.querySelectorAll('.officerRow').forEach(row => {
+        const text = row.innerText.toLowerCase();
+        row.style.display = text.includes(q) ? '' : 'none';
+    });
+}
+function selectAllOfficers(checked) {
+    document.querySelectorAll('.officerCheckbox').forEach(cb => {
+        const row = cb.closest('tr');
+        if (row && row.style.display !== 'none') {
+            cb.checked = checked;
+        }
+    });
+}
+</script>
 <?php endif; ?>
 
 <div class="card">
@@ -565,29 +850,49 @@ require '../../includes/header.php';
                         <td><small><?= e($attendance['keterangan'] ?? '-') ?></small></td>
                         <td>
                             <?php if ($hasRecord): ?>
-                                <a href="edit_student.php?id=<?= $attendance['id'] ?>" class="btn btn-success" style="padding: 4px 10px; font-size:12px;">Edit</a>
+                                <?php if ($canQuickRecord || in_array($currentRole, ['super_admin', 'kepala_sekolah'])): ?>
+                                    <a href="edit_student.php?id=<?= $attendance['id'] ?>" class="btn btn-success" style="padding: 4px 10px; font-size:12px;">Edit</a>
+                                <?php else: ?>
+                                    <span style="color:#64748b; font-size:12px;">Tercatat</span>
+                                <?php endif; ?>
                             <?php else: ?>
-                                <!-- AKSI CEPAT PETUGAS UNTUK SISWA BELUM ABSEN (TERLEWAT) -->
-                                <div style="display: inline-flex; gap: 4px; flex-wrap: wrap; align-items: center;">
-                                    <form method="POST" style="margin: 0; display: inline;" onsubmit="return confirm('Tandai <?= addslashes(e($attendance['name'])) ?> HADIR sekarang?');">
-                                        <input type="hidden" name="quick_record_attendance" value="1">
-                                        <input type="hidden" name="quick_student_id" value="<?= $attendance['student_id'] ?>">
-                                        <input type="hidden" name="quick_activity_id" value="<?= $attendance['activity_id'] ?? 0 ?>">
-                                        <input type="hidden" name="quick_date" value="<?= e($attendance['attendance_date']) ?>">
-                                        <input type="hidden" name="quick_status" value="tepat_waktu">
-                                        <button type="submit" class="btn btn-sm" style="background: #10b981; color: white; padding: 3px 8px; font-size: 11px; font-weight: 700; border-radius: 4px;" title="Tandai Hadir Tepat Waktu Langsung">
-                                            ✓ Hadir
-                                        </button>
-                                    </form>
+                                <?php if ($canQuickRecord): 
+                                    $rowLateTime = !empty($attendance['student_late']) && $attendance['student_late'] !== '00:00:00' ? $attendance['student_late'] : '06:45:00';
+                                    $timeNowStr = date('H:i:s');
+                                    $isCurrentlyLate = ($timeNowStr > $rowLateTime);
+                                ?>
+                                    <!-- AKSI CEPAT PETUGAS UNTUK SISWA BELUM ABSEN (TERLEWAT) -->
+                                    <div style="display: inline-flex; gap: 4px; flex-wrap: wrap; align-items: center;">
+                                        <form method="POST" style="margin: 0; display: inline;" onsubmit="return confirm('Tandai <?= addslashes(e($attendance['name'])) ?> HADIR sekarang?\nStatus akan tercatat: <?= $isCurrentlyLate ? 'TERLAMBAT (Lewat batas jam ' . substr($rowLateTime, 0, 5) . ')' : 'TEPAT WAKTU' ?>');">
+                                            <input type="hidden" name="quick_record_attendance" value="1">
+                                            <input type="hidden" name="quick_student_id" value="<?= $attendance['student_id'] ?>">
+                                            <input type="hidden" name="quick_activity_id" value="<?= $attendance['activity_id'] ?? 0 ?>">
+                                            <input type="hidden" name="quick_date" value="<?= e($attendance['attendance_date']) ?>">
+                                            <input type="hidden" name="quick_status" value="auto">
+                                            <?php if ($isCurrentlyLate): ?>
+                                                <button type="submit" class="btn btn-sm" style="background: #ea580c; color: white; padding: 3px 8px; font-size: 11px; font-weight: 700; border-radius: 4px;" title="Tandai Hadir (Jam sekarang sudah lewat batas jam masuk: Tercatat TERLAMBAT)">
+                                                    ⚠ Hadir (Terlambat)
+                                                </button>
+                                            <?php else: ?>
+                                                <button type="submit" class="btn btn-sm" style="background: #10b981; color: white; padding: 3px 8px; font-size: 11px; font-weight: 700; border-radius: 4px;" title="Tandai Hadir (Sebelum batas jam masuk: Tercatat TEPAT WAKTU)">
+                                                    ✓ Hadir (Tepat Waktu)
+                                                </button>
+                                            <?php endif; ?>
+                                        </form>
 
-                                    <a href="create_student.php?student_id=<?= $attendance['student_id'] ?>&attendance_date=<?= e($attendance['attendance_date']) ?>&status=izin" class="btn btn-sm" style="background: #3b82f6; color: white; padding: 3px 8px; font-size: 11px; font-weight: 600; border-radius: 4px;" title="Input Izin">
-                                        ℹ Izin
-                                    </a>
+                                        <a href="create_student.php?student_id=<?= $attendance['student_id'] ?>&attendance_date=<?= urlencode($attendance['attendance_date']) ?>&status=izin" class="btn btn-sm" style="background: #3b82f6; color: white; padding: 3px 8px; font-size: 11px; font-weight: 600; border-radius: 4px;" title="Input Izin">
+                                            ℹ Izin
+                                        </a>
 
-                                    <a href="create_student.php?student_id=<?= $attendance['student_id'] ?>&attendance_date=<?= e($attendance['attendance_date']) ?>&status=sakit" class="btn btn-sm" style="background: #f59e0b; color: white; padding: 3px 8px; font-size: 11px; font-weight: 600; border-radius: 4px;" title="Input Sakit">
-                                        ♥ Sakit
-                                    </a>
-                                </div>
+                                        <a href="create_student.php?student_id=<?= $attendance['student_id'] ?>&attendance_date=<?= urlencode($attendance['attendance_date']) ?>&status=sakit" class="btn btn-sm" style="background: #f59e0b; color: white; padding: 3px 8px; font-size: 11px; font-weight: 600; border-radius: 4px;" title="Input Sakit">
+                                            ♥ Sakit
+                                        </a>
+                                    </div>
+                                <?php else: ?>
+                                    <span style="color: #94a3b8; font-size: 11.5px; font-style: italic;">
+                                        <i class="fa-solid fa-lock"></i> Menunggu Petugas
+                                    </span>
+                                <?php endif; ?>
                             <?php endif; ?>
                         </td>
                     </tr>

@@ -248,13 +248,39 @@ if (!function_exists('getStudentAccessCondition')) {
                 {$gradeAlias}.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)
                 OR {$gradeAlias}.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?)
                 OR {$classAlias}.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?)
+                OR {$gradeAlias}.unit_id IN (SELECT unit_id FROM staff WHERE user_id = ? AND unit_id IS NOT NULL)
             )",
             'params' => [
+                $uid,
                 $uid,
                 $uid,
                 $uid
             ]
         ];
+    }
+}
+
+/**
+ * Cek apakah pengguna berwenang melakukan aksi absensi manual / aksi hadir cepat siswa.
+ * - Super Admin: Selalu berhak
+ * - Kepala Sekolah: Otomatis berhak sesuai unitnya
+ * - Guru / Staff: Hanya jika diberikan izin khusus oleh Super Admin
+ */
+if (!function_exists('canExecuteQuickAttendance')) {
+    function canExecuteQuickAttendance(PDO $pdo, int $userId, string $role): bool {
+        if ($role === 'super_admin') {
+            return true;
+        }
+        if ($role === 'kepala_sekolah') {
+            return true;
+        }
+        try {
+            $stmt = $pdo->prepare("SELECT 1 FROM officer_attendance_permissions WHERE user_id = ? LIMIT 1");
+            $stmt->execute([$userId]);
+            return (bool)$stmt->fetchColumn();
+        } catch (Exception $e) {
+            return false;
+        }
     }
 }
 

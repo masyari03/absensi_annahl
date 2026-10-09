@@ -10,6 +10,13 @@ checkUserAccess('attendance_students');
 
 $pageTitle = 'Input Manual Absensi Siswa';
 $userId = currentUserId();
+$currentRole = currentRole();
+
+if (!canExecuteQuickAttendance($pdo, (int)$userId, $currentRole)) {
+    flash('error', 'Anda tidak memiliki hak akses untuk mencatat absensi siswa secara manual.');
+    redirect('students.php');
+    exit;
+}
 
 // Ambil daftar siswa sesuai hak akses
 $access = getStudentAccessCondition('g', 'cg');
