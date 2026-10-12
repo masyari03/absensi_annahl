@@ -20,7 +20,7 @@ if ($id <= 0) {
 
 // Ambil data siswa beserta informasi Unit-nya saat ini
 $stmt = $pdo->prepare("
-    SELECT s.id, g.unit_id 
+    SELECT s.id, s.name, g.unit_id 
     FROM students s
     LEFT JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
     LEFT JOIN class_groups cg ON cg.id = se.class_group_id
@@ -31,7 +31,9 @@ $stmt->execute([$id]);
 $student = $stmt->fetch();
 
 if ($student) {
-    
+    $studentName = $student['name'] ?? 'Siswa';
+    $unitId = (int)($student['unit_id'] ?? 0);
+
     // BENTENG KEAMANAN: Pastikan Kepala Sekolah tidak menghapus siswa dari unit lain
     if ($currentRole === 'kepala_sekolah') {
         $stmtKs = $pdo->prepare("
@@ -42,7 +44,7 @@ if ($student) {
         $stmtKs->execute([currentUserId(), currentUserId()]);
         $allowedUnits = $stmtKs->fetchAll(PDO::FETCH_COLUMN);
 
-        if ($student['unit_id'] && !in_array($student['unit_id'], $allowedUnits)) {
+        if ($unitId > 0 && !in_array($unitId, $allowedUnits)) {
             flash('error', 'Akses ditolak. Anda tidak memiliki izin untuk menghapus siswa dari unit ini.');
             redirect('index.php');
             exit;
@@ -59,11 +61,26 @@ if ($student) {
         $stmtEnroll = $pdo->prepare("UPDATE student_enrollments SET status = 'inactive' WHERE student_id = ? AND status = 'active'");
         $stmtEnroll->execute([$id]);
 
+        // 3. Hapus juga seluruh riwayat absensi siswa agar bersih dari laporan absensi
+        $stmtDelAtt = $pdo->prepare("DELETE FROM student_attendances WHERE student_id = ?");
+        $stmtDelAtt->execute([$id]);
+
+        // 4. Hapus relasi jadwal khusus siswa jika ada
+        $stmtDelSched = $pdo->prepare("DELETE FROM weekly_schedule_students WHERE student_id = ?");
+        $stmtDelSched->execute([$id]);
+
         $pdo->commit();
-        flash('success', 'Siswa berhasil dihapus dari sistem.');
+
+        if (function_exists('recordActivityAudit')) {
+            recordActivityAudit($pdo, 'master_students', 'DELETE', 'students', $id, "Menghapus Siswa '{$studentName}' (ID #{$id}) beserta riwayat absensinya", $student, null, $unitId ?: null);
+        }
+
+        flash('success', "Siswa '{$studentName}' berhasil dihapus dari sistem beserta seluruh riwayat absensinya.");
     } catch (Exception $e) {
-        $pdo->rollBack();
-        flash('error', 'Terjadi kesalahan saat menghapus data siswa.');
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        flash('error', 'Terjadi kesalahan saat menghapus data siswa: ' . $e->getMessage());
     }
 
 } else {

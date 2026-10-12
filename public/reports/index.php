@@ -21,6 +21,101 @@ if ($role === 'admin' && $type === 'staff') {
     redirect('index.php?type=student');
 }
 
+$canDeleteAttendance = in_array($role, ['super_admin', 'kepala_sekolah']);
+
+// =========================================================================
+// HANDLER HAPUS DATA ABSENSI DARI LAPORAN (SUPER ADMIN & KEPALA SEKOLAH)
+// =========================================================================
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['delete_attendance_id'])) {
+    if (!$canDeleteAttendance) {
+        flash('error', 'Anda tidak memiliki hak akses untuk menghapus data absensi dari laporan.');
+        redirect('index.php?' . http_build_query($_GET));
+        exit;
+    }
+
+    $delId = (int)$_POST['delete_attendance_id'];
+    $delType = $_POST['delete_type'] ?? 'student';
+
+    if ($delId > 0) {
+        if ($delType === 'student') {
+            // Verifikasi izin unit untuk kepala sekolah
+            if ($role === 'kepala_sekolah') {
+                $stmtCheck = $pdo->prepare("
+                    SELECT sa.id FROM student_attendances sa
+                    INNER JOIN student_enrollments se ON se.id = sa.enrollment_id
+                    INNER JOIN class_groups cg ON cg.id = se.class_group_id
+                    INNER JOIN grades g ON g.id = cg.grade_id
+                    WHERE sa.id = ? AND (
+                        g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)
+                        OR g.unit_id IN (SELECT unit_id FROM staff WHERE user_id = ? AND unit_id IS NOT NULL)
+                    )
+                ");
+                $stmtCheck->execute([$delId, $userId, $userId]);
+                if (!$stmtCheck->fetch()) {
+                    flash('error', 'Akses ditolak: Anda tidak memiliki wewenang menghapus data absensi di luar unit Anda.');
+                    redirect('index.php?' . http_build_query($_GET));
+                    exit;
+                }
+            }
+
+            $stmtDel = $pdo->prepare("DELETE FROM student_attendances WHERE id = ?");
+            $stmtDel->execute([$delId]);
+            flash('success', 'Catatan absensi siswa berhasil dihapus dari laporan.');
+        } elseif ($delType === 'staff' && in_array($role, ['super_admin', 'kepala_sekolah'])) {
+            $stmtDel = $pdo->prepare("DELETE FROM staff_attendances WHERE id = ?");
+            $stmtDel->execute([$delId]);
+            flash('success', 'Catatan absensi staff berhasil dihapus dari laporan.');
+        }
+    }
+
+    redirect('index.php?' . http_build_query($_GET));
+    exit;
+}
+
+// Handler Bulk Delete dari Laporan
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['bulk_delete_attendance'])) {
+    if (!$canDeleteAttendance) {
+        flash('error', 'Anda tidak memiliki hak akses untuk menghapus data absensi massal.');
+        redirect('index.php?' . http_build_query($_GET));
+        exit;
+    }
+
+    $ids = array_filter(array_map('intval', $_POST['attendance_ids'] ?? []));
+    $delType = $_POST['delete_type'] ?? 'student';
+
+    if (!empty($ids)) {
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        if ($delType === 'student') {
+            if ($role === 'super_admin') {
+                $pdo->prepare("DELETE FROM student_attendances WHERE id IN ($placeholders)")->execute($ids);
+                flash('success', count($ids) . ' catatan absensi siswa berhasil dihapus dari laporan.');
+            } else {
+                // Kepala Sekolah
+                $stmtKsDel = $pdo->prepare("
+                    DELETE sa FROM student_attendances sa
+                    INNER JOIN student_enrollments se ON se.id = sa.enrollment_id
+                    INNER JOIN class_groups cg ON cg.id = se.class_group_id
+                    INNER JOIN grades g ON g.id = cg.grade_id
+                    WHERE sa.id IN ($placeholders) AND (
+                        g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)
+                        OR g.unit_id IN (SELECT unit_id FROM staff WHERE user_id = ? AND unit_id IS NOT NULL)
+                    )
+                ");
+                $stmtKsDel->execute(array_merge($ids, [$userId, $userId]));
+                flash('success', 'Catatan absensi terpilih berhasil dihapus dari laporan.');
+            }
+        } elseif ($delType === 'staff') {
+            $pdo->prepare("DELETE FROM staff_attendances WHERE id IN ($placeholders)")->execute($ids);
+            flash('success', count($ids) . ' catatan absensi staff berhasil dihapus dari laporan.');
+        }
+    } else {
+        flash('error', 'Pilih minimal satu catatan absensi untuk dihapus.');
+    }
+
+    redirect('index.php?' . http_build_query($_GET));
+    exit;
+}
+
 $pageTitle = ($type === 'staff' ? 'Laporan Absensi Staff' : 'Laporan Absensi Siswa') . ($mode === 'recap' ? ' - Rekap Total' : ' - Detail Harian');
 
 $period = getReportPeriod();
@@ -571,10 +666,29 @@ require '../../includes/header.php';
         <!-- =================================================================== -->
         <!-- TABEL 2: DETAIL LOG HARIAN (WAKTU ABSEN LENGKAP)                   -->
         <!-- =================================================================== -->
+        <?php if ($canDeleteAttendance): ?>
+        <form method="POST" id="bulkReportDeleteForm" style="margin: 0;">
+            <input type="hidden" name="delete_type" value="<?= e($type) ?>">
+            <div style="padding: 10px 18px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; background: #f8fafc;">
+                <button type="submit" name="bulk_delete_attendance" value="1" onclick="return confirmBulkReportDelete(event)" class="btn btn-sm" style="background-color: #ef4444; color: white; font-size: 12px; padding: 6px 14px; border-radius: 6px; font-weight: 700;">
+                    <i class="fa-solid fa-trash-can"></i> Hapus Terpilih
+                </button>
+                <div style="font-size: 12px; color: #64748b; font-weight: 600;">
+                    <span id="selectedReportCount" style="color: #0284c7; font-weight: 800; font-size: 13px;">0</span> data dipilih
+                </div>
+            </div>
+        </form>
+        <?php endif; ?>
+
         <div class="table-wrapper">
             <table>
                 <thead>
                     <tr>
+                        <?php if ($canDeleteAttendance): ?>
+                        <th style="width: 38px; text-align: center;">
+                            <input type="checkbox" id="selectAllReports" title="Pilih Semua">
+                        </th>
+                        <?php endif; ?>
                         <th>No</th>
                         <th>Tanggal</th>
                         <th>Nama</th>
@@ -588,15 +702,23 @@ require '../../includes/header.php';
                         <th>Jam Keluar</th>
                         <th>Status</th>
                         <th>Keterangan</th>
+                        <?php if ($canDeleteAttendance): ?>
+                            <th style="text-align: center; width: 85px;">Aksi</th>
+                        <?php endif; ?>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (!$rows): ?>
-                        <tr><td colspan="9" style="text-align:center;">Tidak ada data absensi ditemukan.</td></tr>
+                        <tr><td colspan="<?= $canDeleteAttendance ? 11 : 9 ?>" style="text-align:center;">Tidak ada data absensi ditemukan.</td></tr>
                     <?php endif; ?>
 
                     <?php foreach ($rows as $index => $row): ?>
                     <tr>
+                        <?php if ($canDeleteAttendance): ?>
+                        <td style="text-align: center;">
+                            <input type="checkbox" name="attendance_ids[]" value="<?= $row['id'] ?>" class="checkReportItem" form="bulkReportDeleteForm">
+                        </td>
+                        <?php endif; ?>
                         <td><?= $index + 1 ?></td>
                         <td><?= e($row['attendance_date']) ?></td>
                         <td><strong><?= e($row['name']) ?></strong></td>
@@ -618,11 +740,64 @@ require '../../includes/header.php';
                             <?php endif; ?>
                         </td>
                         <td><?= e($row['keterangan'] ?? $row['description'] ?? '-') ?></td>
+                        <?php if ($canDeleteAttendance): ?>
+                        <td style="text-align: center;">
+                            <form method="POST" style="margin: 0; display: inline;" onsubmit="return confirm('Hapus catatan absensi <?= addslashes(e($row['name'])) ?> pada tanggal <?= e($row['attendance_date']) ?> dari laporan?');">
+                                <input type="hidden" name="delete_attendance_id" value="<?= $row['id'] ?>">
+                                <input type="hidden" name="delete_type" value="<?= e($type) ?>">
+                                <button type="submit" class="btn btn-sm" style="background:#ef4444; color:white; padding: 3px 8px; font-size: 11px; font-weight: 600; border-radius: 4px;" title="Hapus catatan absensi dari laporan">
+                                    <i class="fa-solid fa-trash-can"></i> Hapus
+                                </button>
+                            </form>
+                        </td>
+                        <?php endif; ?>
                     </tr>
                     <?php endforeach; ?>
                 </tbody>
             </table>
         </div>
+
+        <script>
+        function updateSelectedReportCount() {
+            let checked = document.querySelectorAll('.checkReportItem:checked');
+            let cnt = document.getElementById('selectedReportCount');
+            if (cnt) cnt.textContent = checked.length;
+        }
+
+        document.getElementById('selectAllReports')?.addEventListener('change', function(e) {
+            let checkboxes = document.querySelectorAll('.checkReportItem');
+            checkboxes.forEach(cb => cb.checked = e.target.checked);
+            updateSelectedReportCount();
+        });
+
+        document.querySelectorAll('.checkReportItem').forEach(cb => {
+            cb.addEventListener('change', updateSelectedReportCount);
+        });
+
+        function confirmBulkReportDelete(e) {
+            let checked = document.querySelectorAll('.checkReportItem:checked');
+            if (checked.length === 0) {
+                alert('Pilih minimal satu catatan absensi untuk dihapus.');
+                e.preventDefault();
+                return false;
+            }
+            if (!confirm('Yakin ingin menghapus ' + checked.length + ' data absensi terpilih secara permanen dari laporan?')) {
+                e.preventDefault();
+                return false;
+            }
+            let form = document.getElementById('bulkReportDeleteForm');
+            form.querySelectorAll('input[data-dynamic-id="1"]').forEach(el => el.remove());
+            checked.forEach(cb => {
+                let hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = 'attendance_ids[]';
+                hidden.value = cb.value;
+                hidden.setAttribute('data-dynamic-id', '1');
+                form.appendChild(hidden);
+            });
+            return true;
+        }
+        </script>
     <?php endif; ?>
 </div>
 
