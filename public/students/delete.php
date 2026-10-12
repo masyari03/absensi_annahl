@@ -34,11 +34,15 @@ if ($student) {
     
     // BENTENG KEAMANAN: Pastikan Kepala Sekolah tidak menghapus siswa dari unit lain
     if ($currentRole === 'kepala_sekolah') {
-        $stmtKs = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? LIMIT 1");
-        $stmtKs->execute([currentUserId()]);
-        $ksUnitId = $stmtKs->fetchColumn();
+        $stmtKs = $pdo->prepare("
+            SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? 
+            UNION 
+            SELECT unit_id FROM staff WHERE user_id = ? AND unit_id IS NOT NULL
+        ");
+        $stmtKs->execute([currentUserId(), currentUserId()]);
+        $allowedUnits = $stmtKs->fetchAll(PDO::FETCH_COLUMN);
 
-        if ($student['unit_id'] && $student['unit_id'] != $ksUnitId) {
+        if ($student['unit_id'] && !in_array($student['unit_id'], $allowedUnits)) {
             flash('error', 'Akses ditolak. Anda tidak memiliki izin untuk menghapus siswa dari unit ini.');
             redirect('index.php');
             exit;

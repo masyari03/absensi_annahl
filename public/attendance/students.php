@@ -321,7 +321,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['bulk_delete']
             $placeholders = implode(',', array_fill(0, count($ids), '?'));
             $stmtDelete = $pdo->prepare("DELETE FROM student_attendances WHERE id IN ($placeholders)");
             $stmtDelete->execute($ids);
-            flash('success', count($ids) . ' data absensi terpilih berhasil dihapus.');
+            flash('success', count($ids) . ' catatan absensi siswa berhasil dihapus. Status kehadiran telah di-reset kembali menjadi "Belum Absen" (nama siswa tetap tampil dalam daftar kelas hari aktivitas).');
         } else {
             flash('error', 'Data absensi yang dipilih tidak valid.');
         }
@@ -330,6 +330,30 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['bulk_delete']
     } else {
         flash('error', 'Tidak ada data yang dipilih atau Anda tidak memiliki akses.');
     }
+}
+
+// ==============================================================================
+// PROSES HAPUS SATUAN ABSENSI (SINGLE DELETE)
+// ==============================================================================
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['single_delete_attendance'])) {
+    if (!$canDelete) {
+        flash('error', 'Anda tidak memiliki hak akses untuk menghapus data absensi siswa.');
+        redirect('students.php?' . http_build_query($_GET));
+        exit;
+    }
+
+    $attId = (int)($_POST['attendance_id'] ?? 0);
+    $stuName = trim($_POST['student_name'] ?? 'Siswa');
+
+    if ($attId > 0) {
+        $stmtDelete = $pdo->prepare("DELETE FROM student_attendances WHERE id = ?");
+        $stmtDelete->execute([$attId]);
+        flash('success', "Catatan absensi untuk {$stuName} berhasil dihapus. Status kehadiran telah di-reset kembali menjadi 'Belum Absen'.");
+    } else {
+        flash('error', 'ID data absensi tidak valid.');
+    }
+    redirect('students.php?' . http_build_query($_GET));
+    exit;
 }
 
 // ==============================================================================
@@ -555,6 +579,8 @@ if ($isDayView) {
 
     if ($status === 'belum_absen') {
         $where[] = "(sa.id IS NULL OR sa.status = '' OR sa.status = 'tidak_absen' OR sa.status = 'alpha')";
+    } elseif ($status === 'sudah_absen') {
+        $where[] = "sa.id IS NOT NULL";
     } elseif (in_array($status, ['tepat_waktu', 'terlambat', 'izin', 'sakit'])) {
         $where[] = "sa.status = ?"; $params[] = $status;
     }
@@ -610,6 +636,8 @@ if ($isDayView) {
 
     if ($status === 'belum_absen') {
         $where[] = "(sa.id IS NULL OR sa.status = '' OR sa.status = 'tidak_absen' OR sa.status = 'alpha')";
+    } elseif ($status === 'sudah_absen') {
+        $where[] = "sa.id IS NOT NULL";
     } elseif (in_array($status, ['tepat_waktu', 'terlambat', 'izin', 'sakit'])) {
         $where[] = "sa.status = ?"; $params[] = $status;
     }
@@ -920,7 +948,8 @@ function selectAllOfficers(checked) {
             <div class="form-group">
                 <label>Status</label>
                 <select name="status">
-                    <option value="">Semua Status</option>
+                    <option value="">Semua Siswa (Termasuk Belum Absen)</option>
+                    <option value="sudah_absen" <?= $status === 'sudah_absen' ? 'selected' : '' ?>>✅ Hanya yang Sudah Absen (Sembunyikan Belum Absen)</option>
                     <option value="belum_absen" <?= $status === 'belum_absen' ? 'selected' : '' ?>>⚠️ Belum Absen (Anak Terlewat)</option>
                     <option value="tepat_waktu" <?= $status === 'tepat_waktu' ? 'selected' : '' ?>>Tepat Waktu</option>
                     <option value="terlambat" <?= $status === 'terlambat' ? 'selected' : '' ?>>Terlambat</option>
@@ -970,14 +999,31 @@ function selectAllOfficers(checked) {
 </div>
 
 <?php if ($isDayView): ?>
-<div style="display: flex; align-items: center; justify-content: space-between; background: #eff6ff; border: 1px solid #bfdbfe; padding: 10px 16px; border-radius: 8px; margin-bottom: 20px; font-size: 13px; color: #1e40af;">
-    <div>
-        <i class="fa-solid fa-circle-check" style="color: #2563eb; margin-right: 6px;"></i>
-        <strong>Mode Hari Aktivitas Aktif (Tanggal <?= date('d M Y', strtotime($dateStart)) ?>):</strong> Menampilkan <strong>seluruh siswa</strong> di unit/kelas terjadwal (termasuk yang belum absen), memudahkan petugas memeriksa siswa yang terlewat.
+<div style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 12px 18px; border-radius: 8px; margin-bottom: 20px; font-size: 13px; color: #1e40af;">
+    <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+        <div>
+            <div style="font-weight: 700; margin-bottom: 3px; display: flex; align-items: center; gap: 6px;">
+                <i class="fa-solid fa-circle-info" style="color: #2563eb;"></i>
+                Mode Hari Aktivitas Aktif (Tanggal <?= date('d M Y', strtotime($dateStart)) ?>)
+            </div>
+            <div style="font-size: 12.5px; line-height: 1.5; color: #1e3a8a;">
+                • Sistem menampilkan <strong>seluruh siswa aktif</strong> di kelas agar petugas mudah memeriksa siswa yang terlewat.<br>
+                • <strong>Perihal Hapus Absensi:</strong> Saat catatan absensi dihapus, data jam hadir dibersihkan dan status siswa di-reset kembali menjadi <span class="badge" style="background:#f59e0b; color:white; font-size:10.5px; padding:2px 6px;">Belum Absen</span> (nama siswa tetap tercantum dalam daftar kelas).<br>
+                • Jika ingin menampilkan <strong>hanya siswa yang sudah tercatat absen</strong> (seperti sistem lama), silakan pilih filter status <em>"Hanya yang Sudah Absen"</em>.
+            </div>
+        </div>
+        <div style="display: flex; gap: 6px; align-items: center; margin-top: 4px;">
+            <?php if ($status !== 'sudah_absen'): ?>
+                <a href="?<?= http_build_query(array_merge($_GET, ['status' => 'sudah_absen'])) ?>" class="btn btn-sm" style="background:#2563eb; color:white; font-weight:700; font-size:11px; padding:5px 10px; border-radius:6px;">
+                    <i class="fa-solid fa-eye-slash"></i> Sembunyikan Belum Absen
+                </a>
+            <?php else: ?>
+                <a href="?<?= http_build_query(array_merge($_GET, ['status' => ''])) ?>" class="btn btn-sm" style="background:#dbeafe; color:#1e40af; font-weight:700; font-size:11px; padding:5px 10px; border-radius:6px; border:1px solid #93c5fd;">
+                    <i class="fa-solid fa-users"></i> Tampilkan Semua Siswa
+                </a>
+            <?php endif; ?>
+        </div>
     </div>
-    <?php if ($status === 'belum_absen'): ?>
-        <a href="?<?= http_build_query(array_merge($_GET, ['status' => ''])) ?>" class="btn btn-sm" style="background:#dbeafe; color:#1e40af; font-weight:700; border:1px solid #93c5fd; font-size:11px;">Tampilkan Semua</a>
-    <?php endif; ?>
 </div>
 <?php endif; ?>
 
@@ -1107,11 +1153,26 @@ function selectAllOfficers(checked) {
                         <td><small><?= e($attendance['keterangan'] ?? '-') ?></small></td>
                         <td>
                             <?php if ($hasRecord): ?>
-                                <?php if ($canQuickRecord || in_array($currentRole, ['super_admin', 'kepala_sekolah'])): ?>
-                                    <a href="edit_student.php?id=<?= $attendance['id'] ?>" class="btn btn-success" style="padding: 4px 10px; font-size:12px;">Edit</a>
-                                <?php else: ?>
-                                    <span style="color:#64748b; font-size:12px;">Tercatat</span>
-                                <?php endif; ?>
+                                <div style="display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap;">
+                                    <?php if ($canQuickRecord || in_array($currentRole, ['super_admin', 'kepala_sekolah'])): ?>
+                                        <a href="edit_student.php?id=<?= $attendance['id'] ?>" class="btn btn-success" style="padding: 3px 8px; font-size:11.5px; border-radius:4px;">Edit</a>
+                                    <?php endif; ?>
+
+                                    <?php if ($canDelete): ?>
+                                    <form method="POST" style="margin: 0; display: inline;" onsubmit="return confirm('Hapus catatan absensi <?= addslashes(e($attendance['name'])) ?> pada tanggal <?= e($attendance['attendance_date']) ?>?\n\nCatatan: Jam absen akan dibersihkan dan status kehadiran siswa akan di-reset kembali menjadi BELUM ABSEN.');">
+                                        <input type="hidden" name="single_delete_attendance" value="1">
+                                        <input type="hidden" name="attendance_id" value="<?= $attendance['id'] ?>">
+                                        <input type="hidden" name="student_name" value="<?= e($attendance['name']) ?>">
+                                        <button type="submit" class="btn" style="background: #ef4444; color: white; padding: 3px 8px; font-size: 11.5px; font-weight: 600; border-radius: 4px;" title="Hapus catatan absensi (Reset status jadi Belum Absen)">
+                                            <i class="fa-solid fa-trash-can"></i> Hapus
+                                        </button>
+                                    </form>
+                                    <?php endif; ?>
+
+                                    <?php if (!$canDelete && !$canQuickRecord && !in_array($currentRole, ['super_admin', 'kepala_sekolah'])): ?>
+                                        <span style="color:#64748b; font-size:12px;">Tercatat</span>
+                                    <?php endif; ?>
+                                </div>
                             <?php else: ?>
                                 <?php if ($canQuickRecord): 
                                     $rowLateTime = !empty($attendance['student_late']) && $attendance['student_late'] !== '00:00:00' ? $attendance['student_late'] : '06:45:00';
@@ -1199,7 +1260,7 @@ function confirmBulkDelete(e) {
         e.preventDefault();
         return false;
     }
-    if (!confirm('Yakin ingin menghapus ' + checked.length + ' data absensi terpilih secara permanen?')) {
+    if (!confirm('Yakin ingin menghapus ' + checked.length + ' data absensi terpilih?\n\nPerhatian: Catatan kehadiran akan dihapus dan status siswa akan di-reset kembali menjadi BELUM ABSEN.')) {
         e.preventDefault();
         return false;
     }
