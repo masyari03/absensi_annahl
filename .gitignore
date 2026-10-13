@@ -12,6 +12,10 @@
 !/uploads/staff/.gitkeep
 /uploads/students/*
 !/uploads/students/.gitkeep
+/uploads/permits/*
+!/uploads/permits/.gitkeep
+/uploads/achievements/*
+!/uploads/achievements/.gitkeep
 
 # IDE & OS files
 .idea/

@@ -261,6 +261,27 @@ $stmtAllLogs = $pdo->prepare("
 $stmtAllLogs->execute();
 $allLogs = $stmtAllLogs->fetchAll(PDO::FETCH_ASSOC);
 
+// D. Log Forensik Siswa (HP & IP)
+$countStudentLogs = (int)$pdo->query("SELECT COUNT(*) FROM student_activity_logs")->fetchColumn();
+$stmtStudentLogs = $pdo->prepare("
+    SELECT sal.*, s.name as student_name, s.nis, s.photo as student_photo,
+           cg.name as class_name, g.grade, un.unit as unit_name
+    FROM student_activity_logs sal
+    INNER JOIN students s ON s.id = sal.student_id
+    LEFT JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
+    LEFT JOIN class_groups cg ON cg.id = se.class_group_id
+    LEFT JOIN grades g ON g.id = cg.grade_id
+    LEFT JOIN units un ON un.id = g.unit_id
+    ORDER BY sal.created_at DESC
+    LIMIT 150
+");
+$stmtStudentLogs->execute();
+$studentForensicLogs = $stmtStudentLogs->fetchAll(PDO::FETCH_ASSOC);
+
+$webPermitEnabled = (getSystemSetting($pdo, 'student_web_permit_enabled', '1') === '1');
+$studentCanChangeUsername = (getSystemSetting($pdo, 'student_can_change_username', '0') === '1');
+$studentCanChangePhoto = (getSystemSetting($pdo, 'student_can_change_photo', '0') === '1');
+
 require '../../includes/header.php';
 ?>
 
@@ -775,6 +796,67 @@ require '../../includes/header.php';
         </div>
     </div>
 
+    <!-- MASTER CONTROLS SISWA (SUPER ADMIN EXCLUSIVE) -->
+    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 14px; padding: 18px 20px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; margin-bottom: 14px; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <div style="width: 38px; height: 38px; border-radius: 10px; background: #e0f2fe; color: #0284c7; display: flex; align-items: center; justify-content: center; font-size: 18px;">
+                    <i class="fa-solid fa-sliders"></i>
+                </div>
+                <div>
+                    <h3 style="margin: 0; font-size: 16px; font-weight: 800; color: #0f172a;">Kontrol Master Fitur Siswa (Super Admin)</h3>
+                    <span style="font-size: 12.5px; color: #64748b;">Pengaturan izin ganti username, ganti foto, dan modul izin lewat web bagi seluruh siswa</span>
+                </div>
+            </div>
+            <span style="font-size: 12px; font-weight: 700; background: #fef3c7; color: #92400e; padding: 4px 10px; border-radius: 20px; border: 1px solid #fde68a;">
+                <i class="fa-solid fa-shield"></i> HANYA SUPER ADMIN
+            </span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px;">
+            <!-- SAKLAR 1: IZIN WEB -->
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                <div>
+                    <strong style="display: block; font-size: 13.5px; color: #1e293b;">Pengajuan Izin Lewat Web</strong>
+                    <small style="color: #64748b; font-size: 11.5px;">Jika mati, menu izin hilang total dari web siswa & guru</small>
+                </div>
+                <form action="toggle_settings.php" method="POST" style="margin: 0;">
+                    <input type="hidden" name="key" value="student_web_permit_enabled">
+                    <button type="submit" class="btn" style="background: <?= $webPermitEnabled ? '#10b981' : '#64748b' ?>; color: white; padding: 6px 12px; font-size: 12px; font-weight: 700; border-radius: 6px; border: none; cursor: pointer;">
+                        <?= $webPermitEnabled ? 'AKTIF' : 'NONAKTIF' ?>
+                    </button>
+                </form>
+            </div>
+
+            <!-- SAKLAR 2: GANTI USERNAME -->
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                <div>
+                    <strong style="display: block; font-size: 13.5px; color: #1e293b;">Izinkan Siswa Ganti Username</strong>
+                    <small style="color: #64748b; font-size: 11.5px;">Jika mati, tombol ganti username hilang di header siswa</small>
+                </div>
+                <form action="toggle_settings.php" method="POST" style="margin: 0;">
+                    <input type="hidden" name="key" value="student_can_change_username">
+                    <button type="submit" class="btn" style="background: <?= $studentCanChangeUsername ? '#10b981' : '#64748b' ?>; color: white; padding: 6px 12px; font-size: 12px; font-weight: 700; border-radius: 6px; border: none; cursor: pointer;">
+                        <?= $studentCanChangeUsername ? 'AKTIF' : 'NONAKTIF' ?>
+                    </button>
+                </form>
+            </div>
+
+            <!-- SAKLAR 3: GANTI FOTO PROFIL -->
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px; display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                <div>
+                    <strong style="display: block; font-size: 13.5px; color: #1e293b;">Izinkan Siswa Ganti Foto Profil</strong>
+                    <small style="color: #64748b; font-size: 11.5px;">Buka/kunci fitur unggah foto mandiri bagi siswa</small>
+                </div>
+                <form action="toggle_settings.php" method="POST" style="margin: 0;">
+                    <input type="hidden" name="key" value="student_can_change_photo">
+                    <button type="submit" class="btn" style="background: <?= $studentCanChangePhoto ? '#10b981' : '#64748b' ?>; color: white; padding: 6px 12px; font-size: 12px; font-weight: 700; border-radius: 6px; border: none; cursor: pointer;">
+                        <?= $studentCanChangePhoto ? 'AKTIF' : 'NONAKTIF' ?>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- KPI Summary Cards -->
     <div class="kpi-grid">
         <div class="kpi-card online" style="cursor: pointer;" onclick="filterByStatus('online')">
@@ -813,6 +895,10 @@ require '../../includes/header.php';
             <a href="?tab=superadmin_logs" class="act-tab-btn <?= $activeTab === 'superadmin_logs' ? 'active' : '' ?>">
                 <i class="fa-solid fa-shield-halved"></i> Log Masuk Super Admin
                 <span class="tab-badge"><?= count($superAdminLogs) ?></span>
+            </a>
+            <a href="?tab=student_forensics" class="act-tab-btn <?= $activeTab === 'student_forensics' ? 'active' : '' ?>">
+                <i class="fa-solid fa-mobile-screen-button" style="color: #0284c7;"></i> Log Forensik HP & IP Siswa
+                <span class="tab-badge" style="<?= $activeTab === 'student_forensics' ? 'background: #0284c7; color: white;' : '' ?>"><?= $countStudentLogs ?></span>
             </a>
             <a href="?tab=users_status" class="act-tab-btn <?= $activeTab === 'users_status' ? 'active' : '' ?>">
                 <i class="fa-solid fa-users"></i> Status Online / Offline Pengguna
@@ -972,6 +1058,125 @@ require '../../includes/header.php';
                                                 <i class="fa-solid fa-ban"></i> Putuskan Sesi
                                             </button>
                                         <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    <?php elseif ($activeTab === 'student_forensics'): ?>
+        <!-- ========================================================================= -->
+        <!-- TAB BARU: LOG FORENSIK HP & IP SISWA (EKSKLUSIF SUPER ADMIN)              -->
+        <!-- ========================================================================= -->
+        <div class="data-card">
+            <div class="data-card-header">
+                <div>
+                    <h3 style="margin: 0; font-size: 16px; font-weight: 800; color: #0f172a;">
+                        <i class="fa-solid fa-mobile-screen-button" style="color: #0284c7;"></i> Audit Forensik Aktivitas Siswa
+                    </h3>
+                    <span style="font-size: 13px; color: #64748b;">Mendeteksi nama model HP/gadget dan IP address yang digunakan siswa secara real-time</span>
+                </div>
+                <div style="font-size: 12.5px; font-weight: 700; color: #0284c7; background: #e0f2fe; padding: 4px 12px; border-radius: 20px;">
+                    Total: <?= count($studentForensicLogs) ?> Log Terbaru
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="activity-table">
+                    <thead>
+                        <tr>
+                            <th>Waktu</th>
+                            <th>Identitas Siswa</th>
+                            <th>Kelas / Unit</th>
+                            <th>Aktivitas</th>
+                            <th>Alamat IP</th>
+                            <th>Model HP / Gadget</th>
+                            <th>Keterangan Aktivitas</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($studentForensicLogs)): ?>
+                            <tr>
+                                <td colspan="7">
+                                    <div class="empty-state">
+                                        <i class="fa-solid fa-mobile-screen-button empty-icon" style="color: #0284c7;"></i>
+                                        <div class="empty-title">Belum Ada Log Forensik Siswa</div>
+                                        <div class="empty-desc">Sistem akan secara otomatis mencatat nama HP dan IP address siswa saat siswa login, mengganti username/password, atau mengunggah surat izin/prestasi.</div>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php else: ?>
+                            <?php foreach ($studentForensicLogs as $sLog): ?>
+                                <tr>
+                                    <td>
+                                        <div style="font-weight: 700; color: #1e293b; font-size: 13px;">
+                                            <?= date('d M Y, H:i', strtotime($sLog['created_at'])) ?>
+                                        </div>
+                                        <div style="font-size: 11.5px; color: #64748b;">
+                                            <?= formatTimeAgo($sLog['created_at']) ?>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="user-cell">
+                                            <div class="user-avatar" style="overflow: hidden; padding: 0; background: #e0f2fe; color: #0284c7; font-weight: 700;">
+                                                <?php if (!empty($sLog['student_photo'])): ?>
+                                                    <img src="<?= UPLOAD_URL ?>/students/<?= e($sLog['student_photo']) ?>" alt="Foto" style="width: 100%; height: 100%; object-fit: cover;">
+                                                <?php else: ?>
+                                                    <?= strtoupper(substr($sLog['student_name'] ?? 'S', 0, 1)) ?>
+                                                <?php endif; ?>
+                                            </div>
+                                            <div class="user-info">
+                                                <strong><?= e($sLog['student_name']) ?></strong>
+                                                <small style="color: #64748b;">NIS: <?= e($sLog['nis'] ?? '-') ?></small>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <?php if (!empty($sLog['grade'])): ?>
+                                            <span style="font-weight: 600; color: #334155; font-size: 12.5px;">
+                                                <?= e($sLog['grade']) ?> - <?= e($sLog['class_name']) ?>
+                                            </span>
+                                            <div style="font-size: 11px; color: #0284c7; font-weight: 600;">
+                                                <?= e($sLog['unit_name'] ?? '') ?>
+                                            </div>
+                                        <?php else: ?>
+                                            <span style="color: #94a3b8; font-size: 12px;">-</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <?php 
+                                        $actBadges = [
+                                            'login' => ['#dcfce7', '#15803d', 'fa-right-to-bracket', 'Login'],
+                                            'logout' => ['#f1f5f9', '#475569', 'fa-right-from-bracket', 'Logout'],
+                                            'change_username' => ['#e0f2fe', '#0369a1', 'fa-user-pen', 'Ganti Username'],
+                                            'change_password' => ['#fef3c7', '#92400e', 'fa-key', 'Ganti Password'],
+                                            'upload_photo' => ['#fce7f3', '#9d174d', 'fa-image', 'Upload Foto'],
+                                            'upload_permit' => ['#ede9fe', '#6d28d9', 'fa-file-medical', 'Upload Surat Izin'],
+                                            'upload_achievement' => ['#ccfbf1', '#0f766e', 'fa-trophy', 'Upload Prestasi'],
+                                            'failed_login' => ['#fee2e2', '#b91c1c', 'fa-triangle-exclamation', 'Gagal Login'],
+                                        ];
+                                        $b = $actBadges[$sLog['activity_type']] ?? ['#f1f5f9', '#334155', 'fa-info-circle', $sLog['activity_type']];
+                                        ?>
+                                        <span style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 20px; font-size: 11.5px; font-weight: 700; background: <?= $b[0] ?>; color: <?= $b[1] ?>;">
+                                            <i class="fa-solid <?= $b[2] ?>"></i> <?= $b[3] ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <span class="ip-tag"><i class="fa-solid fa-network-wired" style="color: #64748b; font-size: 10px;"></i> <?= e($sLog['ip_address']) ?></span>
+                                    </td>
+                                    <td>
+                                        <div class="device-badge">
+                                            <i class="fa-solid fa-mobile-screen" style="color: #0284c7;"></i>
+                                            <span style="font-weight: 600; font-size: 12.5px; color: #1e293b;"><?= e($sLog['device_name']) ?></span>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <span style="font-size: 12.5px; color: #334155; line-height: 1.4;">
+                                            <?= e($sLog['description']) ?>
+                                        </span>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>

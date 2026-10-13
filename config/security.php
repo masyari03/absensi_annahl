@@ -19,6 +19,11 @@ function verifyPassword(
     $password,
     $hash
 ) {
+    if (is_string($hash) && (str_starts_with($hash, '$2y$') || str_starts_with($hash, '$2a$') || str_starts_with($hash, '$2b$'))) {
+        if (password_verify($password, $hash)) {
+            return true;
+        }
+    }
 
     return hash_equals(
         $hash,

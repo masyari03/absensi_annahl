@@ -5,6 +5,12 @@ require_once '../config/database.php';
 require_once '../includes/functions.php';
 
 $userId = (int)($_SESSION['user_id'] ?? 0);
+$studentId = (int)($_SESSION['student_id'] ?? 0);
+
+if ($studentId > 0 && isset($pdo) && function_exists('logStudentActivity')) {
+    logStudentActivity($pdo, $studentId, $userId, 'logout', 'Siswa logout dari portal siswa');
+}
+
 if ($userId > 0 && isset($pdo) && function_exists('recordUserLogout')) {
     recordUserLogout($pdo, $userId);
 }

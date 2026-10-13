@@ -140,6 +140,19 @@ require '../../includes/header.php';
         <!-- HANYA SUPER ADMIN DAN KEPSEK YANG BISA TAMBAH / IMPORT / BULK -->
         <?php if (in_array($currentRole, ['super_admin', 'kepala_sekolah'])): ?>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <?php if ($currentRole === 'super_admin'): 
+                    $studentCanChangeUsername = (getSystemSetting($pdo, 'student_can_change_username', '0') === '1');
+                ?>
+                    <button type="button" class="btn" style="background: linear-gradient(135deg, #0284c7, #2563eb); color: white; font-weight: 700;" onclick="openBulkModal()">
+                        <i class="fa-solid fa-users-gear"></i> ⚡ Defaultkan Akun Siswa (Bulk)
+                    </button>
+                    <form action="../kelola/toggle_settings.php" method="POST" style="display:inline;" onsubmit="return confirm('Ubah izin ganti username siswa?')">
+                        <input type="hidden" name="key" value="student_can_change_username">
+                        <button type="submit" class="btn" style="background-color: <?= $studentCanChangeUsername ? '#10b981' : '#64748b' ?>; color: white;" title="Klik untuk mengaktifkan/menonaktifkan tombol ganti username di header siswa">
+                            <i class="fa-solid fa-<?= $studentCanChangeUsername ? 'lock-open' : 'lock' ?>"></i> Ganti Username Siswa: <?= $studentCanChangeUsername ? 'AKTIF' : 'NONAKTIF' ?>
+                        </button>
+                    </form>
+                <?php endif; ?>
                 <a href="bulk_edit.php" class="btn" style="background: linear-gradient(135deg, #4f46e5, #7c3aed); color: white; font-weight: 700;">
                     <i class="fa-solid fa-table-cells"></i> Bulk Update (Google Admin)
                 </a>
@@ -296,4 +309,70 @@ require '../../includes/header.php';
     <?php endif; ?>
 </div>
 
+<?php if ($currentRole === 'super_admin'): ?>
+<!-- MODAL BULK GENERATE / RESET AKUN SISWA -->
+<div class="modal-overlay" id="bulkAccountModal" onclick="closeBulkModal(event)">
+    <div class="modal-box" style="max-width: 520px;" onclick="event.stopPropagation()">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 12px; margin-bottom: 15px;">
+            <h3 style="margin: 0; color: #1e293b; font-size: 18px;"><i class="fa-solid fa-users-gear" style="color: #0284c7;"></i> Defaultkan Akun Siswa (Bulk)</h3>
+            <button type="button" onclick="document.getElementById('bulkAccountModal').style.display='none'" style="background:none; border:none; font-size:22px; cursor:pointer; color:#94a3b8; line-height: 1;">&times;</button>
+        </div>
+        
+        <form action="bulk_accounts.php" method="POST" onsubmit="return confirmBulkAction()">
+            <p style="font-size: 13.5px; color: #475569; margin-bottom: 12px; line-height: 1.5;">
+                Fitur ini akan secara massal membuat atau menyetel ulang akun login siswa dengan ketentuan:
+            </p>
+            <ul style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 15px 12px 30px; font-size: 13px; color: #334155; margin-bottom: 15px; border-left: 4px solid #0284c7;">
+                <li><strong>Username</strong>: Otomatis dari <strong>NIS Siswa</strong> (atau <code>siswa_{id}</code> jika NIS kosong)</li>
+                <li><strong>Password Default</strong>: <code>password</code></li>
+                <li><strong>Role</strong>: <code>siswa</code></li>
+            </ul>
+
+            <div style="margin-bottom: 15px;">
+                <label style="display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #1e293b;">Pilih Lingkup Siswa:</label>
+                <select name="unit_id" style="width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                    <option value="0">Seluruh Unit (Semua Siswa Aktif)</option>
+                    <?php foreach ($units as $u): ?>
+                        <option value="<?= $u['id'] ?>" <?= ($unitId == $u['id']) ? 'selected' : '' ?>><?= e($u['unit']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; font-weight: 600; font-size: 13px; margin-bottom: 8px; color: #1e293b;">Pilih Mode Tindakan:</label>
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <label style="display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                        <input type="radio" name="mode" value="all" checked style="margin-top: 3px;">
+                        <span><strong>Reset / Defaultkan SEMUA Siswa</strong><br><small style="color: #64748b;">(Semua siswa akan diatur username = NIS dan password = "password")</small></span>
+                    </label>
+                    <label style="display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                        <input type="radio" name="mode" value="missing" style="margin-top: 3px;">
+                        <span><strong>Hanya untuk Siswa yang Belum Memiliki Akun</strong><br><small style="color: #64748b;">(Siswa yang sudah memiliki akun tidak akan diubah)</small></span>
+                    </label>
+                </div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button type="button" class="btn" style="background: #e2e8f0; color: #475569;" onclick="document.getElementById('bulkAccountModal').style.display='none'">Batal</button>
+                <button type="submit" class="btn" style="background: linear-gradient(135deg, #0284c7, #2563eb); color: white; font-weight: 700;">⚡ Jalankan Bulk Account</button>
+            </div>
+        </form>
+    </div>
+</div>
+<script>
+function openBulkModal() {
+    document.getElementById('bulkAccountModal').style.display = 'flex';
+}
+function closeBulkModal(e) {
+    if (e.target.id === 'bulkAccountModal') {
+        document.getElementById('bulkAccountModal').style.display = 'none';
+    }
+}
+function confirmBulkAction() {
+    return confirm('Apakah Anda yakin ingin memproses akun siswa secara massal? Tindakan ini akan menyetel username = NIS dan password = "password".');
+}
+</script>
+<?php endif; ?>
+
 <?php require '../../includes/footer.php'; ?>
+

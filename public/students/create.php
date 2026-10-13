@@ -115,8 +115,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $pdo->prepare("INSERT INTO student_enrollments (student_id, academic_year_id, class_group_id, status) VALUES (?, ?, ?, 'active')");
             $stmt->execute([$studentId, $academicYear['id'], $classGroupId]);
 
+            // Otomatis buatkan akun login siswa di users (Username = NIS, Password = 'password')
+            $studentUsername = ($nis !== '') ? $nis : ('siswa_' . $studentId);
+            $defaultPassword = password_hash('password', PASSWORD_BCRYPT);
+            $stmtUser = $pdo->prepare("
+                INSERT INTO users (username, password, name, role, student_id, created_at, updated_at)
+                VALUES (?, ?, ?, 'siswa', ?, NOW(), NOW())
+            ");
+            $stmtUser->execute([$studentUsername, $defaultPassword, $name, $studentId]);
+
             $pdo->commit();
-            flash('success', 'Siswa berhasil ditambahkan.');
+            flash('success', 'Siswa berhasil ditambahkan dan akun login siswa telah dibuat otomatis (Username: ' . $studentUsername . ', Password: password).');
             redirect('index.php');
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) { $pdo->rollBack(); }

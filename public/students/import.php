@@ -105,6 +105,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['file_excel'])) {
             
             $stmtStudent = $pdo->prepare("INSERT INTO students (name, nis, nik, photo, created_at) VALUES (?, ?, ?, ?, NOW())");
             $stmtEnroll = $pdo->prepare("INSERT INTO student_enrollments (student_id, academic_year_id, class_group_id, status, created_at) VALUES (?, ?, ?, 'active', NOW())");
+            $stmtUser = $pdo->prepare("INSERT INTO users (username, password, name, role, student_id, created_at, updated_at) VALUES (?, ?, ?, 'siswa', ?, NOW(), NOW())");
+            $defaultPasswordHash = password_hash('password', PASSWORD_BCRYPT);
             
             array_shift($rows); // Skip Header Baris 1
             foreach ($rows as $data) {
@@ -134,7 +136,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['file_excel'])) {
                     }
 
                     $stmtStudent->execute([$nama, $nis !== '' ? $nis : null, $nik !== '' ? $nik : null, $photoNameSave]);
-                    $stmtEnroll->execute([$pdo->lastInsertId(), $ay, $classId]);
+                    $newStudentId = $pdo->lastInsertId();
+                    $stmtEnroll->execute([$newStudentId, $ay, $classId]);
+
+                    $studentUsername = ($nis !== '') ? $nis : ('siswa_' . $newStudentId);
+                    $stmtUser->execute([$studentUsername, $defaultPasswordHash, $nama, $newStudentId]);
                     $success++;
                 }
             }

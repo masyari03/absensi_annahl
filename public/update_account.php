@@ -26,6 +26,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 1. Logika Update Username
     if (!empty($newUsername)) {
+        // Cek proteksi khusus siswa: apakah Super Admin mengizinkan ganti username?
+        if (($_SESSION['role'] ?? '') === 'siswa') {
+            $canChangeUsername = (getSystemSetting($pdo, 'student_can_change_username', '0') === '1');
+            if (!$canChangeUsername) {
+                flash('error', 'Izin penggantian username dinonaktifkan oleh Administrator.');
+                redirect($_SERVER['HTTP_REFERER'] ?? 'dashboard.php');
+                exit;
+            }
+        }
+
         // Pengecekan agar username tidak bentrok dengan user lain
         $stmt = $pdo->prepare("SELECT id FROM users WHERE username = ? AND id != ?");
         $stmt->execute([$newUsername, $userId]);
@@ -57,6 +67,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $pdo->prepare($sql);
         
         if ($stmt->execute($params)) {
+            // Jika role siswa, catat aktivitas forensik
+            if (($_SESSION['role'] ?? '') === 'siswa' && !empty($_SESSION['student_id'])) {
+                if (!empty($newUsername)) {
+                    logStudentActivity($pdo, (int)$_SESSION['student_id'], (int)$userId, 'change_username', "Siswa mengganti username menjadi '{$newUsername}'");
+                }
+                if (!empty($newPassword)) {
+                    logStudentActivity($pdo, (int)$_SESSION['student_id'], (int)$userId, 'change_password', "Siswa memperbarui password akun");
+                }
+            }
+
             // Jika username berhasil diubah, perbarui juga data di sesi (session) yang sedang aktif
             if (!empty($newUsername)) {
                 $_SESSION['username'] = $newUsername;

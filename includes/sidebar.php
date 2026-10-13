@@ -69,6 +69,22 @@ if (isset($pdo) && $currentUserId > 0) {
         }
     }
 
+    // FILTER KEAMANAN MANDATORI:
+    // 1. Menu 'user_activity' (Monitoring & Log Aktivitas Pengguna) HANYA BISA DIAKSES OLEH SUPER ADMIN
+    if ($currentRole !== 'super_admin') {
+        $rawMenus = array_filter($rawMenus, function($m) {
+            return ($m['menu_key'] ?? '') !== 'user_activity';
+        });
+    }
+
+    // 2. Jika izin web dinonaktifkan oleh Super Admin, sembunyikan menu izin siswa
+    $webPermitEnabled = (getSystemSetting($pdo, 'student_web_permit_enabled', '1') === '1');
+    if (!$webPermitEnabled) {
+        $rawMenus = array_filter($rawMenus, function($m) {
+            return ($m['menu_key'] ?? '') !== 'student_permits';
+        });
+    }
+
     // Realtime session synchronization agar hak akses langsung sinkron tanpa logout
     $_SESSION['menu_keys'] = array_column($rawMenus, 'menu_key');
 
@@ -85,6 +101,8 @@ $menuUrlMap = [
     'scanner'              => '/scanner.php',
     'attendance_students'  => '/attendance/students.php',
     'attendance_staff'     => '/attendance/staff.php',
+    'student_permits'      => '/attendance/permits.php',
+    'student_achievements' => '/achievements/index.php',
     'master_students'      => '/students/index.php',
     'master_staff'         => '/staff/index.php',
     'master_admins'        => '/admins/index.php',

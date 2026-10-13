@@ -82,3 +82,33 @@ if (!function_exists('currentUserName')) {
         return $_SESSION['name'] ?? $_SESSION['username'] ?? null;
     }
 }
+
+if (!function_exists('requireStudent')) {
+    function requireStudent()
+    {
+        requireLogin();
+        if (($_SESSION['role'] ?? '') !== 'siswa') {
+            http_response_code(403);
+            die('403 - Akses hanya untuk siswa.');
+        }
+    }
+}
+
+if (!function_exists('requireRole')) {
+    function requireRole(...$roles)
+    {
+        requireLogin();
+        $allowed = is_array($roles[0] ?? null) ? $roles[0] : $roles;
+        if (!in_array($_SESSION['role'] ?? '', $allowed, true)) {
+            http_response_code(403);
+            die('403 - Akses Ditolak: Anda tidak memiliki izin untuk halaman ini.');
+        }
+    }
+}
+
+if (!function_exists('isStudent')) {
+    function isStudent(): bool
+    {
+        return ($_SESSION['role'] ?? '') === 'siswa';
+    }
+}
