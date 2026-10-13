@@ -185,7 +185,10 @@ if ($currentUserId > 0 && isset($pdo)) {
     <div class="profile-container" onclick="toggleDropdown(event)">
         <div class="avatar" style="overflow: hidden; display: flex; justify-content: center; align-items: center; padding: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
             <?php if (!empty($userPhoto)): ?>
-                <img src="<?= UPLOAD_URL ?>/admins/<?= e($userPhoto) ?>" alt="Profil" style="width: 100%; height: 100%; object-fit: cover;">
+                <img src="<?= UPLOAD_URL ?>/admins/<?= e($userPhoto) ?>" 
+                     alt="Profil" 
+                     style="width: 100%; height: 100%; object-fit: cover;"
+                     onerror="this.onerror=null; this.src='<?= BASE_URL ?>/photo.php?type=admin&file=<?= urlencode($userPhoto) ?>&name=<?= urlencode($_SESSION['name'] ?? 'U') ?>';">
             <?php else: ?>
                 <?= strtoupper(substr($_SESSION['name'] ?? 'U', 0, 1)) ?>
             <?php endif; ?>

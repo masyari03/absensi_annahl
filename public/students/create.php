@@ -63,14 +63,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $photo = null;
             if (!empty($_FILES['photo']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
-                $mime = mime_content_type($_FILES['photo']['tmp_name']);
-                $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
-                if (!isset($allowed[$mime])) { throw new Exception('Format foto harus JPG, PNG, atau WEBP.'); }
-                if ($_FILES['photo']['size'] > 2 * 1024 * 1024) { throw new Exception('Ukuran foto maksimal 2 MB.'); }
-                if (!is_dir(UPLOAD_STUDENT)) { mkdir(UPLOAD_STUDENT, 0755, true); }
+                if ($_FILES['photo']['size'] > 2 * 1024 * 1024) { 
+                    throw new Exception('Ukuran foto maksimal 2 MB.'); 
+                }
+
+                $allowed = [
+                    'image/jpeg'  => 'jpg',
+                    'image/pjpeg' => 'jpg',
+                    'image/jpg'   => 'jpg',
+                    'image/png'   => 'png',
+                    'image/x-png' => 'png',
+                    'image/webp'  => 'webp'
+                ];
+
+                $imgInfo = @getimagesize($_FILES['photo']['tmp_name']);
+                if (!$imgInfo) {
+                    throw new Exception('File yang diunggah bukan file gambar yang valid.');
+                }
+                $mime = $imgInfo['mime'] ?? @mime_content_type($_FILES['photo']['tmp_name']);
+                if (!isset($allowed[$mime])) { 
+                    throw new Exception('Format foto harus JPG, PNG, atau WEBP.'); 
+                }
+
+                if (!is_dir(UPLOAD_STUDENT)) { 
+                    @mkdir(UPLOAD_STUDENT, 0777, true); 
+                }
+                @chmod(UPLOAD_STUDENT, 0777);
                 
                 $photo = uniqid('student_', true) . '.' . $allowed[$mime];
-                move_uploaded_file($_FILES['photo']['tmp_name'], UPLOAD_STUDENT . $photo);
+                $targetFile = UPLOAD_STUDENT . $photo;
+                
+                if (!move_uploaded_file($_FILES['photo']['tmp_name'], $targetFile)) {
+                    throw new Exception('Gagal menyimpan file foto ke folder uploads. Periksa hak akses direktori server.');
+                }
+                @chmod($targetFile, 0644);
             }
 
             $stmt = $pdo->prepare("INSERT INTO students (name, nis, nik, parent_phone, wa_notify, rfid_uid, fingerprint_id, photo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");

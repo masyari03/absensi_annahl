@@ -223,7 +223,11 @@ require '../../includes/header.php';
                     <td><?= $offset + $index + 1 ?></td>
                     <td>
                         <?php if (!empty($student['photo'])): ?>
-                            <img src="../../uploads/students/<?= e($student['photo']) ?>" width="45" height="45" style="object-fit:cover; border-radius:10px;">
+                            <img src="../../uploads/students/<?= e($student['photo']) ?>" 
+                                 width="45" height="45" 
+                                 style="object-fit:cover; border-radius:10px; display:block;" 
+                                 alt="<?= e($student['name']) ?>"
+                                 onerror="this.onerror=null; this.src='../photo.php?type=student&file=<?= urlencode($student['photo']) ?>&name=<?= urlencode($student['name']) ?>';">
                         <?php else: ?>
                             <div class="avatar"><?= strtoupper(substr($student['name'], 0, 1)) ?></div>
                         <?php endif; ?>

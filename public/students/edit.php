@@ -85,18 +85,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Nama dan subkelas wajib diisi.';
     } else {
         $newPhoto = null;
+        $deletePhoto = isset($_POST['delete_photo']) && $_POST['delete_photo'] === '1';
+
         try {
             $pdo->beginTransaction();
 
             if (!empty($_FILES['photo']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
-                $mime = mime_content_type($_FILES['photo']['tmp_name']);
-                $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
-                if (!isset($allowed[$mime])) { throw new Exception('Format foto tidak diperbolehkan.'); }
-                if ($_FILES['photo']['size'] > 2 * 1024 * 1024) { throw new Exception('Ukuran foto maksimal 2 MB.'); }
-                if (!is_dir(UPLOAD_STUDENT)) { mkdir(UPLOAD_STUDENT, 0755, true); }
+                if ($_FILES['photo']['size'] > 2 * 1024 * 1024) { 
+                    throw new Exception('Ukuran foto maksimal 2 MB.'); 
+                }
+
+                $allowed = [
+                    'image/jpeg'  => 'jpg',
+                    'image/pjpeg' => 'jpg',
+                    'image/jpg'   => 'jpg',
+                    'image/png'   => 'png',
+                    'image/x-png' => 'png',
+                    'image/webp'  => 'webp'
+                ];
+
+                $imgInfo = @getimagesize($_FILES['photo']['tmp_name']);
+                if (!$imgInfo) {
+                    throw new Exception('File yang diunggah bukan file gambar yang valid.');
+                }
+                $mime = $imgInfo['mime'] ?? @mime_content_type($_FILES['photo']['tmp_name']);
+                if (!isset($allowed[$mime])) { 
+                    throw new Exception('Format foto tidak diperbolehkan. Gunakan format JPG, PNG, atau WEBP.'); 
+                }
+
+                if (!is_dir(UPLOAD_STUDENT)) { 
+                    @mkdir(UPLOAD_STUDENT, 0777, true); 
+                }
+                @chmod(UPLOAD_STUDENT, 0777);
                 
                 $newPhoto = uniqid('student_', true) . '.' . $allowed[$mime];
-                move_uploaded_file($_FILES['photo']['tmp_name'], UPLOAD_STUDENT . $newPhoto);
+                $targetFile = UPLOAD_STUDENT . $newPhoto;
+                
+                if (!move_uploaded_file($_FILES['photo']['tmp_name'], $targetFile)) {
+                    throw new Exception('Gagal menyimpan file foto ke folder uploads. Periksa hak akses direktori server.');
+                }
+                @chmod($targetFile, 0644);
             }
 
             if ($newPhoto) {
@@ -110,6 +138,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $rfidUid !== '' ? strtoupper($rfidUid) : null,
                     $fingerprintId,
                     $newPhoto, 
+                    $id
+                ];
+            } elseif ($deletePhoto) {
+                $sql = "UPDATE students SET name = ?, nis = ?, nik = ?, parent_phone = ?, wa_notify = ?, rfid_uid = ?, fingerprint_id = ?, photo = NULL WHERE id = ?";
+                $params = [
+                    $name, 
+                    $nis !== '' ? $nis : null, 
+                    $nik !== '' ? $nik : null, 
+                    $parentPhone !== '' ? $parentPhone : null, 
+                    $waNotify, 
+                    $rfidUid !== '' ? strtoupper($rfidUid) : null,
+                    $fingerprintId,
                     $id
                 ];
             } else {
@@ -142,15 +182,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $pdo->commit();
 
-            if ($newPhoto && !empty($student['photo']) && file_exists(UPLOAD_STUDENT . $student['photo'])) {
-                unlink(UPLOAD_STUDENT . $student['photo']);
+            if (($newPhoto || $deletePhoto) && !empty($student['photo']) && file_exists(UPLOAD_STUDENT . $student['photo'])) {
+                @unlink(UPLOAD_STUDENT . $student['photo']);
             }
 
             flash('success', 'Data siswa berhasil diperbarui dan kelas telah terpasang.');
             redirect('index.php');
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) { $pdo->rollBack(); }
-            if ($newPhoto && file_exists(UPLOAD_STUDENT . $newPhoto)) { unlink(UPLOAD_STUDENT . $newPhoto); }
+            if ($newPhoto && file_exists(UPLOAD_STUDENT . $newPhoto)) { @unlink(UPLOAD_STUDENT . $newPhoto); }
             $error = $e->getMessage();
         }
     }
@@ -221,14 +261,25 @@ require '../../includes/header.php';
             </div>
 
             <div class="form-group full">
-                <label>Foto Baru</label>
+                <label>Foto Siswa</label>
                 <?php if (!empty($student['photo'])): ?>
-                    <div style="margin-bottom:10px;">
-                        <img src="../../uploads/students/<?= e($student['photo']) ?>" width="60" style="border-radius:10px;">
+                    <div style="margin-bottom:12px; display:flex; align-items:center; gap:16px; background:#f8fafc; padding:10px 14px; border-radius:12px; border:1px solid #e2e8f0; width:fit-content;">
+                        <img src="../../uploads/students/<?= e($student['photo']) ?>" 
+                             width="64" height="64" 
+                             style="object-fit:cover; border-radius:10px; border:1px solid #cbd5e1;"
+                             alt="<?= e($student['name']) ?>"
+                             onerror="this.onerror=null; this.src='../photo.php?type=student&file=<?= urlencode($student['photo']) ?>&name=<?= urlencode($student['name']) ?>';">
+                        <div>
+                            <div style="font-size:12px; color:#64748b; margin-bottom:4px;">Foto saat ini: <code style="font-size:11px;"><?= e($student['photo']) ?></code></div>
+                            <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; color:#dc2626; font-size:12.5px; font-weight:600;">
+                                <input type="checkbox" name="delete_photo" value="1" style="accent-color:#dc2626; width:16px; height:16px;">
+                                <span>Hapus Foto Ini</span>
+                            </label>
+                        </div>
                     </div>
                 <?php endif; ?>
                 <input type="file" name="photo" accept="image/jpeg,image/png,image/webp">
-                <small>Maksimal 2 MB.</small>
+                <small style="color: #64748b;">Pilih file baru untuk mengganti foto (Maksimal 2 MB, format: JPG, PNG, WEBP).</small>
             </div>
         </div>
 

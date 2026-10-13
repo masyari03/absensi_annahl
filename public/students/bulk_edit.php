@@ -569,7 +569,11 @@ input:checked + .slider:before { transform: translateX(20px); }
                     </td>
                     <td>
                         <?php if (!empty($s['photo'])): ?>
-                            <img src="../../uploads/students/<?= e($s['photo']) ?>" width="36" height="36" style="object-fit:cover; border-radius:8px;">
+                            <img src="../../uploads/students/<?= e($s['photo']) ?>" 
+                                 width="36" height="36" 
+                                 style="object-fit:cover; border-radius:8px; display:block;"
+                                 alt="<?= e($s['name']) ?>"
+                                 onerror="this.onerror=null; this.src='../photo.php?type=student&file=<?= urlencode($s['photo']) ?>&name=<?= urlencode($s['name']) ?>';">
                         <?php else: ?>
                             <div class="avatar" style="width: 36px; height: 36px; font-size: 12px;"><?= strtoupper(substr($s['name'], 0, 1)) ?></div>
                         <?php endif; ?>

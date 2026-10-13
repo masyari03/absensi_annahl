@@ -88,11 +88,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['file_excel'])) {
 
                     $photoNameSave = null;
                     if (!empty($namaFileFoto) && isset($uploadedPhotos[$namaFileFoto])) {
-                        $uploadDir = '../../uploads/staff/';
-                        if (!is_dir($uploadDir)) { mkdir($uploadDir, 0755, true); }
-                        $ext = pathinfo($namaFileFoto, PATHINFO_EXTENSION);
-                        $photoNameSave = uniqid('staff_', true) . '.' . $ext;
-                        move_uploaded_file($uploadedPhotos[$namaFileFoto], $uploadDir . $photoNameSave);
+                        $uploadDir = defined('UPLOAD_PATH') ? UPLOAD_PATH . '/staff/' : '../../uploads/staff/';
+                        if (!is_dir($uploadDir)) { @mkdir($uploadDir, 0777, true); }
+                        @chmod($uploadDir, 0777);
+                        $ext = strtolower(pathinfo($namaFileFoto, PATHINFO_EXTENSION));
+                        if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) {
+                            $candidateName = uniqid('staff_', true) . '.' . ($ext === 'jpeg' ? 'jpg' : $ext);
+                            if (move_uploaded_file($uploadedPhotos[$namaFileFoto], $uploadDir . $candidateName)) {
+                                @chmod($uploadDir . $candidateName, 0644);
+                                $photoNameSave = $candidateName;
+                            }
+                        }
                     }
                     
                     // Eksekusi insert user & staff

@@ -889,7 +889,7 @@ require '../../includes/header.php';
                                         <div class="user-cell">
                                             <div class="user-avatar-box">
                                                 <?php if (!empty($log['photo']) && file_exists(UPLOAD_PATH . '/admins/' . $log['photo'])): ?>
-                                                    <img src="<?= UPLOAD_URL ?>/admins/<?= e($log['photo']) ?>" class="user-avatar-img">
+                                                    <img src="<?= UPLOAD_URL ?>/admins/<?= e($log['photo']) ?>" class="user-avatar-img" onerror="this.onerror=null; this.src='<?= BASE_URL ?>/photo.php?type=admin&file=<?= urlencode($log['photo']) ?>&name=<?= urlencode($log['username']) ?>';">
                                                 <?php else: ?>
                                                     <div class="user-avatar-placeholder">
                                                         <?= strtoupper(substr($log['username'], 0, 1)) ?>
@@ -1055,7 +1055,7 @@ require '../../includes/header.php';
                                         <div class="user-cell">
                                             <div class="user-avatar-box">
                                                 <?php if (!empty($u['photo']) && file_exists(UPLOAD_PATH . '/' . $folder . '/' . $u['photo'])): ?>
-                                                    <img src="<?= UPLOAD_URL ?>/<?= $folder ?>/<?= e($u['photo']) ?>" class="user-avatar-img">
+                                                    <img src="<?= UPLOAD_URL ?>/<?= $folder ?>/<?= e($u['photo']) ?>" class="user-avatar-img" onerror="this.onerror=null; this.src='<?= BASE_URL ?>/photo.php?type=<?= $folder ?>&file=<?= urlencode($u['photo']) ?>&name=<?= urlencode($u['name'] ?? $u['username']) ?>';">
                                                 <?php else: ?>
                                                     <div class="user-avatar-placeholder">
                                                         <?= strtoupper(substr($u['name'] ?? $u['username'], 0, 1)) ?>

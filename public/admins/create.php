@@ -35,11 +35,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // PROSES UPLOAD FOTO ADMIN
             $photoNameSave = null;
             if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
-                $ext = pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION);
-                $photoNameSave = uniqid('admin_', true) . '.' . $ext;
-                $uploadDir = '../../uploads/admins/';
-                if (!is_dir($uploadDir)) { mkdir($uploadDir, 0755, true); }
-                move_uploaded_file($_FILES['photo']['tmp_name'], $uploadDir . $photoNameSave);
+                if ($_FILES['photo']['size'] > 2 * 1024 * 1024) { 
+                    throw new Exception('Ukuran foto maksimal 2 MB.'); 
+                }
+
+                $allowed = [
+                    'image/jpeg'  => 'jpg',
+                    'image/pjpeg' => 'jpg',
+                    'image/jpg'   => 'jpg',
+                    'image/png'   => 'png',
+                    'image/x-png' => 'png',
+                    'image/webp'  => 'webp'
+                ];
+
+                $imgInfo = @getimagesize($_FILES['photo']['tmp_name']);
+                if (!$imgInfo) {
+                    throw new Exception('File yang diunggah bukan file gambar yang valid.');
+                }
+                $mime = $imgInfo['mime'] ?? @mime_content_type($_FILES['photo']['tmp_name']);
+                if (!isset($allowed[$mime])) { 
+                    throw new Exception('Format foto harus JPG, PNG, atau WEBP.'); 
+                }
+
+                $uploadDir = defined('UPLOAD_PATH') ? UPLOAD_PATH . '/admins/' : '../../uploads/admins/';
+                if (!is_dir($uploadDir)) { @mkdir($uploadDir, 0777, true); }
+                @chmod($uploadDir, 0777);
+
+                $photoNameSave = uniqid('admin_', true) . '.' . $allowed[$mime];
+                $targetFile = $uploadDir . $photoNameSave;
+
+                if (!move_uploaded_file($_FILES['photo']['tmp_name'], $targetFile)) {
+                    throw new Exception('Gagal menyimpan file foto ke direktori uploads/admins.');
+                }
+                @chmod($targetFile, 0644);
             }
 
             $stmt = $pdo->prepare("

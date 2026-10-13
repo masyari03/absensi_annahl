@@ -616,7 +616,7 @@ require '../../includes/header.php';
                                 <div style="display: flex; align-items: center; gap: 12px;">
                                     <div style="width: 38px; height: 38px; border-radius: 50%; background: #e0e7ff; color: var(--primary); display: flex; align-items: center; justify-content: center; font-weight: bold; overflow: hidden; flex-shrink: 0;">
                                         <?php if ($avatarFile && file_exists($avatarFile)): ?>
-                                            <img src="<?= $avatar ?>" alt="Photo" style="width: 100%; height: 100%; object-fit: cover;">
+                                            <img src="<?= $avatar ?>" alt="Photo" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.onerror=null; this.src='<?= BASE_URL ?>/photo.php?type=admin&file=<?= urlencode($u['photo']) ?>&name=<?= urlencode($u['name']) ?>';">
                                         <?php else: ?>
                                             <?= strtoupper(substr($u['name'], 0, 1)) ?>
                                         <?php endif; ?>

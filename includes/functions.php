@@ -293,13 +293,24 @@ if (!function_exists('uploadStudentPhoto')) {
             return null;
         }
 
+        if (($file['size'] ?? 0) > 2 * 1024 * 1024) {
+            return null;
+        }
+
         $allowed = [
-            'image/jpeg' => 'jpg',
-            'image/png'  => 'png',
-            'image/webp' => 'webp'
+            'image/jpeg'  => 'jpg',
+            'image/pjpeg' => 'jpg',
+            'image/jpg'   => 'jpg',
+            'image/png'   => 'png',
+            'image/x-png' => 'png',
+            'image/webp'  => 'webp'
         ];
 
-        $mime = mime_content_type($file['tmp_name']);
+        $imgInfo = @getimagesize($file['tmp_name']);
+        if (!$imgInfo) {
+            return null;
+        }
+        $mime = $imgInfo['mime'] ?? @mime_content_type($file['tmp_name']);
         if (!isset($allowed[$mime])) {
             return null;
         }
@@ -309,11 +320,17 @@ if (!function_exists('uploadStudentPhoto')) {
 
         $targetDir = defined('UPLOAD_STUDENT') ? UPLOAD_STUDENT : (dirname(__DIR__) . '/uploads/students/');
         if (!is_dir($targetDir)) {
-            mkdir($targetDir, 0755, true);
+            @mkdir($targetDir, 0777, true);
+        }
+        @chmod($targetDir, 0777);
+
+        $targetPath = $targetDir . $filename;
+        if (move_uploaded_file($file['tmp_name'], $targetPath)) {
+            @chmod($targetPath, 0644);
+            return $filename;
         }
 
-        move_uploaded_file($file['tmp_name'], $targetDir . $filename);
-        return $filename;
+        return null;
     }
 }
 

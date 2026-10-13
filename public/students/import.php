@@ -121,10 +121,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['file_excel'])) {
 
                     $photoNameSave = null;
                     if (!empty($namaFileFoto) && isset($uploadedPhotos[$namaFileFoto])) {
-                        if (!is_dir(UPLOAD_STUDENT)) { mkdir(UPLOAD_STUDENT, 0755, true); }
-                        $ext = pathinfo($namaFileFoto, PATHINFO_EXTENSION);
-                        $photoNameSave = uniqid('student_', true) . '.' . $ext;
-                        move_uploaded_file($uploadedPhotos[$namaFileFoto], UPLOAD_STUDENT . $photoNameSave);
+                        if (!is_dir(UPLOAD_STUDENT)) { @mkdir(UPLOAD_STUDENT, 0777, true); }
+                        @chmod(UPLOAD_STUDENT, 0777);
+                        $ext = strtolower(pathinfo($namaFileFoto, PATHINFO_EXTENSION));
+                        if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) {
+                            $candidateName = uniqid('student_', true) . '.' . ($ext === 'jpeg' ? 'jpg' : $ext);
+                            if (move_uploaded_file($uploadedPhotos[$namaFileFoto], UPLOAD_STUDENT . $candidateName)) {
+                                @chmod(UPLOAD_STUDENT . $candidateName, 0644);
+                                $photoNameSave = $candidateName;
+                            }
+                        }
                     }
 
                     $stmtStudent->execute([$nama, $nis !== '' ? $nis : null, $nik !== '' ? $nik : null, $photoNameSave]);

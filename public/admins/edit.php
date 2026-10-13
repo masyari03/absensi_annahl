@@ -58,20 +58,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $gradeIds = array_map('intval', $_POST['grade_ids'] ?? []);
     $classIds = array_map('intval', $_POST['class_ids'] ?? []);
     $photoNameSave = $admin['photo'];
+    $deletePhoto = isset($_POST['delete_photo']) && $_POST['delete_photo'] === '1';
 
     try {
         $pdo->beginTransaction();
 
         // UPLOAD FOTO
         if (!empty($_FILES['photo']['name']) && $_FILES['photo']['error'] === UPLOAD_ERR_OK) {
-            $ext = pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION);
-            $photoNameSave = uniqid('admin_', true) . '.' . $ext;
-            $uploadDir = '../../uploads/admins/';
-            if (!is_dir($uploadDir)) { mkdir($uploadDir, 0755, true); }
-            if (!empty($admin['photo']) && file_exists($uploadDir . $admin['photo'])) {
-                unlink($uploadDir . $admin['photo']);
+            if ($_FILES['photo']['size'] > 2 * 1024 * 1024) { 
+                throw new Exception('Ukuran foto maksimal 2 MB.'); 
             }
-            move_uploaded_file($_FILES['photo']['tmp_name'], $uploadDir . $photoNameSave);
+
+            $allowed = [
+                'image/jpeg'  => 'jpg',
+                'image/pjpeg' => 'jpg',
+                'image/jpg'   => 'jpg',
+                'image/png'   => 'png',
+                'image/x-png' => 'png',
+                'image/webp'  => 'webp'
+            ];
+
+            $imgInfo = @getimagesize($_FILES['photo']['tmp_name']);
+            if (!$imgInfo) {
+                throw new Exception('File yang diunggah bukan file gambar yang valid.');
+            }
+            $mime = $imgInfo['mime'] ?? @mime_content_type($_FILES['photo']['tmp_name']);
+            if (!isset($allowed[$mime])) { 
+                throw new Exception('Format foto harus JPG, PNG, atau WEBP.'); 
+            }
+
+            $uploadDir = defined('UPLOAD_PATH') ? UPLOAD_PATH . '/admins/' : '../../uploads/admins/';
+            if (!is_dir($uploadDir)) { @mkdir($uploadDir, 0777, true); }
+            @chmod($uploadDir, 0777);
+
+            $candidateName = uniqid('admin_', true) . '.' . $allowed[$mime];
+            $targetPath = $uploadDir . $candidateName;
+
+            if (!move_uploaded_file($_FILES['photo']['tmp_name'], $targetPath)) {
+                throw new Exception('Gagal menyimpan file foto ke direktori uploads/admins.');
+            }
+            @chmod($targetPath, 0644);
+
+            if (!empty($admin['photo']) && file_exists($uploadDir . $admin['photo'])) {
+                @unlink($uploadDir . $admin['photo']);
+            }
+            $photoNameSave = $candidateName;
+        } elseif ($deletePhoto) {
+            $uploadDir = defined('UPLOAD_PATH') ? UPLOAD_PATH . '/admins/' : '../../uploads/admins/';
+            if (!empty($admin['photo']) && file_exists($uploadDir . $admin['photo'])) {
+                @unlink($uploadDir . $admin['photo']);
+            }
+            $photoNameSave = null;
         }
 
         // UPDATE PROFIL & PASSWORD
@@ -137,14 +174,26 @@ require '../../includes/header.php';
             </div>
             <?php endif; ?>
 
-            <div class="form-group">
-                <label>Ganti Foto (Opsional)</label>
+            <div class="form-group full">
+                <label>Foto Admin</label>
                 <?php if (!empty($admin['photo'])): ?>
-                    <div style="margin-bottom:10px;">
-                        <img src="../../uploads/admins/<?= e($admin['photo']) ?>" width="60" style="border-radius:10px;">
+                    <div style="margin-bottom:12px; display:flex; align-items:center; gap:16px; background:#f8fafc; padding:10px 14px; border-radius:12px; border:1px solid #e2e8f0; width:fit-content;">
+                        <img src="../../uploads/admins/<?= e($admin['photo']) ?>" 
+                             width="64" height="64" 
+                             style="object-fit:cover; border-radius:10px; border:1px solid #cbd5e1;"
+                             alt="<?= e($admin['name']) ?>"
+                             onerror="this.onerror=null; this.src='../photo.php?type=admin&file=<?= urlencode($admin['photo']) ?>&name=<?= urlencode($admin['name']) ?>';">
+                        <div>
+                            <div style="font-size:12px; color:#64748b; margin-bottom:4px;">Foto saat ini: <code style="font-size:11px;"><?= e($admin['photo']) ?></code></div>
+                            <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; color:#dc2626; font-size:12.5px; font-weight:600;">
+                                <input type="checkbox" name="delete_photo" value="1" style="accent-color:#dc2626; width:16px; height:16px;">
+                                <span>Hapus Foto Ini</span>
+                            </label>
+                        </div>
                     </div>
                 <?php endif; ?>
                 <input type="file" name="photo" accept="image/jpeg,image/png,image/webp">
+                <small style="color: #64748b;">Pilih file baru untuk mengganti foto (Maksimal 2 MB, format: JPG, PNG, WEBP).</small>
             </div>
 
             <div class="form-group full">

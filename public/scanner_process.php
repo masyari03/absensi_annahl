@@ -684,11 +684,12 @@ try {
         $color = ($r['status'] === 'tepat_waktu') ? 'text-green' : 'text-red';
         $time = date('H:i', strtotime($r['scan_time']));
         $folder = $r['type'] === 'staff' ? 'staff' : 'students';
-        $imgSrc = !empty($r['photo']) ? "../uploads/{$folder}/" . e($r['photo']) : 'https://via.placeholder.com/80/cbd5e1/475569?text=' . strtoupper(substr($r['name'], 0, 1));
+        $fallbackUrl = "photo.php?type={$folder}&name=" . urlencode($r['name']);
+        $imgSrc = !empty($r['photo']) ? "../uploads/{$folder}/" . e($r['photo']) : $fallbackUrl;
 
         $recentHTML .= "
         <div class='recent-item' style='display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.05);'>
-            <img src='{$imgSrc}' style='width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: #fff;'>
+            <img src='{$imgSrc}' style='width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: #fff;' onerror=\"this.onerror=null; this.src='{$fallbackUrl}';\">
             <div class='recent-info' style='flex: 1;'>
                 <h4 style='margin: 0 0 3px 0; font-size: 14px; color: #f1f5f9;'>".e($r['name'])."</h4>
                 <p style='margin: 0; font-size: 11px; color: #94a3b8;'>".e($r['class_name'])."</p>

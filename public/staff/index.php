@@ -131,7 +131,11 @@ require '../../includes/header.php';
                     <td><?= $index + 1 ?></td>
                     <td>
                         <?php if (!empty($person['photo'])): ?>
-                            <img src="../../uploads/staff/<?= e($person['photo']) ?>" width="45" height="45" style="object-fit:cover; border-radius:10px;">
+                            <img src="../../uploads/staff/<?= e($person['photo']) ?>" 
+                                 width="45" height="45" 
+                                 style="object-fit:cover; border-radius:10px; display:block;"
+                                 alt="<?= e($person['name']) ?>"
+                                 onerror="this.onerror=null; this.src='../photo.php?type=staff&file=<?= urlencode($person['photo']) ?>&name=<?= urlencode($person['name']) ?>';">
                         <?php else: ?>
                             <div class="avatar"><?= strtoupper(substr($person['name'], 0, 1)) ?></div>
                         <?php endif; ?>

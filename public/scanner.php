@@ -434,10 +434,11 @@ $recents = $stmtRecent->fetchAll();
                     <?php foreach($recents as $r): 
                         $isOntime = ($r['status'] === 'tepat_waktu'); 
                         $folder = ($r['type'] === 'staff') ? 'staff' : 'students';
-                        $imgSrc = !empty($r['photo']) ? "../uploads/{$folder}/" . e($r['photo']) : 'https://via.placeholder.com/80/cbd5e1/475569?text=' . strtoupper(substr($r['name'], 0, 1));
+                        $fallbackUrl = "photo.php?type={$folder}&name=" . urlencode($r['name']);
+                        $imgSrc = !empty($r['photo']) ? "../uploads/{$folder}/" . e($r['photo']) : $fallbackUrl;
                     ?>
                     <div class="recent-item" style="display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
-                        <img src="<?= $imgSrc ?>" alt="Foto" style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: #cbd5e1; flex-shrink: 0;">
+                        <img src="<?= $imgSrc ?>" alt="Foto" style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: #cbd5e1; flex-shrink: 0;" onerror="this.onerror=null; this.src='<?= $fallbackUrl ?>';">
                         <div class="recent-info" style="flex: 1;">
                             <h4 style="margin: 0 0 3px 0; font-size: 14px; font-weight: 700; color: #f1f5f9;"><?= e($r['name']) ?></h4>
                             <p style="margin: 0; font-size: 12px; color: var(--text-muted);"><?= e($r['class_name']) ?></p>

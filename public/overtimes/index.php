@@ -562,7 +562,11 @@ require '../../includes/header.php';
                                 <td style="text-align: center;"><?= $sIdx++ ?></td>
                                 <td style="text-align: center;">
                                     <?php if ($avatar && file_exists(__DIR__ . '/../../uploads/staff/' . $st['photo'])): ?>
-                                        <img src="<?= e($avatar) ?>" width="38" height="38" style="object-fit:cover; border-radius:8px;">
+                                        <img src="<?= e($avatar) ?>" 
+                                             width="38" height="38" 
+                                             style="object-fit:cover; border-radius:8px; display:block; margin:auto;"
+                                             alt="<?= e($st['name']) ?>"
+                                             onerror="this.onerror=null; this.src='../photo.php?type=staff&file=<?= urlencode($st['photo']) ?>&name=<?= urlencode($st['name']) ?>';">
                                     <?php else: ?>
                                         <div style="width:38px; height:38px; line-height:38px; font-size:15px; background:#e0e7ff; color:#4f46e5; text-align:center; border-radius:8px; font-weight:bold; margin:auto;">
                                             <?= strtoupper(substr($st['name'], 0, 1)) ?>
@@ -644,7 +648,11 @@ require '../../includes/header.php';
                         <td><?= date('d M Y', strtotime($row['overtime_date'])) ?></td>
                         <td style="text-align: center;">
                             <?php if ($avatar && file_exists(__DIR__ . '/../../uploads/staff/' . $row['photo'])): ?>
-                                <img src="<?= e($avatar) ?>" width="38" height="38" style="object-fit:cover; border-radius:8px;">
+                                <img src="<?= e($avatar) ?>" 
+                                     width="38" height="38" 
+                                     style="object-fit:cover; border-radius:8px; display:block; margin:auto;"
+                                     alt="<?= e($row['name']) ?>"
+                                     onerror="this.onerror=null; this.src='../photo.php?type=staff&file=<?= urlencode($row['photo']) ?>&name=<?= urlencode($row['name']) ?>';">
                             <?php else: ?>
                                 <div style="width:38px; height:38px; line-height:38px; font-size:15px; background:#e0e7ff; color:#4f46e5; text-align:center; border-radius:8px; font-weight:bold; margin:auto;">
                                     <?= strtoupper(substr($row['name'], 0, 1)) ?>

@@ -1809,7 +1809,11 @@ input:checked + .slider:before {
                             <td><?= $offset + $sIdx + 1 ?></td>
                             <td>
                                 <?php if (!empty($st['photo'])): ?>
-                                    <img src="../../uploads/students/<?= htmlspecialchars($st['photo']) ?>" width="40" height="40" style="object-fit: cover; border-radius: 8px;">
+                                    <img src="../../uploads/students/<?= htmlspecialchars($st['photo']) ?>" 
+                                         width="40" height="40" 
+                                         style="object-fit: cover; border-radius: 8px; display: block;"
+                                         alt="<?= htmlspecialchars($st['name']) ?>"
+                                         onerror="this.onerror=null; this.src='../photo.php?type=student&file=<?= urlencode($st['photo']) ?>&name=<?= urlencode($st['name']) ?>';">
                                 <?php else: ?>
                                     <div class="avatar" style="width: 40px; height: 40px; font-size: 14px;"><?= strtoupper(substr($st['name'], 0, 1)) ?></div>
                                 <?php endif; ?>
