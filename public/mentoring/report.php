@@ -229,6 +229,52 @@ require __DIR__ . '/../../includes/header.php';
 
 <!-- STYLE PRINT A4 STRICT EMULATING SPA EXACT SPECIFICATION -->
 <style>
+/* Responsive styling untuk tampilan layar HP / Tablet (Screen View) */
+@media screen and (max-width: 768px) {
+    .print-sheet {
+        padding: 14px 12px !important;
+        border-radius: 12px !important;
+        box-sizing: border-box !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        overflow-x: hidden !important;
+    }
+    
+    .screen-table-responsive {
+        width: 100% !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch;
+        margin-bottom: 12px;
+        border-radius: 8px;
+    }
+
+    .screen-table-responsive table {
+        min-width: 580px !important;
+    }
+
+    #rptAspectsBarDiagram {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 10px !important;
+    }
+
+    .student-info-grid {
+        grid-template-columns: 1fr !important;
+        gap: 6px !important;
+    }
+
+    .reflection-grid {
+        grid-template-columns: 1fr !important;
+        gap: 8px !important;
+    }
+
+    .signature-container {
+        padding: 12px 6px 0 !important;
+    }
+    .signature-box {
+        width: 140px !important;
+    }
+}
+
 @media print {
     * {
         -webkit-print-color-adjust: exact !important;
@@ -394,7 +440,7 @@ require __DIR__ . '/../../includes/header.php';
              LEMBAR CETAK RAPORT A4 PORTRAIT RESMI (PRINT SHEET)
              100% IDENTIK DENGAN VERSI SPA / APLIKASI PENUH
              ======================================================== -->
-        <div class="card print-sheet" style="padding: 24px 28px; border-radius: 18px; background: #ffffff; max-width: 860px; margin: 0 auto; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
+        <div class="print-sheet" style="padding: 24px 28px; border-radius: 18px; background: #ffffff; max-width: 860px; margin: 0 auto; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
             
             <!-- 1. REPORT HEADER KOP SEKOLAH -->
             <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2.5px solid #0f172a; padding-bottom: 10px; margin-bottom: 14px;">
@@ -421,7 +467,7 @@ require __DIR__ . '/../../includes/header.php';
             </div>
 
             <!-- 2. REPORT STUDENT METADATA (2x2 Grid) -->
-            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 14px; margin-bottom: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 11px;">
+            <div class="student-info-grid" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 14px; margin-bottom: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 11px;">
                 <div>
                     <span style="font-size: 9px; color: #64748b; font-weight: 800; text-transform: uppercase; display: block;">Nama Murid / Siswa:</span>
                     <h4 style="margin: 2px 0 0; font-size: 12.5px; font-weight: 900; color: #0f172a;"><?= e($selectedStudent['name']) ?></h4>
@@ -445,56 +491,58 @@ require __DIR__ . '/../../includes/header.php';
                 <h4 style="margin: 0 0 6px; font-size: 11px; font-weight: 900; color: #0f172a; text-transform: uppercase;">
                     A. RINCIAN EVALUASI 4 ASPEK MENTORING
                 </h4>
-                <table style="width: 100%; border-collapse: collapse; font-size: 10px; border: 1px solid #cbd5e1;">
-                    <thead style="background: #f1f5f9; color: #1e293b; font-weight: 800; text-align: center;">
-                        <tr>
-                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: left;">Aspek Evaluasi Mentoring</th>
-                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 1</th>
-                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 2</th>
-                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 3</th>
-                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 4</th>
-                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: left;">Catatan Mentor & Advice</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <!-- Aspek 1: MIP -->
-                        <tr>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800;">1. MIP (Mission Is Possible)</td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P1', 'score_mip') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P2', 'score_mip') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P3', 'score_mip') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P4', 'score_mip') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_mip')) ?></td>
-                        </tr>
-                        <!-- Aspek 2: Akademik -->
-                        <tr>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800;">2. Akademik & Non-Akademik</td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P1', 'score_academic') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P2', 'score_academic') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P3', 'score_academic') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P4', 'score_academic') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_academic')) ?></td>
-                        </tr>
-                        <!-- Aspek 3: Mutabaah -->
-                        <tr>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800;">3. Mutaba'ah Yaumiyah</td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P1', 'score_mutabaah') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P2', 'score_mutabaah') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P3', 'score_mutabaah') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P4', 'score_mutabaah') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_mutabaah')) ?></td>
-                        </tr>
-                        <!-- Aspek 4: Adab -->
-                        <tr style="background-color: #faf5ff !important;">
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800; color: #581c87;">4. Adab & Karakter</td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P1', 'score_adab') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P2', 'score_adab') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P3', 'score_adab') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P4', 'score_adab') ?></td>
-                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_adab')) ?></td>
-                        </tr>
-                    </tbody>
-                </table>
+                <div class="screen-table-responsive">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 10px; border: 1px solid #cbd5e1;">
+                        <thead style="background: #f1f5f9; color: #1e293b; font-weight: 800; text-align: center;">
+                            <tr>
+                                <th style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: left;">Aspek Evaluasi Mentoring</th>
+                                <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 1</th>
+                                <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 2</th>
+                                <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 3</th>
+                                <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 4</th>
+                                <th style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: left;">Catatan Mentor & Advice</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Aspek 1: MIP -->
+                            <tr>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800;">1. MIP (Mission Is Possible)</td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P1', 'score_mip') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P2', 'score_mip') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P3', 'score_mip') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P4', 'score_mip') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_mip')) ?></td>
+                            </tr>
+                            <!-- Aspek 2: Akademik -->
+                            <tr>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800;">2. Akademik & Non-Akademik</td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P1', 'score_academic') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P2', 'score_academic') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P3', 'score_academic') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P4', 'score_academic') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_academic')) ?></td>
+                            </tr>
+                            <!-- Aspek 3: Mutabaah -->
+                            <tr>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800;">3. Mutaba'ah Yaumiyah</td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P1', 'score_mutabaah') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P2', 'score_mutabaah') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P3', 'score_mutabaah') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P4', 'score_mutabaah') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_mutabaah')) ?></td>
+                            </tr>
+                            <!-- Aspek 4: Adab -->
+                            <tr style="background-color: #faf5ff !important;">
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800; color: #581c87;">4. Adab & Karakter</td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P1', 'score_adab') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P2', 'score_adab') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P3', 'score_adab') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P4', 'score_adab') ?></td>
+                                <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_adab')) ?></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             <!-- 4. B. DIAGRAM GRAFIK PERKEMBANGAN & TENDENSI CAPAIAN 4 ASPEK -->
@@ -591,7 +639,7 @@ require __DIR__ . '/../../includes/header.php';
                     C. HASIL ISIAN REFLEKSI ADAB & KARAKTER MURID
                 </h4>
 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 9.5px;">
+                <div class="reflection-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 9.5px;">
                     <div style="background: #f8fafc; padding: 7px 10px; border-radius: 8px; border: 1px solid #e2e8f0;">
                         <strong style="display: block; color: #1e293b; font-weight: 800; margin-bottom: 2px;">1. Aksi Nyata Adab:</strong>
                         <p style="margin: 0; color: #475569; font-style: italic; line-height: 1.35;"><?= nl2br(e($adabRefleksi['refleksi1'])) ?></p>
@@ -615,13 +663,13 @@ require __DIR__ . '/../../includes/header.php';
             </div>
 
             <!-- 6. SIGNATURE BLOCK RESMI (Orang Tua / Wali & Guru Mentor) -->
-            <div class="print-break-inside-avoid" style="display: flex; justify-content: space-between; align-items: flex-end; padding: 12px 24px 0; text-align: center; font-size: 10px; border-top: 1px solid #e2e8f0; margin-top: 8px;">
-                <div style="width: 200px;">
+            <div class="print-break-inside-avoid signature-container" style="display: flex; justify-content: space-between; align-items: flex-end; padding: 12px 24px 0; text-align: center; font-size: 10px; border-top: 1px solid #e2e8f0; margin-top: 8px;">
+                <div class="signature-box" style="width: 200px;">
                     <p style="margin: 0 0 45px; font-weight: 600; color: #334155;">Orang Tua / Wali Murid,</p>
                     <p style="margin: 0; font-weight: 800; color: #0f172a; text-decoration: underline;">( _______________________ )</p>
                 </div>
 
-                <div style="width: 200px;">
+                <div class="signature-box" style="width: 200px;">
                     <p style="margin: 0 0 2px; color: #64748b; font-size: 9px;">Bogor, <?= date('d F Y') ?></p>
                     <p style="margin: 0 0 45px; font-weight: 600; color: #334155;">Mentor,</p>
                     <p style="margin: 0; font-weight: 800; color: #0f172a; text-decoration: underline;">( <?= e($selectedStudent['mentor_name'] ?? 'Ust. Mentor') ?> )</p>
