@@ -14,16 +14,22 @@ $action = $_GET['action'] ?? '';
 try {
     // 1. GET SISWA DATA
     if ($action === 'getSiswaData') {
-        $stmt = $pdo->query("
-            SELECT s.nis as col1, s.name as col2, cg.name as col3, u.name as col4, '' as col5
+        $ayId = isset($_GET['academic_year_id']) ? (int)$_GET['academic_year_id'] : 0;
+        if ($ayId === 0) {
+            $ayId = (int)$pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1")->fetchColumn() ?: 1;
+        }
+
+        $stmt = $pdo->prepare("
+            SELECT s.nis as col1, s.name as col2, cg.name as col3, u.name as col4, ma.group_name as col5
             FROM students s
             LEFT JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
             LEFT JOIN class_groups cg ON cg.id = se.class_group_id
-            LEFT JOIN mentoring_assignments ma ON ma.student_id = s.id AND ma.is_active = 1
+            LEFT JOIN mentoring_assignments ma ON ma.student_id = s.id AND ma.academic_year_id = ? AND ma.is_active = 1
             LEFT JOIN users u ON u.id = ma.mentor_user_id
             WHERE s.deleted_at IS NULL
             ORDER BY cg.name ASC, s.name ASC
         ");
+        $stmt->execute([$ayId]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         echo json_encode(['success' => true, 'data' => $rows]);
         exit;
@@ -45,19 +51,39 @@ try {
 
     // 3. GET BANK MATERI
     if ($action === 'getBankMateri') {
-        $stmt = $pdo->query("
+        $ayId = isset($_GET['academic_year_id']) ? (int)$_GET['academic_year_id'] : 0;
+        $month = isset($_GET['month']) ? (int)$_GET['month'] : 0;
+
+        $where = ["is_active = 1"];
+        $params = [];
+
+        if ($ayId > 0) {
+            $where[] = "(academic_year_id = ? OR academic_year_id IS NULL)";
+            $params[] = $ayId;
+        }
+        if ($month > 0) {
+            $where[] = "(month_number = ? OR month_number IS NULL)";
+            $params[] = $month;
+        }
+
+        $whereSql = implode(' AND ', $where);
+
+        $stmt = $pdo->prepare("
             SELECT id, title as judul, 
                    CONCAT('Kelas ', grade_level) as kelas,
                    week_code as pekan,
+                   month_number as bulan,
+                   semester,
                    description as deskripsi,
                    file_link as fileUrl,
                    task_1, task_2, task_3, task_4,
                    reflection_prompt_1 as reflection_1, reflection_prompt_2 as reflection_2, 
                    reflection_prompt_3 as reflection_3, reflection_prompt_4 as reflection_4
             FROM mentoring_curriculums
-            WHERE is_active = 1
-            ORDER BY grade_level ASC, week_code ASC
+            WHERE {$whereSql}
+            ORDER BY grade_level ASC, month_number ASC, week_code ASC
         ");
+        $stmt->execute($params);
         $raw = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $list = [];
         foreach ($raw as $r) {

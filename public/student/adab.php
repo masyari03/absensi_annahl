@@ -28,13 +28,20 @@ if (!in_array($selectedDay, $validDays)) {
     $selectedDay = 'Selasa';
 }
 
-// Tarik Materi Kurikulum Sesuai Jenjang & Pekan
+// Tentukan Bulan Kalender & Tahun Pelajaran Aktif
+$currentMonth = (int)date('n'); // 1-12
+$activeAyId = (int)$pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1")->fetchColumn() ?: 1;
+
+// Tarik Materi Kurikulum Sesuai Jenjang, Pekan, Bulan & Tahun Pelajaran Aktif
+// Gunakan fallback cerdas: cari yang cocok bulan ini, jika belum diset per bulan maka ambil default pekan terkait
 $stmtCurr = $pdo->prepare("
     SELECT * FROM mentoring_curriculums 
-    WHERE grade_level = ? AND week_code = ? AND is_active = 1 
+    WHERE grade_level = ? AND week_code = ? AND is_active = 1
+      AND (academic_year_id = ? OR academic_year_id IS NULL)
+    ORDER BY (month_number = ?) DESC, id DESC
     LIMIT 1
 ");
-$stmtCurr->execute([$gradeNum, $selectedWeek]);
+$stmtCurr->execute([$gradeNum, $selectedWeek, $activeAyId, $currentMonth]);
 $curriculum = $stmtCurr->fetch(PDO::FETCH_ASSOC);
 
 // Tarik data log adab yang sudah tersimpan untuk santri ini di pekan tersebut
