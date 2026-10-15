@@ -8,7 +8,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 requireLogin();
 
 $pageTitle = 'Laporan & Raport Mentoring Siswa';
-$isPrivileged = in_array(currentRole(), ['super_admin', 'kepala_sekolah', 'admin']);
+$isPrivileged = in_array(currentRole(), ['super_admin', 'kepala_sekolah']);
 $currentUserId = currentUserId();
 
 // 1. FILTER TAHUN PELAJARAN, BULAN & MENTOR
@@ -87,7 +87,7 @@ foreach ($menteesList as $m) {
         break;
     }
 }
-if (!$selectedStudent && $selectedStudentId > 0) {
+if (!$selectedStudent && $selectedStudentId > 0 && $isPrivileged) {
     $stmtS = $pdo->prepare("
         SELECT s.id, s.name, s.nis, cg.name as class_name, u.name as mentor_name, ma.group_name
         FROM students s

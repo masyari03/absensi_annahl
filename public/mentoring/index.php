@@ -45,6 +45,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $notesFb    = trim($_POST['notes_feedback'] ?? '');
 
     if ($studentId > 0) {
+        // Keamanan: Jika bukan Super Admin/Kepsek, pastikan santri ini memang mentee binaan user yang sedang login
+        if (!$isPrivileged) {
+            $checkAssign = $pdo->prepare("SELECT COUNT(*) FROM mentoring_assignments WHERE student_id = ? AND mentor_user_id = ? AND is_active = 1");
+            $checkAssign->execute([$studentId, $userId]);
+            if ($checkAssign->fetchColumn() == 0) {
+                flash('danger', 'Akses ditolak: Santri ini bukan merupakan santri binaan kelompok Anda.');
+                redirect('index.php');
+            }
+        }
+
         $stmtIns = $pdo->prepare("
             INSERT INTO mentoring_sessions (
                 student_id, mentor_user_id, session_date, session_code, month_name, year_val,
@@ -82,9 +92,20 @@ if ($isPrivileged) {
     ")->fetchAll(PDO::FETCH_ASSOC);
 }
 
+// TARIK TAHUN PELAJARAN AKTIF
+$activeAyId = (int)$pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1")->fetchColumn();
+if ($activeAyId === 0) {
+    $activeAyId = (int)$pdo->query("SELECT id FROM academic_years ORDER BY id DESC LIMIT 1")->fetchColumn();
+}
+
 // TARIK DAFTAR SANTRI BINAAN
-$whereAssigned = [];
+$whereAssigned = ["ma.is_active = 1"];
 $paramsAssigned = [];
+
+if ($activeAyId > 0) {
+    $whereAssigned[] = "ma.academic_year_id = ?";
+    $paramsAssigned[] = $activeAyId;
+}
 
 if ($filterMentorId > 0) {
     $whereAssigned[] = "ma.mentor_user_id = ?";
@@ -95,7 +116,7 @@ $whereSql = !empty($whereAssigned) ? "WHERE " . implode(' AND ', $whereAssigned)
 
 $stmtMentees = $pdo->prepare("
     SELECT s.id, s.name, s.nis, s.parent_phone, cg.name as class_name,
-           u.name as mentor_name, u.id as mentor_id,
+           u.name as mentor_name, u.id as mentor_id, ma.group_name,
            (SELECT COUNT(*) FROM mentoring_sessions ms WHERE ms.student_id = s.id) as total_sessions,
            (SELECT ROUND(AVG(score_adab), 1) FROM mentoring_sessions ms WHERE ms.student_id = s.id AND score_adab IS NOT NULL) as avg_adab,
            (SELECT ROUND(AVG(score_mutabaah), 1) FROM mentoring_sessions ms WHERE ms.student_id = s.id AND score_mutabaah IS NOT NULL) as avg_mutabaah,
@@ -258,6 +279,13 @@ require __DIR__ . '/../../includes/header.php';
                                 <td style="padding: 12px;">
                                     <strong><?= e($m['name']) ?></strong>
                                     <div style="font-size: 11.5px; color: #64748b;">NIS: <?= e($m['nis']) ?></div>
+                                    <?php if (!empty($m['group_name'])): ?>
+                                        <div style="margin-top: 3px;">
+                                            <span style="display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10.5px; font-weight: 700; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0;">
+                                                <i class="fa-solid fa-users"></i> <?= e($m['group_name']) ?>
+                                            </span>
+                                        </div>
+                                    <?php endif; ?>
                                 </td>
                                 <td style="padding: 12px;">
                                     <span style="padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; background: #e0f2fe; color: #0369a1;">
