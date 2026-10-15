@@ -249,6 +249,18 @@ require __DIR__ . '/../../includes/header.php';
 
 <style>
 @media (max-width: 768px) {
+    /* Hilangkan padding pembungkus kartu luar & hilangkan border card container di mobile agar tidak dobel/overflow */
+    .mobile-clean-card {
+        padding: 0 !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+    
+    .table-responsive {
+        overflow-x: visible !important;
+    }
+
     .responsive-card-table thead {
         display: none !important;
     }
@@ -257,6 +269,7 @@ require __DIR__ . '/../../includes/header.php';
     .responsive-card-table tr {
         display: block !important;
         width: 100% !important;
+        min-width: 0 !important;
     }
     .responsive-card-table tr {
         background: #ffffff;
@@ -264,7 +277,8 @@ require __DIR__ . '/../../includes/header.php';
         border-radius: 14px;
         padding: 14px 16px !important;
         margin-bottom: 14px;
-        box-shadow: 0 2px 6px -1px rgba(0, 0, 0, 0.05);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+        box-sizing: border-box !important;
     }
     .responsive-card-table td {
         display: flex !important;
@@ -648,7 +662,7 @@ require __DIR__ . '/../../includes/header.php';
     </div>
 
     <!-- Tabel Daftar Penugasan Santri & Fitur Bulk Assign -->
-    <div class="card" style="padding: 20px; border-radius: 16px; background: #ffffff;">
+    <div class="card mobile-clean-card" style="padding: 20px; border-radius: 16px; background: #ffffff;">
         <form method="POST" action="assignments.php" id="bulkForm">
             <?= csrfField() ?>
             <input type="hidden" name="action" value="bulk_assign">

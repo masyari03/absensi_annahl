@@ -185,6 +185,18 @@ require __DIR__ . '/../../includes/header.php';
 
 <style>
 @media (max-width: 768px) {
+    /* Hilangkan padding pembungkus kartu luar & hilangkan border card container di mobile agar tidak dobel/overflow */
+    .mobile-clean-card {
+        padding: 0 !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+    
+    .table-responsive {
+        overflow-x: visible !important;
+    }
+
     /* Sembunyikan thead tabel */
     .responsive-card-table thead {
         display: none !important;
@@ -196,6 +208,7 @@ require __DIR__ . '/../../includes/header.php';
     .responsive-card-table tr {
         display: block !important;
         width: 100% !important;
+        min-width: 0 !important;
     }
     
     .responsive-card-table tr {
@@ -204,7 +217,8 @@ require __DIR__ . '/../../includes/header.php';
         border-radius: 14px;
         padding: 14px 16px !important;
         margin-bottom: 14px;
-        box-shadow: 0 2px 6px -1px rgba(0, 0, 0, 0.05);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+        box-sizing: border-box !important;
     }
     
     /* Setiap td menjadi flex item dengan label */
@@ -366,7 +380,7 @@ require __DIR__ . '/../../includes/header.php';
     </div>
 
     <!-- Tabel Data Kepatuhan & Refleksi -->
-    <div class="card" style="padding: 20px; border-radius: 16px;">
+    <div class="card mobile-clean-card" style="padding: 20px; border-radius: 16px;">
         <div class="table-responsive">
             <table class="table responsive-card-table" style="width: 100%; border-collapse: collapse;">
                 <thead>

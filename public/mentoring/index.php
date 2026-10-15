@@ -167,6 +167,18 @@ require __DIR__ . '/../../includes/header.php';
 
 <style>
 @media (max-width: 768px) {
+    /* Hilangkan padding pembungkus kartu luar & hilangkan border card container di mobile agar tidak dobel/overflow */
+    .mobile-clean-card {
+        padding: 0 !important;
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+    
+    .table-responsive {
+        overflow-x: visible !important;
+    }
+
     /* Sembunyikan thead tabel */
     .responsive-card-table thead {
         display: none !important;
@@ -178,6 +190,7 @@ require __DIR__ . '/../../includes/header.php';
     .responsive-card-table tr {
         display: block !important;
         width: 100% !important;
+        min-width: 0 !important; /* Reset min-width: 700px bawaan table */
     }
     
     .responsive-card-table tr {
@@ -186,7 +199,8 @@ require __DIR__ . '/../../includes/header.php';
         border-radius: 14px;
         padding: 14px 16px !important;
         margin-bottom: 14px;
-        box-shadow: 0 2px 6px -1px rgba(0, 0, 0, 0.05);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+        box-sizing: border-box !important;
     }
     
     /* Setiap td menjadi flex item dengan label */
@@ -306,7 +320,7 @@ require __DIR__ . '/../../includes/header.php';
     </div>
 
     <!-- Tabel Daftar Santri Binaan -->
-    <div class="card" style="margin-bottom: 24px; padding: 20px; border-radius: 16px;">
+    <div class="card mobile-clean-card" style="margin-bottom: 24px; padding: 20px; border-radius: 16px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
             <h3 style="margin: 0; font-size: 16px; font-weight: 800; color: #0f172a;">
                 <i class="fa-solid fa-users-viewfinder" style="color: #0284c7;"></i> Daftar Santri Binaan
@@ -401,7 +415,7 @@ require __DIR__ . '/../../includes/header.php';
     </div>
 
     <!-- Riwayat Sesi Terkini -->
-    <div class="card" style="padding: 20px; border-radius: 16px;">
+    <div class="card mobile-clean-card" style="padding: 20px; border-radius: 16px;">
         <h3 style="margin: 0 0 16px; font-size: 16px; font-weight: 800; color: #0f172a;">
             <i class="fa-solid fa-clock-rotate-left" style="color: #059669;"></i> 25 Log Sesi Mentoring Terkini
         </h3>
