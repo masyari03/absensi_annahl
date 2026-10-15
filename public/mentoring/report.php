@@ -174,12 +174,12 @@ require __DIR__ . '/../../includes/header.php';
         </div>
 
         <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-            <button type="button" class="btn btn-primary" onclick="window.print()" style="padding: 9px 18px; font-size: 13px; font-weight: 700; background: #0f172a; border-color: #0f172a; display: flex; align-items: center; gap: 8px;">
-                <i class="fa-solid fa-print"></i> Cetak Raport Murid (A4)
-            </button>
-            <a href="app.php" target="_blank" class="btn" style="padding: 9px 16px; font-size: 13px; font-weight: 700; background: #059669; color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 6px;">
-                <i class="fa-solid fa-desktop"></i> Mode Aplikasi Penuh (SPA)
+            <a href="app.php?tab=report&student_name=<?= urlencode($selectedStudent['name'] ?? '') ?>" target="_blank" class="btn" style="padding: 9px 18px; font-size: 13px; font-weight: 800; background: linear-gradient(135deg, #059669 0%, #047857 100%); color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 6px -1px rgba(5,150,105,0.25);">
+                <i class="fa-solid fa-desktop"></i> Buka Format Mode Aplikasi Asli (SPA)
             </a>
+            <button type="button" class="btn btn-primary" onclick="window.print()" style="padding: 9px 18px; font-size: 13px; font-weight: 700; background: #0f172a; border-color: #0f172a; display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-print"></i> Cetak Halaman Ini (A4)
+            </button>
             <a href="index.php" class="btn btn-secondary" style="padding: 9px 16px; font-size: 13px;">
                 <i class="fa-solid fa-arrow-left"></i> Dashboard Mentoring
             </a>

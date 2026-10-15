@@ -124,7 +124,7 @@ $menuUrlMap = [
     'whatsapp_notif'       => '/whatsapp/index.php',
     'mentoring_dashboard'  => '/mentoring/index.php',
     'mentoring_assignments'=> '/mentoring/assignments.php',
-    'mentoring_report'     => '/mentoring/report.php',
+    'mentoring_report'     => '/mentoring/app.php?tab=report',
     'mentoring_adab'       => '/mentoring/adab_monitoring.php',
     'mentoring_curriculum' => '/mentoring/curriculum.php',
 ];

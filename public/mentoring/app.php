@@ -4307,7 +4307,23 @@ efleksi] || (entry.refleksiAnswers ? entry.refleksiAnswers[i] : '')) : '';
                     screen.style.display = 'none';
                 }
                 setTimeout(() => {
-                    try { setupUserRoleUI(); } catch(e) { console.error(e); }
+                    try { 
+                        setupUserRoleUI(); 
+                        // Cek apakah ada query parameter tab=report atau tab=report-tab
+                        const urlParams = new URLSearchParams(window.location.search);
+                        const targetTab = urlParams.get('tab');
+                        const targetMentee = urlParams.get('mentee') || urlParams.get('student_name');
+                        if (targetTab === 'report' || targetTab === 'report-tab') {
+                            showTab('report-tab');
+                            if (targetMentee) {
+                                const sel = document.getElementById('reportFilterMenteeSelect');
+                                if (sel) {
+                                    sel.value = targetMentee;
+                                    renderStudentReportDetail();
+                                }
+                            }
+                        }
+                    } catch(e) { console.error(e); }
                 }, 300);
             }
         });

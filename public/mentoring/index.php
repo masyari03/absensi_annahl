@@ -156,8 +156,8 @@ require __DIR__ . '/../../includes/header.php';
         </div>
 
         <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-            <a href="report.php" class="btn" style="padding: 8px 14px; font-size: 13px; font-weight: 700; background: #0f172a; color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 6px;">
-                <i class="fa-solid fa-file-invoice"></i> Laporan & Cetak Raport
+            <a href="app.php?tab=report" target="_blank" class="btn" style="padding: 8px 14px; font-size: 13px; font-weight: 700; background: #0f172a; color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 6px;">
+                <i class="fa-solid fa-print"></i> Laporan & Cetak Raport (Versi Asli SPA)
             </a>
 
             <?php if ($isPrivileged): ?>
@@ -287,7 +287,7 @@ require __DIR__ . '/../../includes/header.php';
                                     <?= !empty($m['last_session_date']) ? date('d/m/Y', strtotime($m['last_session_date'])) : '<span style="color:#cbd5e1;">Belum ada</span>' ?>
                                 </td>
                                 <td style="padding: 12px; text-align: right; white-space: nowrap;">
-                                    <a href="report.php?student_id=<?= $m['id'] ?>" class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px; font-weight: 700; border-radius: 8px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; margin-right: 4px;" title="Lihat Laporan & Cetak Raport">
+                                    <a href="app.php?tab=report&student_name=<?= urlencode($m['name']) ?>" target="_blank" class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px; font-weight: 700; border-radius: 8px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; margin-right: 4px;" title="Lihat Laporan & Cetak Raport">
                                         <i class="fa-solid fa-print"></i> Raport
                                     </a>
                                     <button type="button" class="btn btn-primary" style="padding: 6px 12px; font-size: 12.5px; font-weight: 700; border-radius: 8px;" onclick="openSessionModal(<?= $m['id'] ?>, '<?= addslashes(e($m['name'])) ?>', <?= $m['mentor_id'] ?>)">
