@@ -156,6 +156,12 @@ require __DIR__ . '/../../includes/header.php';
         </div>
 
         <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <?php if ($isPrivileged): ?>
+                <a href="assignments.php" class="btn" style="padding: 8px 14px; font-size: 13px; font-weight: 700; background: #0284c7; color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 6px;">
+                    <i class="fa-solid fa-users-rectangle"></i> Kelola Kelompok Mentoring
+                </a>
+            <?php endif; ?>
+
             <a href="app.php" target="_blank" class="btn" style="padding: 8px 16px; font-size: 13px; font-weight: 800; background: linear-gradient(135deg, #059669 0%, #047857 100%); color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 6px -1px rgba(5,150,105,0.25);">
                 <i class="fa-solid fa-desktop"></i> Buka Tampilan Aplikasi Asli (Full SPA)
             </a>
