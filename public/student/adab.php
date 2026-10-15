@@ -29,7 +29,18 @@ if (!in_array($selectedDay, $validDays)) {
 }
 
 // Tentukan Bulan Kalender & Tahun Pelajaran Aktif
-$currentMonth = (int)date('n'); // 1-12
+$monthsList = [
+    7 => 'Juli', 8 => 'Agustus', 9 => 'September', 10 => 'Oktober',
+    11 => 'November', 12 => 'Desember', 1 => 'Januari', 2 => 'Februari',
+    3 => 'Maret', 4 => 'April', 5 => 'Mei', 6 => 'Juni'
+];
+
+$selectedMonth = isset($_GET['month']) ? (int)$_GET['month'] : (int)date('n');
+if (!isset($monthsList[$selectedMonth])) {
+    $selectedMonth = (int)date('n');
+}
+$monthName = $monthsList[$selectedMonth] ?? 'Bulan ' . $selectedMonth;
+
 $activeAyId = (int)$pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1")->fetchColumn() ?: 1;
 
 // Tarik Materi Kurikulum Sesuai Jenjang, Pekan, Bulan & Tahun Pelajaran Aktif
@@ -41,16 +52,16 @@ $stmtCurr = $pdo->prepare("
     ORDER BY (month_number = ?) DESC, id DESC
     LIMIT 1
 ");
-$stmtCurr->execute([$gradeNum, $selectedWeek, $activeAyId, $currentMonth]);
+$stmtCurr->execute([$gradeNum, $selectedWeek, $activeAyId, $selectedMonth]);
 $curriculum = $stmtCurr->fetch(PDO::FETCH_ASSOC);
 
-// Tarik data log adab yang sudah tersimpan untuk santri ini di pekan tersebut
+// Tarik data log adab yang sudah tersimpan untuk santri ini di bulan & pekan tersebut
 $stmtLog = $pdo->prepare("
     SELECT * FROM student_adab_logs 
-    WHERE student_id = ? AND week_code = ? 
+    WHERE student_id = ? AND week_code = ? AND MONTH(submitted_at) = ?
     ORDER BY submitted_at DESC LIMIT 1
 ");
-$stmtLog->execute([$studentId, $selectedWeek]);
+$stmtLog->execute([$studentId, $selectedWeek, $selectedMonth]);
 $existingLog = $stmtLog->fetch(PDO::FETCH_ASSOC);
 
 // Parse JSON checklist
@@ -75,9 +86,14 @@ $successMessage = '';
 $errorMessage = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_adab') {
+    $postMonth = isset($_POST['month']) ? (int)$_POST['month'] : $selectedMonth;
+    if (isset($monthsList[$postMonth])) {
+        $selectedMonth = $postMonth;
+    }
+
     if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
         setFlash('danger', 'Sesi telah kadaluarsa. Silakan ulangi kembali.');
-        header("Location: adab.php?week=" . urlencode($selectedWeek) . "&day=" . urlencode($selectedDay));
+        header("Location: adab.php?month=" . $selectedMonth . "&week=" . urlencode($selectedWeek) . "&day=" . urlencode($selectedDay));
         exit;
     }
 
@@ -150,7 +166,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
 
         setFlash('success', 'Alhamdulillah! Catatan pembiasaan adab dan refleksi Anda berhasil disimpan.');
-        header("Location: adab.php?week=" . urlencode($selectedWeek) . "&day=" . urlencode($selectedDay));
+        header("Location: adab.php?month=" . $selectedMonth . "&week=" . urlencode($selectedWeek) . "&day=" . urlencode($selectedDay));
         exit;
     } catch (Exception $e) {
         $errorMessage = 'Gagal menyimpan data: ' . $e->getMessage();
@@ -179,18 +195,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     <?= $curriculum ? e($curriculum['title']) : 'Modul Adab Santri' ?>
                 </h2>
                 <p style="margin: 4px 0 0; color: #94a3b8; font-size: 13px;">
-                    Kelas <?= e($className) ?> • <?= e($selectedWeek) ?> • Istiqomah Membentuk Akhlak Mulia
+                    Kelas <?= e($className) ?> • <?= e($monthName) ?> • <?= e($selectedWeek) ?> • Istiqomah Membentuk Akhlak Mulia
                 </p>
             </div>
 
-            <!-- Selector Pilihan Pekan -->
-            <div style="display: flex; gap: 6px; background: rgba(255,255,255,0.06); padding: 4px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
-                <?php foreach ($validWeeks as $wk): ?>
-                    <a href="adab.php?week=<?= urlencode($wk) ?>&day=<?= urlencode($selectedDay) ?>" 
-                       style="padding: 8px 14px; border-radius: 8px; font-size: 12px; font-weight: 700; text-decoration: none; transition: all 0.2s; color: <?= $selectedWeek === $wk ? '#0f172a' : '#cbd5e1' ?>; background: <?= $selectedWeek === $wk ? '#38bdf8' : 'transparent' ?>;">
-                        <?= $wk ?>
-                    </a>
-                <?php endforeach; ?>
+            <!-- Selector Bulan & Pekan -->
+            <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-end;">
+                <!-- Filter Dropdown Bulan -->
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 12px; color: #94a3b8; font-weight: 700;">Bulan:</span>
+                    <select onchange="location.href='adab.php?month=' + this.value + '&week=<?= urlencode($selectedWeek) ?>&day=<?= urlencode($selectedDay) ?>'"
+                            style="padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); background: #1e293b; color: #ffffff; font-size: 12px; font-weight: 700; outline: none; cursor: pointer;">
+                        <?php foreach ($monthsList as $mNum => $mLabel): ?>
+                            <option value="<?= $mNum ?>" <?= $selectedMonth == $mNum ? 'selected' : '' ?>>
+                                <?= $mLabel ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <!-- Selector Pilihan Pekan -->
+                <div style="display: flex; gap: 6px; background: rgba(255,255,255,0.06); padding: 4px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); flex-wrap: wrap;">
+                    <?php foreach ($validWeeks as $wk): ?>
+                        <a href="adab.php?month=<?= $selectedMonth ?>&week=<?= urlencode($wk) ?>&day=<?= urlencode($selectedDay) ?>" 
+                           style="padding: 7px 12px; border-radius: 8px; font-size: 12px; font-weight: 700; text-decoration: none; transition: all 0.2s; color: <?= $selectedWeek === $wk ? '#0f172a' : '#cbd5e1' ?>; background: <?= $selectedWeek === $wk ? '#38bdf8' : 'transparent' ?>;">
+                            <?= $wk ?>
+                        </a>
+                    <?php endforeach; ?>
+                </div>
             </div>
         </div>
 
@@ -204,9 +236,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     <!-- Form Utama: Tab Hari & Checklist Amalan -->
     <div class="card" style="padding: 24px; border-radius: 16px;">
-        <form method="POST" action="adab.php?week=<?= urlencode($selectedWeek) ?>&day=<?= urlencode($selectedDay) ?>">
+        <form method="POST" action="adab.php?month=<?= $selectedMonth ?>&week=<?= urlencode($selectedWeek) ?>&day=<?= urlencode($selectedDay) ?>">
             <?= csrfField() ?>
             <input type="hidden" name="action" value="save_adab">
+            <input type="hidden" name="month" value="<?= $selectedMonth ?>">
             <input type="hidden" name="day" id="inputDay" value="<?= e($selectedDay) ?>">
 
             <!-- Tab Pemilihan Hari Amalan -->
@@ -220,7 +253,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
                 <div style="display: flex; gap: 8px;">
                     <?php foreach ($validDays as $d): ?>
-                        <a href="adab.php?week=<?= urlencode($selectedWeek) ?>&day=<?= urlencode($d) ?>"
+                        <a href="adab.php?month=<?= $selectedMonth ?>&week=<?= urlencode($selectedWeek) ?>&day=<?= urlencode($d) ?>"
                            style="padding: 8px 16px; border-radius: 10px; font-size: 13px; font-weight: 700; text-decoration: none; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; color: <?= $selectedDay === $d ? '#ffffff' : '#64748b' ?>; background: <?= $selectedDay === $d ? '#0284c7' : '#f1f5f9' ?>;">
                             <i class="fa-regular fa-calendar-check"></i> <?= $d ?>
                         </a>
