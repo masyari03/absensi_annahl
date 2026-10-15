@@ -10,15 +10,32 @@ requireLogin();
 $pageTitle = 'Pemantauan Pembiasaan Adab & Refleksi Santri';
 $currentRole = currentRole();
 $userId = currentUserId();
+$isPrivileged = in_array($currentRole, ['super_admin', 'kepala_sekolah']);
 
 // FILTER PARAMETERS
-$filterClass = trim($_GET['class'] ?? '');
-$filterWeek  = trim($_GET['week'] ?? '');
-$filterDay   = trim($_GET['day'] ?? '');
+$filterClass  = trim($_GET['class'] ?? '');
+$filterWeek   = trim($_GET['week'] ?? '');
+$filterDay    = trim($_GET['day'] ?? '');
 $filterSearch = trim($_GET['search'] ?? '');
+$filterMentor = (int)($_GET['mentor_id'] ?? 0);
+
+if (!$isPrivileged) {
+    $filterMentor = $userId;
+}
 
 $where = ["1=1"];
 $params = [];
+
+// Jika role mentor biasa (atau pimpinan memilih filter mentor), kunci ke santri binaan mentor tersebut
+if ($filterMentor > 0) {
+    $where[] = "EXISTS (
+        SELECT 1 FROM mentoring_assignments ma 
+        WHERE ma.student_id = sal.student_id 
+          AND ma.mentor_user_id = ? 
+          AND ma.is_active = 1
+    )";
+    $params[] = $filterMentor;
+}
 
 if ($filterClass !== '') {
     $where[] = "sal.grade_name = ?";
@@ -103,6 +120,18 @@ $classesList = $pdo->query("
     ORDER BY grade_name ASC
 ")->fetchAll(PDO::FETCH_COLUMN);
 
+// DAFTAR GURU MENTOR (untuk filter pimpinan)
+$mentorsList = [];
+if ($isPrivileged) {
+    $mentorsList = $pdo->query("
+        SELECT DISTINCT u.id, u.name 
+        FROM users u 
+        JOIN mentoring_assignments ma ON ma.mentor_user_id = u.id 
+        WHERE ma.is_active = 1 
+        ORDER BY u.name ASC
+    ")->fetchAll(PDO::FETCH_ASSOC);
+}
+
 // METRIK STATISTIK CEPAT
 $stmtStats = $pdo->prepare("
     SELECT 
@@ -126,10 +155,12 @@ $totalPages = ceil($totalRows / $limit);
 
 $stmtList = $pdo->prepare("
     SELECT sal.*, s.name as student_name, s.nis, s.parent_phone,
-           mc.title as curriculum_title
+           mc.title as curriculum_title, u.name as mentor_name, ma.group_name
     FROM student_adab_logs sal
     JOIN students s ON s.id = sal.student_id
     LEFT JOIN mentoring_curriculums mc ON mc.id = sal.curriculum_id
+    LEFT JOIN mentoring_assignments ma ON ma.student_id = s.id AND ma.is_active = 1
+    LEFT JOIN users u ON u.id = ma.mentor_user_id
     WHERE {$whereSql}
     ORDER BY sal.submitted_at DESC
     LIMIT {$limit} OFFSET {$offset}
@@ -222,8 +253,19 @@ require __DIR__ . '/../../includes/header.php';
                 </select>
             </div>
 
+            <?php if ($isPrivileged): ?>
+                <div>
+                    <select name="mentor_id" class="filter-input" style="padding: 8px 12px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 13px;">
+                        <option value="0">-- Semua Guru Mentor --</option>
+                        <?php foreach ($mentorsList as $mn): ?>
+                            <option value="<?= $mn['id'] ?>" <?= $filterMentor == $mn['id'] ? 'selected' : '' ?>><?= e($mn['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+            <?php endif; ?>
+
             <button type="submit" class="btn btn-primary" style="padding: 8px 16px; font-size: 13px; font-weight: 700;">Filter</button>
-            <?php if (!empty($filterClass) || !empty($filterWeek) || !empty($filterDay) || !empty($filterSearch)): ?>
+            <?php if (!empty($filterClass) || !empty($filterWeek) || !empty($filterDay) || !empty($filterSearch) || ($isPrivileged && $filterMentor > 0)): ?>
                 <a href="adab_monitoring.php" class="btn btn-secondary" style="padding: 8px 12px; font-size: 13px;">Reset</a>
             <?php endif; ?>
         </form>
@@ -273,6 +315,13 @@ require __DIR__ . '/../../includes/header.php';
                                 <td style="padding: 10px;">
                                     <strong><?= e($log['student_name']) ?></strong>
                                     <div style="font-size: 11px; color: #64748b;">NIS: <?= e($log['nis']) ?></div>
+                                    <?php if (!empty($log['group_name'])): ?>
+                                        <div style="margin-top: 2px;">
+                                            <span style="font-size: 10.5px; font-weight: 700; color: #047857; background: #ecfdf5; padding: 1px 6px; border-radius: 4px; border: 1px solid #a7f3d0; display: inline-block;">
+                                                <i class="fa-solid fa-users"></i> <?= e($log['group_name']) ?>
+                                            </span>
+                                        </div>
+                                    <?php endif; ?>
                                 </td>
                                 <td style="padding: 10px;">
                                     <span style="padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 700; background: #e0f2fe; color: #0369a1;">
