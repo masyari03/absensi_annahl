@@ -177,13 +177,21 @@ $adabRefleksi = [
     'refleksi4' => '--',
 ];
 
+$monthMap = [
+    'Januari' => 1, 'Februari' => 2, 'Maret' => 3, 'April' => 4,
+    'Mei' => 5, 'Juni' => 6, 'Juli' => 7, 'Agustus' => 8,
+    'September' => 9, 'Oktober' => 10, 'November' => 11, 'Desember' => 12
+];
+
 if ($selectedStudentId > 0) {
     $sqlAdab = "SELECT * FROM student_adab_logs WHERE student_id = ?";
     $paramsAdab = [$selectedStudentId];
     if ($filterMonth !== 'ALL' && !empty($filterMonth)) {
-        $sqlAdab .= " AND (month_name = ? OR DATE_FORMAT(submitted_at, '%M') = ?)";
-        $paramsAdab[] = $filterMonth;
-        $paramsAdab[] = $filterMonth;
+        $mNum = $monthMap[$filterMonth] ?? 0;
+        if ($mNum > 0) {
+            $sqlAdab .= " AND MONTH(submitted_at) = ?";
+            $paramsAdab[] = $mNum;
+        }
     }
     $sqlAdab .= " ORDER BY submitted_at DESC LIMIT 1";
     $stmtAdab = $pdo->prepare($sqlAdab);
@@ -191,10 +199,10 @@ if ($selectedStudentId > 0) {
     $adabRow = $stmtAdab->fetch(PDO::FETCH_ASSOC);
 
     if ($adabRow) {
-        $adabRefleksi['refleksi1'] = !empty($adabRow['action_real']) ? $adabRow['action_real'] : (!empty($adabRow['refleksi1']) ? $adabRow['refleksi1'] : '--');
-        $adabRefleksi['refleksi2'] = !empty($adabRow['obstacles']) ? $adabRow['obstacles'] : (!empty($adabRow['refleksi2']) ? $adabRow['refleksi2'] : '--');
-        $adabRefleksi['refleksi3'] = !empty($adabRow['solutions']) ? $adabRow['solutions'] : (!empty($adabRow['refleksi3']) ? $adabRow['refleksi3'] : '--');
-        $adabRefleksi['refleksi4'] = !empty($adabRow['gratitude_notes']) ? $adabRow['gratitude_notes'] : (!empty($adabRow['refleksi4']) ? $adabRow['refleksi4'] : '--');
+        $adabRefleksi['refleksi1'] = !empty($adabRow['reflection_action']) ? $adabRow['reflection_action'] : (!empty($adabRow['refleksi1']) ? $adabRow['refleksi1'] : '--');
+        $adabRefleksi['refleksi2'] = !empty($adabRow['reflection_obstacle']) ? $adabRow['reflection_obstacle'] : (!empty($adabRow['refleksi2']) ? $adabRow['refleksi2'] : '--');
+        $adabRefleksi['refleksi3'] = !empty($adabRow['reflection_solution']) ? $adabRow['reflection_solution'] : (!empty($adabRow['refleksi3']) ? $adabRow['refleksi3'] : '--');
+        $adabRefleksi['refleksi4'] = !empty($adabRow['reflection_gratitude']) ? $adabRow['reflection_gratitude'] : (!empty($adabRow['refleksi4']) ? $adabRow['refleksi4'] : '--');
     } else {
         if ($filterMonth !== 'ALL') {
             $msgEmpty = "-- (Belum ada isian refleksi adab untuk bulan $filterMonth) --";
