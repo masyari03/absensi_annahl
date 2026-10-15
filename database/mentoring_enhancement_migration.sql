@@ -4,6 +4,7 @@
 -- 1. Tabel mentoring_assignments: tambahkan group_name dan pastikan academic_year_id terindeks
 ALTER TABLE mentoring_assignments
     ADD COLUMN IF NOT EXISTS group_name VARCHAR(100) NULL AFTER mentor_user_id,
+    ADD COLUMN IF NOT EXISTS semester ENUM('ganjil', 'genap') DEFAULT 'ganjil' AFTER academic_year_id,
     ADD INDEX IF NOT EXISTS idx_mentoring_academic_year (academic_year_id),
     ADD INDEX IF NOT EXISTS idx_mentoring_mentor (mentor_user_id),
     ADD INDEX IF NOT EXISTS idx_mentoring_student (student_id);
