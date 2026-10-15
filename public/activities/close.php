@@ -46,5 +46,9 @@ if (!in_array($tab, ['student', 'staff'])) {
 $stmt = $pdo->prepare("UPDATE activities SET status = 'closed' WHERE id = ?");
 $stmt->execute([$id]);
 
+if (function_exists('recordActivityAudit')) {
+    recordActivityAudit($pdo, 'activities', 'UPDATE', 'activities', $id, "Tutup Kegiatan Khusus #{$id}", null, ['status' => 'closed']);
+}
+
 flash('success', 'Kegiatan berhasil ditutup.');
 redirect('index.php?tab=' . urlencode($tab));

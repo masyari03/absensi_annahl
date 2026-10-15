@@ -122,6 +122,9 @@ $menuUrlMap = [
     'auto_attendance'      => '/kelola/auto_attendance.php',
     'data_cctv'            => '/cctv/index.php',
     'whatsapp_notif'       => '/whatsapp/index.php',
+    'mentoring_dashboard'  => '/mentoring/index.php',
+    'mentoring_adab'       => '/mentoring/adab_monitoring.php',
+    'mentoring_curriculum' => '/mentoring/curriculum.php',
 ];
 
 $currentPath = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);

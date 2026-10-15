@@ -81,6 +81,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // 3. Insert Data Manual
             $insert = $pdo->prepare("INSERT INTO student_attendances (student_id, enrollment_id, activity_id, attendance_date, time_in, time_out, status, keterangan) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)");
             $insert->execute([$studentId, $enrollmentId, $activityId, $date, $status, $keterangan]);
+            $newAttId = (int)$pdo->lastInsertId();
+
+            if (function_exists('recordActivityAudit')) {
+                recordActivityAudit($pdo, 'attendance_students', 'CREATE', 'student_attendances', $newAttId, "Input Manual Absensi Siswa: {$selectedStudent['name']} ({$status}) Tgl {$date}", null, ['student_id' => $studentId, 'status' => $status, 'date' => $date, 'keterangan' => $keterangan], (int)$unitId);
+            }
+
             flash('success', 'Data kehadiran manual berhasil ditambahkan.');
             redirect('students.php');
             exit;

@@ -85,6 +85,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $pdo->commit();
                 refreshUserPermissions($pdo, $targetUserId);
+                if (function_exists('recordActivityAudit')) {
+                    recordActivityAudit($pdo, 'access_control', 'UPDATE', 'user_menu_access', $targetUserId, "Perbarui Hak Akses Menu Pengguna #{$targetUserId}");
+                }
                 flash('success', 'Hak akses pengguna berhasil diperbarui!');
             } catch (Exception $e) {
                 if ($pdo->inTransaction()) $pdo->rollBack();
@@ -135,6 +138,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     $pdo->commit();
+                    if (function_exists('recordActivityAudit')) {
+                        recordActivityAudit($pdo, 'access_control', 'CREATE', 'users', $newUserId, "Tambah Pengguna Baru: {$name} ({$username}) - Role: {$role}");
+                    }
                     flash('success', 'Pengguna baru berhasil ditambahkan beserta hak akses default role!');
                 } catch (Exception $e) {
                     if ($pdo->inTransaction()) $pdo->rollBack();
@@ -167,6 +173,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = $pdo->prepare("UPDATE users SET name = ?, username = ?, role = ? WHERE id = ?");
                     $stmt->execute([$name, $username, $role, $uid]);
                 }
+                if (function_exists('recordActivityAudit')) {
+                    recordActivityAudit($pdo, 'access_control', 'UPDATE', 'users', $uid, "Ubah Data Pengguna #{$uid}: {$name} ({$username})");
+                }
                 flash('success', 'Data pengguna berhasil diperbarui.');
             }
         }
@@ -181,6 +190,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($uid > 0) {
             $pdo->prepare("DELETE FROM user_menu_access WHERE user_id = ?")->execute([$uid]);
             $pdo->prepare("UPDATE users SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?")->execute([$uid]);
+            if (function_exists('recordActivityAudit')) {
+                recordActivityAudit($pdo, 'access_control', 'DELETE', 'users', $uid, "Hapus/Nonaktifkan Pengguna #{$uid}");
+            }
             flash('success', 'Pengguna berhasil dinonaktifkan/dihapus.');
         }
         redirect('index.php');

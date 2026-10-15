@@ -152,9 +152,86 @@ $studentPhoto = $studentData['photo'] ?? $studentData['user_photo'] ?? null;
     max-width: 440px;
     box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.15);
 }
+
+/* Mobile Sidebar & Overlay */
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(15, 23, 42, 0.65);
+    backdrop-filter: blur(3px);
+    z-index: 9998;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+.sidebar-overlay.active {
+    display: block;
+    opacity: 1;
+}
+
+.btn-close-sidebar {
+    display: none;
+}
+.btn-hamburger {
+    display: none;
+}
+
+@media (max-width: 992px) {
+    .btn-hamburger {
+        display: flex !important;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        width: 38px;
+        height: 38px;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        color: #334155;
+        font-size: 16px;
+        transition: all 0.2s;
+    }
+    .btn-hamburger:hover {
+        background: #f1f5f9;
+        border-color: #94a3b8;
+    }
+    #studentSidebar {
+        position: fixed !important;
+        top: 0 !important;
+        bottom: 0 !important;
+        left: 0 !important;
+        height: 100vh !important;
+        width: 270px !important;
+        max-width: 85vw !important;
+        transform: translateX(-100%) !important;
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        z-index: 9999 !important;
+        box-shadow: 10px 0 30px rgba(0,0,0,0.5) !important;
+    }
+    #studentSidebar.active {
+        transform: translateX(0) !important;
+    }
+    .btn-close-sidebar {
+        display: flex !important;
+    }
+    .student-header {
+        padding: 10px 16px !important;
+    }
+    .student-profile-btn {
+        padding: 4px 8px !important;
+    }
+    .student-profile-btn small {
+        display: none !important;
+    }
+}
 </style>
 </head>
 <body style="background: #f8fafc; margin: 0; font-family: system-ui, -apple-system, sans-serif;">
+
+<div class="sidebar-overlay" id="studentSidebarOverlay" onclick="toggleStudentSidebar()"></div>
 
 <div class="app">
     <?php require_once __DIR__ . '/sidebar.php'; ?>
@@ -163,13 +240,13 @@ $studentPhoto = $studentData['photo'] ?? $studentData['user_photo'] ?? null;
         
         <!-- Header Topbar Siswa -->
         <header class="student-header">
-            <div style="display: flex; align-items: center; gap: 12px;">
-                <button class="btn-hamburger" id="btnHamburger" onclick="toggleStudentSidebar()" style="display: none; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; width: 40px; height: 40px; align-items: center; justify-content: center; cursor: pointer;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <button class="btn-hamburger" id="btnHamburger" onclick="toggleStudentSidebar()" title="Buka Menu">
                     <i class="fa-solid fa-bars"></i>
                 </button>
                 <div>
-                    <h2 style="margin: 0; font-size: 20px; font-weight: 800; color: #0f172a;"><?= e($pageTitle) ?></h2>
-                    <span style="font-size: 12.5px; color: #64748b;"><?= date('l, d F Y') ?></span>
+                    <h2 style="margin: 0; font-size: 17px; font-weight: 800; color: #0f172a; line-height: 1.2;"><?= e($pageTitle) ?></h2>
+                    <span style="font-size: 11px; color: #64748b;"><?= date('l, d F Y') ?></span>
                 </div>
             </div>
 
@@ -310,6 +387,13 @@ $studentPhoto = $studentData['photo'] ?? $studentData['user_photo'] ?? null;
 <?php endif; ?>
 
 <script>
+function toggleStudentSidebar() {
+    const sb = document.getElementById('studentSidebar');
+    const ov = document.getElementById('studentSidebarOverlay');
+    if (sb) sb.classList.toggle('active');
+    if (ov) ov.classList.toggle('active');
+}
+
 function toggleStudentDropdown(e) {
     e.stopPropagation();
     const menu = document.getElementById('studentDropdownMenu');

@@ -15,7 +15,7 @@ $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
                 <small style="color: #94a3b8; font-size: 11px;">An-Nahl Islamic School</small>
             </div>
         </div>
-        <button type="button" class="btn-close-sidebar" onclick="toggleStudentSidebar()" style="display: none; background: none; border: none; color: #94a3b8; font-size: 18px; cursor: pointer;">
+        <button type="button" class="btn-close-sidebar" onclick="toggleStudentSidebar()" style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; width: 34px; height: 34px; align-items: center; justify-content: center; color: #cbd5e1; font-size: 16px; cursor: pointer;">
             <i class="fa-solid fa-xmark"></i>
         </button>
     </div>
@@ -47,6 +47,20 @@ $currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
         <a href="achievements.php" style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 8px; text-decoration: none; font-size: 13.5px; font-weight: 600; transition: all 0.2s; color: <?= $currentScript === 'achievements.php' ? '#ffffff' : '#94a3b8' ?>; background: <?= $currentScript === 'achievements.php' ? '#0284c7' : 'transparent' ?>;">
             <i class="fa-solid fa-trophy" style="width: 18px;"></i>
             <span>Prestasi Siswa</span>
+        </a>
+
+        <div style="padding: 12px 12px 6px 12px; font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px;">
+            Pembinaan & Karakter
+        </div>
+
+        <a href="adab.php" style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 8px; text-decoration: none; font-size: 13.5px; font-weight: 600; transition: all 0.2s; color: <?= $currentScript === 'adab.php' ? '#ffffff' : '#94a3b8' ?>; background: <?= $currentScript === 'adab.php' ? '#0284c7' : 'transparent' ?>;">
+            <i class="fa-solid fa-heart-circle-check" style="width: 18px;"></i>
+            <span>Pembiasaan Adab</span>
+        </a>
+
+        <a href="mentoring_notes.php" style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 8px; text-decoration: none; font-size: 13.5px; font-weight: 600; transition: all 0.2s; color: <?= $currentScript === 'mentoring_notes.php' ? '#ffffff' : '#94a3b8' ?>; background: <?= $currentScript === 'mentoring_notes.php' ? '#0284c7' : 'transparent' ?>;">
+            <i class="fa-solid fa-hands-holding-child" style="width: 18px;"></i>
+            <span>Catatan Mentoring</span>
         </a>
 
         <div style="padding: 12px 12px 6px 12px; font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px;">

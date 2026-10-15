@@ -44,6 +44,9 @@ if (empty($_SESSION['user_id']) && isset($_COOKIE['ais_remember'])) {
                 if (function_exists('recordUserLogin')) {
                     recordUserLogin($pdo, (int)$userCookie['id'], $userCookie['username'], $userCookie['role']);
                 }
+                if (function_exists('recordActivityAudit')) {
+                    recordActivityAudit($pdo, 'auth', 'LOGIN', 'users', (int)$userCookie['id'], "Auto-login via remember me: {$userCookie['name']} ({$userCookie['username']})");
+                }
 
                 header('Location: dashboard.php');
                 exit;
@@ -100,6 +103,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Rekam log masuk & aktifkan status online
             if (function_exists('recordUserLogin')) {
                 recordUserLogin($pdo, (int)$user['id'], $user['username'], $user['role']);
+            }
+            if (function_exists('recordActivityAudit')) {
+                recordActivityAudit($pdo, 'auth', 'LOGIN', 'users', (int)$user['id'], "Login ke sistem: {$user['name']} ({$user['username']}) - Role: {$user['role']}");
             }
 
             // Jika role siswa, catat log forensik (Model HP & IP)

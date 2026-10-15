@@ -6,13 +6,19 @@ require_once '../includes/functions.php';
 
 $userId = (int)($_SESSION['user_id'] ?? 0);
 $studentId = (int)($_SESSION['student_id'] ?? 0);
+$userName = $_SESSION['username'] ?? 'User';
 
 if ($studentId > 0 && isset($pdo) && function_exists('logStudentActivity')) {
     logStudentActivity($pdo, $studentId, $userId, 'logout', 'Siswa logout dari portal siswa');
 }
 
-if ($userId > 0 && isset($pdo) && function_exists('recordUserLogout')) {
-    recordUserLogout($pdo, $userId);
+if ($userId > 0 && isset($pdo)) {
+    if (function_exists('recordActivityAudit')) {
+        recordActivityAudit($pdo, 'auth', 'LOGOUT', 'users', $userId, "Pengguna {$userName} logout dari sistem");
+    }
+    if (function_exists('recordUserLogout')) {
+        recordUserLogout($pdo, $userId);
+    }
 }
 
 // 1. Hapus semua data session

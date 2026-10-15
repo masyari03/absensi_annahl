@@ -66,6 +66,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $staffIn, $staffLate, $staffOut,
         $description ?: null, $status
     ]);
+    $newActId = (int)$pdo->lastInsertId();
+
+    if (function_exists('recordActivityAudit')) {
+        recordActivityAudit($pdo, 'activities', 'CREATE', 'activities', $newActId, "Tambah Kegiatan Khusus: {$name} ({$activityDate})", null, ['name' => $name, 'unit_id' => $unitId, 'date' => $activityDate, 'target_type' => $targetType], (int)$unitId);
+    }
 
     flash('success', 'Kegiatan khusus ' . ($targetType === 'student' ? 'Siswa' : 'Staff') . ' berhasil dibuat.');
     redirect('index.php?tab=' . $targetType);

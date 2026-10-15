@@ -291,6 +291,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['quick_record_
                 ->execute([$stuId, $enrId, $actId ?: 1, $attDate, $timeIn, $newStat, $ket]);
         }
 
+        if (function_exists('recordActivityAudit')) {
+            $actType = $existingId ? 'UPDATE' : 'CREATE';
+            $recId = $existingId ?: (int)$pdo->lastInsertId();
+            recordActivityAudit($pdo, 'attendance_students', $actType, 'student_attendances', $recId, "Aksi Cepat Presensi Siswa ID #{$stuId} ({$newStat}) Tgl {$attDate}", null, ['student_id' => $stuId, 'status' => $newStat, 'date' => $attDate]);
+        }
+
         // Kirim notifikasi WhatsApp Fonnte jika fitur aktif
         if (function_exists('sendStudentWaNotification') && in_array($newStat, ['tepat_waktu', 'terlambat'])) {
             try {
@@ -397,6 +403,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['bulk_update_s
             $stmtUpd->execute(array_merge([$targetStatus, $ketText], $ids));
         }
 
+        if (function_exists('recordActivityAudit')) {
+            recordActivityAudit($pdo, 'attendance_students', 'UPDATE', 'student_attendances', $ids[0], "Update Massal Status " . count($ids) . " Siswa menjadi: " . strtoupper(str_replace('_', ' ', $targetStatus)), null, ['ids' => $ids, 'status' => $targetStatus, 'keterangan' => $ketText]);
+        }
         flash('success', 'Berhasil memperbarui status ' . count($ids) . ' data absensi siswa menjadi: ' . strtoupper(str_replace('_', ' ', $targetStatus)) . '.');
     }
     redirect('students.php?' . http_build_query($_GET));

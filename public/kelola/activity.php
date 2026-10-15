@@ -285,6 +285,16 @@ $studentCanChangePhoto = (getSystemSetting($pdo, 'student_can_change_photo', '0'
 require '../../includes/header.php';
 ?>
 
+<!-- TAB NAVIGASI SISTEM LOG -->
+<div style="display:flex; gap:8px; margin-bottom:20px; border-bottom:2px solid #e2e8f0; padding-bottom:8px;">
+    <a href="audit_logs.php" style="display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:8px; font-weight:600; font-size:14px; text-decoration:none; background:#ffffff; color:#64748b; border:1px solid #cbd5e1; transition:all 0.2s;" onmouseover="this.style.background='#f8fafc'; this.style.color='#0f172a';" onmouseout="this.style.background='#ffffff'; this.style.color='#64748b';">
+        <i class="fa-solid fa-clock-rotate-left" style="color:#0284c7;"></i> Log Aktivitas & Audit Perubahan
+    </a>
+    <a href="activity.php" style="display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:8px; font-weight:600; font-size:14px; text-decoration:none; background:#10b981; color:#ffffff; box-shadow:0 1px 3px rgba(16,185,129,0.3);">
+        <i class="fa-solid fa-user-clock"></i> Sesi & Pengguna Online
+    </a>
+</div>
+
 <style>
 /* ==========================================================================
    DESAIN MODERN: MONITORING AKTIVITAS & SESI PENGGUNA

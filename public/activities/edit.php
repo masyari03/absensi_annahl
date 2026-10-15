@@ -80,6 +80,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $description ?: null, $status, $id
     ]);
 
+    if (function_exists('recordActivityAudit')) {
+        recordActivityAudit($pdo, 'activities', 'UPDATE', 'activities', (int)$id, "Ubah Kegiatan Khusus #{$id}: {$name} ({$activityDate})", null, ['name' => $name, 'unit_id' => $act['unit_id'] ?? null, 'date' => $activityDate, 'target_type' => $targetType], (int)($act['unit_id'] ?? 0));
+    }
+
     flash('success', 'Kegiatan berhasil diperbarui.');
     redirect('index.php?tab=' . $targetType);
     exit;

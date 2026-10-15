@@ -155,6 +155,18 @@ $unitsList = $pdo->query("SELECT id, unit FROM units ORDER BY id ASC")->fetchAll
 require '../../includes/header.php';
 ?>
 
+<!-- TAB NAVIGASI SISTEM LOG -->
+<div style="display:flex; gap:8px; margin-bottom:20px; border-bottom:2px solid #e2e8f0; padding-bottom:8px;">
+    <a href="audit_logs.php" style="display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:8px; font-weight:600; font-size:14px; text-decoration:none; background:#0284c7; color:#ffffff; box-shadow:0 1px 3px rgba(2,132,199,0.3);">
+        <i class="fa-solid fa-clock-rotate-left"></i> Log Aktivitas & Audit Perubahan
+    </a>
+    <?php if ($isSuperAdmin): ?>
+    <a href="activity.php" style="display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:8px; font-weight:600; font-size:14px; text-decoration:none; background:#ffffff; color:#64748b; border:1px solid #cbd5e1; transition:all 0.2s;" onmouseover="this.style.background='#f8fafc'; this.style.color='#0f172a';" onmouseout="this.style.background='#ffffff'; this.style.color='#64748b';">
+        <i class="fa-solid fa-user-clock" style="color:#10b981;"></i> Sesi & Pengguna Online
+    </a>
+    <?php endif; ?>
+</div>
+
 <div class="card" style="margin-bottom: 24px;">
     <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
         <div>
@@ -166,11 +178,20 @@ require '../../includes/header.php';
                 <?= $isKepsek ? "(Khusus Unit: " . e($ksUnitName) . ")" : "(Seluruh Unit)" ?>
             </small>
         </div>
-        <?php if ($isSuperAdmin): ?>
-            <div style="font-size:12px; color:#64748b; background:#f1f5f9; padding:6px 12px; border-radius:8px; border:1px solid #cbd5e1;">
-                <i class="fa-solid fa-shield-halved" style="color:#0284c7;"></i> Super Admin: Dapat melakukan Rollback & Hapus Log
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <div style="font-size:12px; color:#475569; background:#f8fafc; padding:6px 12px; border-radius:8px; border:1px solid #e2e8f0; display:inline-flex; align-items:center; gap:6px;">
+                <i class="fa-solid fa-circle" style="font-size:8px; color:#10b981;"></i>
+                <span>Diperbarui: <strong><?= date('H:i:s') ?> WIB</strong></span>
             </div>
-        <?php endif; ?>
+            <a href="audit_logs.php<?= !empty($_SERVER['QUERY_STRING']) ? '?' . htmlspecialchars($_SERVER['QUERY_STRING']) : '' ?>" class="btn btn-light" style="font-size:12px; padding:6px 12px; border-radius:8px; display:inline-flex; align-items:center; gap:6px; border:1px solid #cbd5e1;" title="Segarkan Data Terkini">
+                <i class="fa-solid fa-arrows-rotate" style="color:#0284c7;"></i> Segarkan
+            </a>
+            <?php if ($isSuperAdmin): ?>
+                <div style="font-size:12px; color:#64748b; background:#f1f5f9; padding:6px 12px; border-radius:8px; border:1px solid #cbd5e1;">
+                    <i class="fa-solid fa-shield-halved" style="color:#0284c7;"></i> Super Admin
+                </div>
+            <?php endif; ?>
+        </div>
     </div>
 
     <!-- FILTER BAR -->

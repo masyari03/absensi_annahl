@@ -11,7 +11,8 @@ if (!function_exists('requireLogin')) {
     function requireLogin()
     {
         if (empty($_SESSION['user_id'])) {
-            header('Location: ' . BASE_URL . '/login.php');
+            $loginUrl = defined('BASE_URL') ? BASE_URL . '/login.php' : '/public/login.php';
+            header('Location: ' . $loginUrl);
             exit;
         }
 
@@ -37,7 +38,8 @@ if (!function_exists('requireLogin')) {
                         if (isset($_COOKIE['ais_remember'])) {
                             setcookie('ais_remember', '', time() - 3600, "/");
                         }
-                        header('Location: ' . BASE_URL . '/login.php?revoked=1');
+                        $loginUrl = defined('BASE_URL') ? BASE_URL . '/login.php?revoked=1' : '/public/login.php?revoked=1';
+                        header('Location: ' . $loginUrl);
                         exit;
                     }
                 } catch (Exception $e) {}
@@ -58,6 +60,32 @@ if (!function_exists('requireSuperAdmin')) {
         if (($_SESSION['role'] ?? '') !== 'super_admin') {
             http_response_code(403);
             die('403 - Hanya Super Admin yang dapat mengakses halaman ini.');
+        }
+    }
+}
+
+// --- FUNGSI KHUSUS SUPER ADMIN & KEPALA SEKOLAH ---
+if (!function_exists('requireKepalaSekolah')) {
+    function requireKepalaSekolah()
+    {
+        requireLogin();
+
+        if (!in_array($_SESSION['role'] ?? '', ['super_admin', 'kepala_sekolah'])) {
+            http_response_code(403);
+            die('403 - Hanya Super Admin dan Kepala Sekolah yang dapat mengakses halaman ini.');
+        }
+    }
+}
+
+// --- FUNGSI requireAdmin (Super Admin, Kepala Sekolah, Admin) ---
+if (!function_exists('requireAdmin')) {
+    function requireAdmin()
+    {
+        requireLogin();
+
+        if (!in_array($_SESSION['role'] ?? '', ['super_admin', 'kepala_sekolah', 'admin'])) {
+            http_response_code(403);
+            die('403 - Anda tidak memiliki akses.');
         }
     }
 }
