@@ -11,21 +11,25 @@ $pageTitle = 'Laporan & Raport Mentoring Siswa';
 $isPrivileged = in_array(currentRole(), ['super_admin', 'kepala_sekolah', 'admin']);
 $currentUserId = currentUserId();
 
-// FILTER TAHUN PELAJARAN, BULAN & MENTOR
+// 1. FILTER TAHUN PELAJARAN, BULAN & MENTOR
 $academicYears = $pdo->query("SELECT id, name, status FROM academic_years ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
 $activeAyId = 0;
+$activeAyName = '2026/2027';
 foreach ($academicYears as $ay) {
     if ($ay['status'] === 'active') {
         $activeAyId = (int)$ay['id'];
+        $activeAyName = $ay['name'];
         break;
     }
 }
 if ($activeAyId === 0 && !empty($academicYears)) {
     $activeAyId = (int)$academicYears[0]['id'];
+    $activeAyName = $academicYears[0]['name'];
 }
 
 $filterAyId   = isset($_GET['academic_year_id']) ? (int)$_GET['academic_year_id'] : $activeAyId;
-$filterMonth  = trim($_GET['month'] ?? '');
+$filterMonth  = trim($_GET['month'] ?? 'ALL');
+$filterYear   = trim($_GET['year'] ?? 'ALL');
 $filterClass  = trim($_GET['class'] ?? '');
 $filterMentor = (int)($_GET['mentor_id'] ?? 0);
 $selectedStudentId = (int)($_GET['student_id'] ?? 0);
@@ -34,11 +38,20 @@ if (!$isPrivileged) {
     $filterMentor = $currentUserId;
 }
 
-// DAFTAR GURU MENTOR
+// Cari Nama Tahun Ajaran Terpilih
+$currAyName = $activeAyName;
+foreach ($academicYears as $ay) {
+    if ($ay['id'] == $filterAyId) {
+        $currAyName = $ay['name'];
+        break;
+    }
+}
+
+// 2. DAFTAR GURU MENTOR & KELAS
 $mentorsList = $pdo->query("SELECT id, name FROM users WHERE role IN ('staff', 'admin', 'kepala_sekolah') ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
 $classGroups = $pdo->query("SELECT id, name FROM class_groups ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
 
-// DAFTAR SELURUH SANTRI DENGAN MENTORNYA
+// 3. DAFTAR SELURUH SANTRI SESUAI FILTER
 $sqlMentees = "
     SELECT s.id, s.name, s.nis, cg.name as class_name, u.name as mentor_name, ma.group_name
     FROM students s
@@ -66,7 +79,7 @@ if ($selectedStudentId === 0 && !empty($menteesList)) {
     $selectedStudentId = (int)$menteesList[0]['id'];
 }
 
-// TARIK DETAIL SANTRI TERPILIH
+// 4. TARIK DETAIL SANTRI TERPILIH
 $selectedStudent = null;
 foreach ($menteesList as $m) {
     if ($m['id'] == $selectedStudentId) {
@@ -88,9 +101,15 @@ if (!$selectedStudent && $selectedStudentId > 0) {
     $selectedStudent = $stmtS->fetch(PDO::FETCH_ASSOC);
 }
 
-// TARIK RIWAYAT SESI EVALUASI 5 PILAR SANTRI TERPILIH
-$sessions = [];
-$avgScores = ['mip' => 0, 'academic' => 0, 'mutabaah' => 0, 'adab' => 0];
+// 5. TARIK DATA EVALUASI 4 SESI PEKANAN (P1, P2, P3, P4) UNTUK SANTRI TERPILIH
+$pekanData = [
+    'P1' => null,
+    'P2' => null,
+    'P3' => null,
+    'P4' => null,
+];
+$allSessionsForStudent = [];
+
 if ($selectedStudentId > 0) {
     $sqlSess = "
         SELECT ms.*, u.name as mentor_name
@@ -99,46 +118,115 @@ if ($selectedStudentId > 0) {
         WHERE ms.student_id = ?
     ";
     $paramsSess = [$selectedStudentId];
-    if (!empty($filterMonth)) {
+    if ($filterMonth !== 'ALL' && !empty($filterMonth)) {
         $sqlSess .= " AND ms.month_name = ?";
         $paramsSess[] = $filterMonth;
     }
-    $sqlSess .= " ORDER BY ms.session_date DESC, ms.id DESC";
+    if ($filterYear !== 'ALL' && !empty($filterYear)) {
+        $sqlSess .= " AND YEAR(ms.session_date) = ?";
+        $paramsSess[] = $filterYear;
+    }
+    $sqlSess .= " ORDER BY ms.session_date ASC, ms.id ASC";
     $stmtSess = $pdo->prepare($sqlSess);
     $stmtSess->execute($paramsSess);
-    $sessions = $stmtSess->fetchAll(PDO::FETCH_ASSOC);
+    $allSessionsForStudent = $stmtSess->fetchAll(PDO::FETCH_ASSOC);
 
-    if (!empty($sessions)) {
-        $totMip = 0; $totAcad = 0; $totMut = 0; $totAdab = 0;
-        $cntMip = 0; $cntAcad = 0; $cntMut = 0; $cntAdab = 0;
-        foreach ($sessions as $s) {
-            if ($s['score_mip'] > 0) { $totMip += $s['score_mip']; $cntMip++; }
-            if ($s['score_academic'] > 0) { $totAcad += $s['score_academic']; $cntAcad++; }
-            if ($s['score_mutabaah'] > 0) { $totMut += $s['score_mutabaah']; $cntMut++; }
-            if ($s['score_adab'] > 0) { $totAdab += $s['score_adab']; $cntAdab++; }
+    foreach ($allSessionsForStudent as $s) {
+        $pKey = strtoupper(trim($s['week_code'] ?? ''));
+        if (in_array($pKey, ['P1', 'P2', 'P3', 'P4'])) {
+            $pekanData[$pKey] = $s;
+        } elseif (empty($pekanData['P1'])) {
+            $pekanData['P1'] = $s;
+        } elseif (empty($pekanData['P2'])) {
+            $pekanData['P2'] = $s;
+        } elseif (empty($pekanData['P3'])) {
+            $pekanData['P3'] = $s;
+        } elseif (empty($pekanData['P4'])) {
+            $pekanData['P4'] = $s;
         }
-        $avgScores['mip'] = $cntMip > 0 ? round($totMip / $cntMip, 1) : 0;
-        $avgScores['academic'] = $cntAcad > 0 ? round($totAcad / $cntAcad, 1) : 0;
-        $avgScores['mutabaah'] = $cntMut > 0 ? round($totMut / $cntMut, 1) : 0;
-        $avgScores['adab'] = $cntAdab > 0 ? round($totAdab / $cntAdab, 1) : 0;
     }
 }
 
-// LOG ADAB PEKANAN TERAKHIR SANTRI
-$stmtAdabLogs = $pdo->prepare("
-    SELECT * FROM student_adab_logs 
-    WHERE student_id = ? 
-    ORDER BY submitted_at DESC 
-    LIMIT 4
-");
-$stmtAdabLogs->execute([$selectedStudentId]);
-$adabLogs = $stmtAdabLogs->fetchAll(PDO::FETCH_ASSOC);
+// 6. HELPER AMBIL SKOR & CATATAN PER PEKAN
+function getScoreVal($pekanData, $pKey, $field) {
+    if (isset($pekanData[$pKey]) && $pekanData[$pKey] && isset($pekanData[$pKey][$field])) {
+        $val = $pekanData[$pKey][$field];
+        return ($val !== null && $val !== '' && $val > 0) ? (float)$val : '-';
+    }
+    return '-';
+}
+
+function getAspectNotes($allSessionsForStudent, $noteField) {
+    $notes = [];
+    foreach ($allSessionsForStudent as $s) {
+        if (!empty($s[$noteField])) {
+            $notes[] = trim($s[$noteField]);
+        }
+    }
+    if (!empty($notes)) {
+        return implode('; ', array_unique($notes));
+    }
+    return 'Perkembangan terpantau sangat baik.';
+}
+
+// 7. TARIK ISIAN REFLEKSI ADAB SANTRI (4 DIMENSI)
+$adabRefleksi = [
+    'refleksi1' => '--',
+    'refleksi2' => '--',
+    'refleksi3' => '--',
+    'refleksi4' => '--',
+];
+
+if ($selectedStudentId > 0) {
+    $sqlAdab = "SELECT * FROM student_adab_logs WHERE student_id = ?";
+    $paramsAdab = [$selectedStudentId];
+    if ($filterMonth !== 'ALL' && !empty($filterMonth)) {
+        $sqlAdab .= " AND (month_name = ? OR DATE_FORMAT(submitted_at, '%M') = ?)";
+        $paramsAdab[] = $filterMonth;
+        $paramsAdab[] = $filterMonth;
+    }
+    $sqlAdab .= " ORDER BY submitted_at DESC LIMIT 1";
+    $stmtAdab = $pdo->prepare($sqlAdab);
+    $stmtAdab->execute($paramsAdab);
+    $adabRow = $stmtAdab->fetch(PDO::FETCH_ASSOC);
+
+    if ($adabRow) {
+        $adabRefleksi['refleksi1'] = !empty($adabRow['action_real']) ? $adabRow['action_real'] : (!empty($adabRow['refleksi1']) ? $adabRow['refleksi1'] : '--');
+        $adabRefleksi['refleksi2'] = !empty($adabRow['obstacles']) ? $adabRow['obstacles'] : (!empty($adabRow['refleksi2']) ? $adabRow['refleksi2'] : '--');
+        $adabRefleksi['refleksi3'] = !empty($adabRow['solutions']) ? $adabRow['solutions'] : (!empty($adabRow['refleksi3']) ? $adabRow['refleksi3'] : '--');
+        $adabRefleksi['refleksi4'] = !empty($adabRow['gratitude_notes']) ? $adabRow['gratitude_notes'] : (!empty($adabRow['refleksi4']) ? $adabRow['refleksi4'] : '--');
+    } else {
+        if ($filterMonth !== 'ALL') {
+            $msgEmpty = "-- (Belum ada isian refleksi adab untuk bulan $filterMonth) --";
+            $adabRefleksi = [
+                'refleksi1' => $msgEmpty,
+                'refleksi2' => $msgEmpty,
+                'refleksi3' => $msgEmpty,
+                'refleksi4' => $msgEmpty,
+            ];
+        }
+    }
+}
+
+// 8. TEKS PERIODE LAPORAN
+$txtPeriode = "Pekan 1 s/d Pekan 4";
+if ($filterMonth !== 'ALL' || $filterYear !== 'ALL') {
+    $bStr = ($filterMonth !== 'ALL') ? $filterMonth : '';
+    $yStr = ($filterYear !== 'ALL') ? $filterYear : '';
+    $txtPeriode .= " (" . trim("$bStr $yStr") . ")";
+}
 
 require __DIR__ . '/../../includes/header.php';
 ?>
 
+<!-- STYLE PRINT A4 STRICT EMULATING SPA EXACT SPECIFICATION -->
 <style>
 @media print {
+    * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        color-adjust: exact !important;
+    }
     .no-print, #sidebar, .header, .footer, .btn, .filter-box {
         display: none !important;
     }
@@ -152,33 +240,61 @@ require __DIR__ . '/../../includes/header.php';
         border: none !important;
         padding: 0 !important;
         width: 100% !important;
+        max-width: 100% !important;
     }
     body {
-        background: #ffffff !important;
-        color: #000000 !important;
-        font-size: 12pt;
+        background: white !important;
+        font-size: 9.5pt;
+        color: black !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+    }
+    #rptAspectsBarDiagram {
+        display: grid !important;
+        grid-template-columns: repeat(4, 1fr) !important;
+        gap: 6px !important;
+    }
+    .print-aspect-card {
+        border: 1px solid #cbd5e1 !important;
+        background-color: #f8fafc !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+        padding: 6px !important;
+    }
+    .print-bar-container {
+        border: 1px solid #e2e8f0 !important;
+        background-color: #ffffff !important;
+    }
+    .print-bar-fill {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+    }
+    .print-break-inside-avoid { 
+        break-inside: avoid !important; 
+        page-break-inside: avoid !important; 
+    }
+    @page { 
+        size: A4 portrait; 
+        margin: 6mm 6mm 6mm 6mm; 
     }
 }
 </style>
 
 <div class="content">
-    <!-- Header Page -->
+    <!-- Header Page (No Print) -->
     <div class="no-print" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;">
         <div>
             <h2 style="margin: 0; font-size: 22px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 10px;">
-                <i class="fa-solid fa-file-invoice" style="color: #059669;"></i> Laporan & Raport Karakter Mentoring MIP
+                <i class="fa-solid fa-file-invoice" style="color: #059669;"></i> Laporan & Raport Mentoring Siswa
             </h2>
             <p style="margin: 4px 0 0; color: #64748b; font-size: 13.5px;">
-                Rekapitulasi berkala 5 pilar karakter santri dan cetak Raport A4 portrait resmi
+                Format A4 Portrait Resmi 1 Halaman — Dilengkapi Diagram Perkembangan 4 Aspek & Refleksi Adab
             </p>
         </div>
 
         <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-            <a href="app.php?tab=report&student_name=<?= urlencode($selectedStudent['name'] ?? '') ?>" target="_blank" class="btn" style="padding: 9px 18px; font-size: 13px; font-weight: 800; background: linear-gradient(135deg, #059669 0%, #047857 100%); color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 6px -1px rgba(5,150,105,0.25);">
-                <i class="fa-solid fa-desktop"></i> Buka Format Mode Aplikasi Asli (SPA)
-            </a>
             <button type="button" class="btn btn-primary" onclick="window.print()" style="padding: 9px 18px; font-size: 13px; font-weight: 700; background: #0f172a; border-color: #0f172a; display: flex; align-items: center; gap: 8px;">
-                <i class="fa-solid fa-print"></i> Cetak Halaman Ini (A4)
+                <i class="fa-solid fa-print"></i> Cetak Raport Murid (A4)
             </button>
             <a href="index.php" class="btn btn-secondary" style="padding: 9px 16px; font-size: 13px;">
                 <i class="fa-solid fa-arrow-left"></i> Dashboard Mentoring
@@ -186,7 +302,7 @@ require __DIR__ . '/../../includes/header.php';
         </div>
     </div>
 
-    <!-- Filter Bar Interaktif -->
+    <!-- Filter Bar Interaktif (No Print) -->
     <div class="card filter-box no-print" style="padding: 16px 20px; border-radius: 14px; margin-bottom: 24px; background: #ffffff;">
         <form method="GET" action="report.php" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
             <!-- Tahun Pelajaran -->
@@ -221,9 +337,20 @@ require __DIR__ . '/../../includes/header.php';
             <div>
                 <label style="display: block; font-size: 11.5px; font-weight: 700; color: #64748b; margin-bottom: 4px;">Bulan</label>
                 <select name="month" class="filter-input" style="padding: 8px 12px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 13px;" onchange="this.form.submit()">
-                    <option value="">-- Semua Bulan --</option>
+                    <option value="ALL" <?= $filterMonth === 'ALL' ? 'selected' : '' ?>>-- Semua Bulan --</option>
                     <?php foreach (['Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni'] as $bln): ?>
                         <option value="<?= $bln ?>" <?= $filterMonth === $bln ? 'selected' : '' ?>><?= $bln ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
+            <!-- Filter Tahun Masehi -->
+            <div>
+                <label style="display: block; font-size: 11.5px; font-weight: 700; color: #64748b; margin-bottom: 4px;">Tahun</label>
+                <select name="year" class="filter-input" style="padding: 8px 12px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 13px;" onchange="this.form.submit()">
+                    <option value="ALL" <?= $filterYear === 'ALL' ? 'selected' : '' ?>>-- Semua Tahun --</option>
+                    <?php foreach ([2026, 2027, 2028] as $y): ?>
+                        <option value="<?= $y ?>" <?= $filterYear == $y ? 'selected' : '' ?>><?= $y ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>
@@ -242,7 +369,7 @@ require __DIR__ . '/../../includes/header.php';
             <?php endif; ?>
 
             <div style="align-self: flex-end;">
-                <?php if (!empty($filterMonth) || $filterMentor > 0): ?>
+                <?php if ($filterMonth !== 'ALL' || $filterYear !== 'ALL' || $filterMentor > 0): ?>
                     <a href="report.php?academic_year_id=<?= $filterAyId ?>&student_id=<?= $selectedStudentId ?>" class="btn btn-secondary" style="padding: 8px 14px; font-size: 13px;">Reset Filter</a>
                 <?php endif; ?>
             </div>
@@ -257,149 +384,239 @@ require __DIR__ . '/../../includes/header.php';
     <?php else: ?>
         <!-- ========================================================
              LEMBAR CETAK RAPORT A4 PORTRAIT RESMI (PRINT SHEET)
+             100% IDENTIK DENGAN VERSI SPA / APLIKASI PENUH
              ======================================================== -->
-        <div class="card print-sheet" style="padding: 32px 36px; border-radius: 18px; background: #ffffff; max-width: 860px; margin: 0 auto; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
+        <div class="card print-sheet" style="padding: 24px 28px; border-radius: 18px; background: #ffffff; max-width: 860px; margin: 0 auto; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
             
-            <!-- KOP SURAT SEKOLAH -->
-            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2.5px solid #0f172a; padding-bottom: 14px; margin-bottom: 20px;">
-                <div style="display: flex; align-items: center; gap: 14px;">
-                    <img src="../logofull.jpg" alt="Logo An Nahl" style="height: 60px; width: auto; object-fit: contain;" onerror="this.style.display='none'">
+            <!-- 1. REPORT HEADER KOP SEKOLAH -->
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2.5px solid #0f172a; padding-bottom: 10px; margin-bottom: 14px;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <img src="../logofull.jpg" alt="Logo An Nahl" style="height: 52px; width: auto; object-fit: contain;" onerror="this.src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKMAAABZCAYAAABSZZT/AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAACr+SURBVHhe7Z1nlFRluu/9cObec9bcdWfOqKgEZdQZHRMKNNB0k0FAQERFMCLmrNAZMSGGMTuGcUwzJlARuoEmIyJ0zjnRuZtOVV3VlXP97nreXbspWs9d9x6/lHQ9a729d+28+/3v/xP3u0/jFJEg4FMtSDAovwIECeAnoJb5ZaNAaCM34PKCsw+68uHwu/R9cB/9L91E78aV9H6SBkUZYGsGXz8EHASDfnUOaepPIABBHwT9ofOG1kXlvy2nDV3waxUBm1sBzwf+APgCCnwy6wlqYFFo8XjBbQFrG1TsxPnVOnpeup6+9bMYSIrF9uQM+p5ZSMfLN2P/9nmoPwS2bnC51EGCclgBtTqiV031uSgYf5mcMmAUFvTgQ/GUjkC/Bg+NtQLgtoO7H46X4Nr1DsdfX4Vxw7XYn52HJWky7tTJ2JPGY02eguWp2fQ+t5juN+4juPtT6KwHmx28GiMG8RAIekLsqz0MUTD+MjllwKhoMODVVKdSx/JHVLUAxwmeXrC0wJHN2N9PxLbxJkxPzaE3aQqGtbFYkuMYSI5hIOEqnImT8KTFY0uOx5g8F+uLd+L+9HkoPww9DeCzKB4WkCv1LxIcnIvKf1NOHTAqO84fmgpKhMHcELCArQnacujd/BK9r96LMXkB9oR47Mmx2FOnYkudgTl5BsbUGQykxuNMiseZOAV74mSsyVOxps7DsH4ZPS/dg2/7u9CaD66+0Dnk5AGCAU/oxFH578opA0ZlDoZUsl/9EbvRDOZ6nHvep+ONezFsWE5/2gLMKbMxJ2pANCdMxpI0A0PCLDoT5tO+Zh79SXOwpM7AkBpLb+okjOumY0ybzcCT8zBtvJGedx6DI1vBbtXsyKBfOUpRNf3L5JQDozjKAfnh94K5CeeBT+h/617MT16DLXGWYkRrUhwmYcW0aZiTp9G9ZgbOV1cz8PcUTO8l0bX+enqTZ2JKnYr1qakYUqZiSJqCNXEyrvWzMD27BMN7a/HmHACTWZkGUTD+cjllwCgiYPD6QqDw25Sj0vLO4xx/chHWpGm41k7FlxiPIyEWS8IUTKlx9KTNpuvJpbDvQ7C1QF8V/q830pk4F/OjV+F6/CpsyTOxps2lf+0kLGlTMa+fRuszi+n79m3oawOvW6PjKBp/kZw6YFRsqNOiqGgTtOfT8vr99D+1CEdiHM7EqfiS4/AkTFL2oCExnpbkq+l/dy20F4DbAK5eKN2J4ZU71T6+xyfiTJyJec10xagDiZNwrY/FsGEhps1/hb5G8NjBF7UZf6mcWmD0SThHgOjRQjgt2bS8/TCGZ67FnBiHac1kBUJXcgzu1FiMCdNpTluKZ88nYO8CvxMCdqXeTd+8TLuo9bVTcCZMw5U4HV/STGyPTcKTMo2BDUsxbn4Z+mrBY9YNhKFXFZX/Dzm1wKh70X6PFn5pzKb5jQfpW3eNUtOWpFgVT3QmT8aWEkd3wmyOv/oANOSB1wZeFwRc4DbiKcig8amlDKTMxLpmKp6E6bjXTsP+WCzepHjMz11Lz6bnwVgHPmvIdYqC8ZfIqQNGERXrC6hsiGK5xgKOv/YIlpQFylZ0psViS4lV4ZrexBm0pSzB9d3r4GiHoB0CYvsJIJ3QVUn/RwkcT56FaW08jsRpWNZOw5Y4DU9KLJaNizB8uwFM9cpeVNZBVH6RnEJg1ALcoRwMeO3QVEz3G0/gSF6If80UHAkxihmtKdM5njSPY8/dAXkZKv8c8Jnx9DYSMAow3eDshR8+ozZ5EcaUWVgTY1UQ3JE2DXtiDAPPL8K4+VnorVZZGUn2nIxHPeiuTU+0qPxXEllglN4MBZFPavry'"/>
                     <div>
-                        <h2 style="margin: 0; font-size: 16px; font-weight: 900; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">
-                            RAPOR KARAKTER & EVALUASI MENTORING (MIP)
+                        <h2 style="margin: 0; font-size: 14.5px; font-weight: 900; color: #0f172a; text-transform: uppercase; letter-spacing: -0.01em; line-height: 1.2;">
+                            LAPORAN EVALUASI MENTORING MIP
                         </h2>
-                        <h3 style="margin: 2px 0 0; font-size: 13px; font-weight: 800; color: #059669;">
+                        <h3 style="margin: 2px 0 0; font-size: 11.5px; font-weight: 800; color: #334155; line-height: 1.2;">
                             SMP AN NAHL ISLAMIC SCHOOL
                         </h3>
-                        <p style="margin: 2px 0 0; font-size: 11px; color: #64748b;">
-                            Tahun Ajaran <?= e($currAyName ?? '2026/2027') ?> • Sistem Evaluasi 5 Pilar Pembinaan Santri
+                        <p style="margin: 2px 0 0; font-size: 9.5px; color: #64748b;">
+                            Tahun Ajaran <?= e($currAyName) ?> - Sistem Evaluasi 4 Aspek Pembinaan
                         </p>
                     </div>
                 </div>
 
-                <div style="text-align: right;">
-                    <span style="display: inline-block; padding: 4px 10px; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 11px; font-weight: 800; color: #1e293b; text-transform: uppercase;">
-                        Raport Karakter
+                <div style="text-align: right; font-size: 11px;">
+                    <span style="display: inline-block; padding: 3px 10px; background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 9999px; font-size: 10px; font-weight: 800; color: #1e293b; text-transform: uppercase;">
+                        Raport Mentoring
                     </span>
-                    <div style="font-size: 10px; color: #94a3b8; margin-top: 4px;">
-                        Dicetak: <?= date('d F Y') ?>
-                    </div>
                 </div>
             </div>
 
-            <!-- PROFIL SANTRI & MENTOR -->
-            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; font-size: 12.5px;">
+            <!-- 2. REPORT STUDENT METADATA (2x2 Grid) -->
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 14px; margin-bottom: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 11px;">
                 <div>
-                    <span style="font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; display: block;">Nama Santri:</span>
-                    <strong style="font-size: 14px; color: #0f172a;"><?= e($selectedStudent['name']) ?></strong>
-                    <div style="font-size: 11.5px; color: #64748b; margin-top: 2px;">NIS: <?= e($selectedStudent['nis']) ?></div>
+                    <span style="font-size: 9px; color: #64748b; font-weight: 800; text-transform: uppercase; display: block;">Nama Murid / Siswa:</span>
+                    <h4 style="margin: 2px 0 0; font-size: 12.5px; font-weight: 900; color: #0f172a;"><?= e($selectedStudent['name']) ?></h4>
                 </div>
                 <div>
-                    <span style="font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; display: block;">Kelas & Rombel:</span>
-                    <strong style="font-size: 13.5px; color: #0284c7;">Kelas <?= e($selectedStudent['class_name'] ?? '-') ?></strong>
-                    <div style="font-size: 11.5px; color: #64748b; margin-top: 2px;">Halaqah: <?= e($selectedStudent['group_name'] ?: 'Halaqah Mandiri') ?></div>
+                    <span style="font-size: 9px; color: #64748b; font-weight: 800; text-transform: uppercase; display: block;">NIS / Kelas:</span>
+                    <h4 style="margin: 2px 0 0; font-size: 12.5px; font-weight: 900; color: #0f172a;"><?= e($selectedStudent['nis']) ?> / <?= e($selectedStudent['class_name'] ?? '7A') ?></h4>
                 </div>
                 <div>
-                    <span style="font-size: 11px; color: #64748b; font-weight: 700; text-transform: uppercase; display: block;">Guru Mentor Pembimbing:</span>
-                    <strong style="font-size: 13.5px; color: #0f172a;"><?= e($selectedStudent['mentor_name'] ?? 'Belum Ditugaskan') ?></strong>
-                    <div style="font-size: 11.5px; color: #059669; font-weight: 600; margin-top: 2px;">Total Sesi: <?= count($sessions) ?> kali tatap muka</div>
+                    <span style="font-size: 9px; color: #64748b; font-weight: 800; text-transform: uppercase; display: block;">Mentor Pembimbing:</span>
+                    <h4 style="margin: 2px 0 0; font-size: 12.5px; font-weight: 900; color: #0f172a;"><?= e($selectedStudent['mentor_name'] ?? 'Ust. Mentor') ?></h4>
+                </div>
+                <div>
+                    <span style="font-size: 9px; color: #64748b; font-weight: 800; text-transform: uppercase; display: block;">Periode Laporan:</span>
+                    <h4 style="margin: 2px 0 0; font-size: 12.5px; font-weight: 900; color: #0f172a;"><?= e($txtPeriode) ?></h4>
                 </div>
             </div>
 
-            <!-- 4 KARTU RATA-RATA ASPEK PEMBINAAN -->
-            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 22px;">
-                <div style="border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; text-align: center; background: #f0f9ff; border-top: 4px solid #0284c7;">
-                    <div style="font-size: 11px; font-weight: 700; color: #0369a1; text-transform: uppercase;">Pilar 1: MIP</div>
-                    <div style="font-size: 22px; font-weight: 900; color: #0284c7; margin-top: 4px;"><?= $avgScores['mip'] ?: '-' ?></div>
-                    <div style="font-size: 10px; color: #64748b; margin-top: 2px;">Motivasi & Ibadah</div>
-                </div>
-
-                <div style="border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; text-align: center; background: #ecfdf5; border-top: 4px solid #10b981;">
-                    <div style="font-size: 11px; font-weight: 700; color: #047857; text-transform: uppercase;">Pilar 2: Akademik</div>
-                    <div style="font-size: 22px; font-weight: 900; color: #059669; margin-top: 4px;"><?= $avgScores['academic'] ?: '-' ?></div>
-                    <div style="font-size: 10px; color: #64748b; margin-top: 2px;">Prestasi & KBM</div>
-                </div>
-
-                <div style="border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; text-align: center; background: #fefce8; border-top: 4px solid #f59e0b;">
-                    <div style="font-size: 11px; font-weight: 700; color: #b45309; text-transform: uppercase;">Pilar 3: Mutaba'ah</div>
-                    <div style="font-size: 22px; font-weight: 900; color: #d97706; margin-top: 4px;"><?= $avgScores['mutabaah'] ?: '-' ?></div>
-                    <div style="font-size: 10px; color: #64748b; margin-top: 2px;">Kedisiplinan Amal</div>
-                </div>
-
-                <div style="border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; text-align: center; background: #faf5ff; border-top: 4px solid #8b5cf6;">
-                    <div style="font-size: 11px; font-weight: 700; color: #6d28d9; text-transform: uppercase;">Pilar 4: Adab</div>
-                    <div style="font-size: 22px; font-weight: 900; color: #7c3aed; margin-top: 4px;"><?= $avgScores['adab'] ?: '-' ?></div>
-                    <div style="font-size: 10px; color: #64748b; margin-top: 2px;">Akhlaqul Karimah</div>
-                </div>
-            </div>
-
-            <!-- TABEL DETAIL RIWAYAT EVALUASI SESI MENTORING -->
-            <div style="margin-bottom: 24px;">
-                <h4 style="margin: 0 0 10px; font-size: 13.5px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px;">
-                    <i class="fa-solid fa-list-check" style="color: #0284c7;"></i> Riwayat Jurnal & Evaluasi Bimbingan Tatap Muka
+            <!-- 3. A. RINCIAN EVALUASI 4 ASPEK MENTORING -->
+            <div style="margin-bottom: 14px;">
+                <h4 style="margin: 0 0 6px; font-size: 11px; font-weight: 900; color: #0f172a; text-transform: uppercase;">
+                    A. RINCIAN EVALUASI 4 ASPEK MENTORING
                 </h4>
-
-                <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
-                    <thead>
-                        <tr style="background: #f1f5f9; border-top: 1px solid #cbd5e1; border-bottom: 2px solid #94a3b8; text-align: left;">
-                            <th style="padding: 8px 10px;">Tanggal / Sesi</th>
-                            <th style="padding: 8px 10px; text-align: center;">MIP</th>
-                            <th style="padding: 8px 10px; text-align: center;">Akademik</th>
-                            <th style="padding: 8px 10px; text-align: center;">Mutaba'ah</th>
-                            <th style="padding: 8px 10px; text-align: center;">Adab</th>
-                            <th style="padding: 8px 10px;">Catatan & Arahan Motivasi Guru Mentor</th>
+                <table style="width: 100%; border-collapse: collapse; font-size: 10px; border: 1px solid #cbd5e1;">
+                    <thead style="background: #f1f5f9; color: #1e293b; font-weight: 800; text-align: center;">
+                        <tr>
+                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: left;">Aspek Evaluasi Mentoring</th>
+                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 1</th>
+                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 2</th>
+                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 3</th>
+                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; width: 48px;">Pekan 4</th>
+                            <th style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: left;">Catatan Mentor & Advice</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php if (empty($sessions)): ?>
-                            <tr>
-                                <td colspan="6" style="text-align: center; padding: 20px; color: #94a3b8;">
-                                    Belum ada catatan evaluasi sesi tatap muka untuk santri ini.
-                                </td>
-                            </tr>
-                        <?php else: ?>
-                            <?php foreach ($sessions as $s): ?>
-                                <tr style="border-bottom: 1px solid #e2e8f0;">
-                                    <td style="padding: 8px 10px; white-space: nowrap;">
-                                        <strong><?= date('d/m/Y', strtotime($s['session_date'])) ?></strong>
-                                        <div style="font-size: 11px; color: #0284c7;"><?= e($s['session_code']) ?></div>
-                                    </td>
-                                    <td style="padding: 8px 10px; text-align: center; font-weight: 800; color: #0284c7;"><?= $s['score_mip'] ?: '-' ?></td>
-                                    <td style="padding: 8px 10px; text-align: center; font-weight: 800; color: #059669;"><?= $s['score_academic'] ?: '-' ?></td>
-                                    <td style="padding: 8px 10px; text-align: center; font-weight: 800; color: #d97706;"><?= $s['score_mutabaah'] ?: '-' ?></td>
-                                    <td style="padding: 8px 10px; text-align: center; font-weight: 800; color: #7c3aed;"><?= $s['score_adab'] ?: '-' ?></td>
-                                    <td style="padding: 8px 10px; color: #334155; line-height: 1.4;">
-                                        <?= !empty($s['notes_feedback']) ? nl2br(e($s['notes_feedback'])) : '-' ?>
-                                        <?php if (!empty($s['notes_mip']) || !empty($s['notes_adab'])): ?>
-                                            <div style="font-size: 11px; color: #64748b; margin-top: 4px;">
-                                                <?= !empty($s['notes_mip']) ? '<em>MIP: ' . e($s['notes_mip']) . '</em> ' : '' ?>
-                                                <?= !empty($s['notes_adab']) ? '<em>Adab: ' . e($s['notes_adab']) . '</em>' : '' ?>
-                                            </div>
-                                        <?php endif; ?>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
+                        <!-- Aspek 1: MIP -->
+                        <tr>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800;">1. MIP (Mission Is Possible)</td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P1', 'score_mip') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P2', 'score_mip') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P3', 'score_mip') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P4', 'score_mip') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_mip')) ?></td>
+                        </tr>
+                        <!-- Aspek 2: Akademik -->
+                        <tr>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800;">2. Akademik & Non-Akademik</td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P1', 'score_academic') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P2', 'score_academic') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P3', 'score_academic') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P4', 'score_academic') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_academic')) ?></td>
+                        </tr>
+                        <!-- Aspek 3: Mutabaah -->
+                        <tr>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800;">3. Mutaba'ah Yaumiyah</td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P1', 'score_mutabaah') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P2', 'score_mutabaah') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P3', 'score_mutabaah') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800;"><?= getScoreVal($pekanData, 'P4', 'score_mutabaah') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_mutabaah')) ?></td>
+                        </tr>
+                        <!-- Aspek 4: Adab -->
+                        <tr style="background-color: #faf5ff !important;">
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; font-weight: 800; color: #581c87;">4. Adab & Karakter</td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P1', 'score_adab') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P2', 'score_adab') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P3', 'score_adab') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: 800; color: #581c87;"><?= getScoreVal($pekanData, 'P4', 'score_adab') ?></td>
+                            <td style="padding: 6px 8px; border: 1px solid #cbd5e1; color: #475569; font-style: italic; font-size: 9.5px;"><?= e(getAspectNotes($allSessionsForStudent, 'notes_adab')) ?></td>
+                        </tr>
                     </tbody>
                 </table>
             </div>
 
-            <!-- TANDA TANGAN RESMI KEPALA SEKOLAH & GURU MENTOR -->
-            <div style="display: flex; justify-content: space-between; margin-top: 36px; padding: 0 20px; font-size: 12px; color: #0f172a; page-break-inside: avoid;">
-                <div style="text-align: center; width: 220px;">
-                    <div>Mengetahui,</div>
-                    <div style="font-weight: 700; margin-top: 2px;">Kepala SMP An Nahl Islamic School</div>
-                    <div style="height: 60px;"></div>
-                    <div style="font-weight: 800; text-decoration: underline;">Ustadz Muhammad Asy'ari, M.Pd.</div>
-                    <div style="font-size: 11px; color: #64748b;">NIP. 2026.07.001</div>
+            <!-- 4. B. DIAGRAM GRAFIK PERKEMBANGAN & TENDENSI CAPAIAN 4 ASPEK -->
+            <div style="margin-bottom: 14px;">
+                <h4 style="margin: 0 0 6px; font-size: 11px; font-weight: 900; color: #0f172a; text-transform: uppercase;">
+                    B. DIAGRAM GRAFIK PERKEMBANGAN & TENDENSI CAPAIAN 4 ASPEK
+                </h4>
+                
+                <div id="rptAspectsBarDiagram" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;">
+                    <?php
+                    $aspectConfigs = [
+                        ['key' => 'score_mip', 'label' => '1. MIP', 'hex' => '#10b981', 'border' => '#a7f3d0', 'bg' => '#ecfdf5'],
+                        ['key' => 'score_academic', 'label' => '2. Akademik', 'hex' => '#3b82f6', 'border' => '#bfdbfe', 'bg' => '#eff6ff'],
+                        ['key' => 'score_mutabaah', 'label' => '3. Mutaba\'ah', 'hex' => '#f59e0b', 'border' => '#fde68a', 'bg' => '#fffbeb'],
+                        ['key' => 'score_adab', 'label' => '4. Adab & Karakter', 'hex' => '#9333ea', 'border' => '#e9d5ff', 'bg' => '#faf5ff'],
+                    ];
+
+                    foreach ($aspectConfigs as $aspect):
+                        $scores = [];
+                        foreach (['P1', 'P2', 'P3', 'P4'] as $pKey) {
+                            $val = getScoreVal($pekanData, $pKey, $aspect['key']);
+                            $scores[] = is_numeric($val) ? (float)$val : null;
+                        }
+
+                        $validScores = array_filter($scores, fn($s) => $s !== null);
+                        $avgText = '-';
+                        $trendBadge = '<span style="padding: 2px 5px; border-radius: 4px; font-size: 8.5px; font-weight: 600; background: #f1f5f9; color: #64748b;">Belum Ada Data</span>';
+
+                        if (!empty($validScores)) {
+                            $first = reset($validScores);
+                            $last = end($validScores);
+                            $delta = $last - $first;
+                            $avg = array_sum($validScores) / count($validScores);
+                            $avgText = number_format($avg, 1);
+
+                            if ($delta > 0) {
+                                $trendBadge = '<span class="print-bar-fill" style="padding: 2px 6px; border-radius: 4px; font-size: 8.5px; font-weight: 800; background-color: #d1fae5 !important; color: #065f46 !important; border: 1px solid #6ee7b7 !important; display: inline-flex; align-items: center; gap: 2px;"><i class="fa-solid fa-arrow-trend-up"></i> Naik (+' . number_format($delta, 1) . ')</span>';
+                            } elseif ($delta < 0) {
+                                $trendBadge = '<span class="print-bar-fill" style="padding: 2px 6px; border-radius: 4px; font-size: 8.5px; font-weight: 800; background-color: #ffe4e6 !important; color: #9f1239 !important; border: 1px solid #fca5a5 !important; display: inline-flex; align-items: center; gap: 2px;"><i class="fa-solid fa-arrow-trend-down"></i> Turun (' . number_format($delta, 1) . ')</span>';
+                            } else {
+                                $trendBadge = '<span class="print-bar-fill" style="padding: 2px 6px; border-radius: 4px; font-size: 8.5px; font-weight: 800; background-color: #dbeafe !important; color: #1e40af !important; border: 1px solid #93c5fd !important; display: inline-flex; align-items: center; gap: 2px;"><i class="fa-solid fa-minus"></i> Stabil</span>';
+                            }
+                        }
+                    ?>
+                        <div class="print-aspect-card" style="padding: 8px; background: <?= $aspect['bg'] ?>; border: 1px solid <?= $aspect['border'] ?>; border-radius: 10px; display: flex; flex-direction: column; justify-content: space-between; gap: 6px;">
+                            <!-- Header Diagram -->
+                            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(203,213,225,0.7); padding-bottom: 4px;">
+                                <span style="font-size: 10px; font-weight: 900; color: #1e293b;"><?= $aspect['label'] ?></span>
+                                <?= $trendBadge ?>
+                            </div>
+
+                            <!-- Chart Body Container -->
+                            <div class="print-bar-container" style="background: rgba(255,255,255,0.95); padding: 6px; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; flex-direction: column; gap: 4px;">
+                                <!-- Angka Nilai -->
+                                <div style="display: grid; grid-template-columns: repeat(4, 1fr); text-align: center; font-size: 8.5px; font-weight: 900; color: #334155;">
+                                    <?php foreach ($scores as $s): ?>
+                                        <span><?= $s !== null ? number_format($s, 1) : '-' ?></span>
+                                    <?php endforeach; ?>
+                                </div>
+
+                                <!-- Tiang Bar Chart -->
+                                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; align-items: flex-end; height: 50px; padding: 2px 0;">
+                                    <?php foreach ($scores as $s): 
+                                        $heightPct = $s !== null ? min(100, max(15, round(($s / 10) * 100))) : 0;
+                                    ?>
+                                        <div style="width: 100%; height: 100%; background-color: #f1f5f9 !important; border-radius: 3px 3px 0 0; display: flex; align-items: flex-end; overflow: hidden;">
+                                            <div class="print-bar-fill" style="width: 100%; height: <?= $heightPct ?>%; background-color: <?= $aspect['hex'] ?> !important; border-radius: 3px 3px 0 0;"></div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+
+                                <!-- Label P1-P4 -->
+                                <div style="display: grid; grid-template-columns: repeat(4, 1fr); text-align: center; font-size: 8.5px; font-weight: 800; color: #64748b; border-top: 1px solid #f1f5f9; padding-top: 2px;">
+                                    <span>P1</span>
+                                    <span>P2</span>
+                                    <span>P3</span>
+                                    <span>P4</span>
+                                </div>
+                            </div>
+
+                            <!-- Footer Diagram -->
+                            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 9px; color: #475569;">
+                                <span>Rata-rata: <strong style="color: #0f172a; font-weight: 900;"><?= $avgText ?></strong></span>
+                                <span style="color: #94a3b8; font-size: 8px;">Skala 10</span>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+
+            <!-- 5. C. HASIL ISIAN REFLEKSI ADAB & KARAKTER MURID (2x2 Grid) -->
+            <div style="margin-bottom: 14px;">
+                <h4 style="margin: 0 0 6px; font-size: 11px; font-weight: 900; color: #0f172a; text-transform: uppercase;">
+                    C. HASIL ISIAN REFLEKSI ADAB & KARAKTER MURID
+                </h4>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 9.5px;">
+                    <div style="background: #f8fafc; padding: 7px 10px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                        <strong style="display: block; color: #1e293b; font-weight: 800; margin-bottom: 2px;">1. Aksi Nyata Adab:</strong>
+                        <p style="margin: 0; color: #475569; font-style: italic; line-height: 1.35;"><?= nl2br(e($adabRefleksi['refleksi1'])) ?></p>
+                    </div>
+
+                    <div style="background: #f8fafc; padding: 7px 10px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                        <strong style="display: block; color: #1e293b; font-weight: 800; margin-bottom: 2px;">2. Hambatan & Tantangan:</strong>
+                        <p style="margin: 0; color: #475569; font-style: italic; line-height: 1.35;"><?= nl2br(e($adabRefleksi['refleksi2'])) ?></p>
+                    </div>
+
+                    <div style="background: #f8fafc; padding: 7px 10px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                        <strong style="display: block; color: #1e293b; font-weight: 800; margin-bottom: 2px;">3. Solusi & Rencana Perbaikan:</strong>
+                        <p style="margin: 0; color: #475569; font-style: italic; line-height: 1.35;"><?= nl2br(e($adabRefleksi['refleksi3'])) ?></p>
+                    </div>
+
+                    <div style="background: #f8fafc; padding: 7px 10px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                        <strong style="display: block; color: #1e293b; font-weight: 800; margin-bottom: 2px;">4. Catatan Syukur & Refleksi Harian:</strong>
+                        <p style="margin: 0; color: #475569; font-style: italic; line-height: 1.35;"><?= nl2br(e($adabRefleksi['refleksi4'])) ?></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 6. SIGNATURE BLOCK RESMI (Orang Tua / Wali & Guru Mentor) -->
+            <div class="print-break-inside-avoid" style="display: flex; justify-content: space-between; align-items: flex-end; padding: 12px 24px 0; text-align: center; font-size: 10px; border-top: 1px solid #e2e8f0; margin-top: 8px;">
+                <div style="width: 200px;">
+                    <p style="margin: 0 0 45px; font-weight: 600; color: #334155;">Orang Tua / Wali Murid,</p>
+                    <p style="margin: 0; font-weight: 800; color: #0f172a; text-decoration: underline;">( _______________________ )</p>
                 </div>
 
-                <div style="text-align: center; width: 220px;">
-                    <div>Bogor, <?= date('d F Y') ?></div>
-                    <div style="font-weight: 700; margin-top: 2px;">Guru Mentor Pendamping</div>
-                    <div style="height: 60px;"></div>
-                    <div style="font-weight: 800; text-decoration: underline;"><?= e($selectedStudent['mentor_name'] ?? 'Guru Mentor') ?></div>
-                    <div style="font-size: 11px; color: #64748b;">Pembimbing Karakter Santri</div>
+                <div style="width: 200px;">
+                    <p style="margin: 0 0 2px; color: #64748b; font-size: 9px;">Bogor, <?= date('d F Y') ?></p>
+                    <p style="margin: 0 0 45px; font-weight: 600; color: #334155;">Mentor,</p>
+                    <p style="margin: 0; font-weight: 800; color: #0f172a; text-decoration: underline;">( <?= e($selectedStudent['mentor_name'] ?? 'Ust. Mentor') ?> )</p>
                 </div>
             </div>
 
