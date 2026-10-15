@@ -388,31 +388,34 @@ require __DIR__ . '/../../includes/header.php';
                 </div>
 
                 <!-- Box Daftar Santri Berbasis Grid Checklist -->
-                <div id="studentsChecklistBox" style="max-height: 260px; overflow-y: auto; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 10px; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px;">
+                <div id="studentsChecklistBox" style="max-height: 320px; overflow-y: auto; background: #ffffff; border: 1.5px solid #cbd5e1; border-radius: 10px; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;">
                     <?php foreach ($allStudents as $st): ?>
-                        <label class="student-select-item" 
-                               data-grade-id="<?= $st['grade_id'] ?>" 
-                               data-subclass-id="<?= $st['class_group_id'] ?>" 
-                               data-search="<?= strtolower(e($st['student_name'] . ' ' . $st['nis'] . ' ' . $st['class_group_name'])) ?>"
-                               style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px; cursor: pointer; transition: background 0.15s; background: <?= !empty($st['current_mentor_name']) ? '#f8fafc' : '#ffffff' ?>;">
-                            <input type="checkbox" name="student_ids[]" value="<?= $st['student_id'] ?>" class="form-student-checkbox" onchange="updateFormSelectedCount()" style="transform: scale(1.2); cursor: pointer;">
-                            <div style="overflow: hidden; flex: 1;">
-                                <div style="font-weight: 700; color: #0f172a; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                        <div class="student-select-item" 
+                             data-grade-id="<?= $st['grade_id'] ?>" 
+                             data-subclass-id="<?= $st['class_group_id'] ?>" 
+                             data-search="<?= strtolower(e($st['student_name'] . ' ' . $st['nis'] . ' ' . $st['class_group_name'])) ?>"
+                             style="display: flex; flex-direction: row; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1.5px solid #e2e8f0; border-radius: 8px; cursor: pointer; transition: all 0.15s; background: <?= !empty($st['current_mentor_name']) ? '#f8fafc' : '#ffffff' ?>;"
+                             onclick="toggleStudentItemCheckbox(this, event)">
+                            <div style="padding-top: 2px;">
+                                <input type="checkbox" name="student_ids[]" value="<?= $st['student_id'] ?>" class="form-student-checkbox" onchange="updateFormSelectedCount()" style="width: 18px !important; height: 18px !important; min-width: 18px !important; min-height: 18px !important; margin: 0; padding: 0; cursor: pointer; display: inline-block !important;">
+                            </div>
+                            <div style="overflow: hidden; flex: 1; min-width: 0;">
+                                <div style="font-weight: 800; color: #0f172a; font-size: 13px; line-height: 1.35; word-break: break-word;">
                                     <?= e($st['student_name']) ?>
                                 </div>
-                                <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; margin-top: 2px;">
-                                    <span style="font-weight: 700; color: #0284c7; background: #e0f2fe; padding: 1px 5px; border-radius: 4px;">
-                                        <?= e($st['class_group_name']) ?>
+                                <div style="display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #64748b; margin-top: 4px; flex-wrap: wrap;">
+                                    <span style="font-weight: 800; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px;">
+                                        Kelas <?= e($st['class_group_name']) ?>
                                     </span>
-                                    <span>NIS: <?= e($st['nis']) ?></span>
+                                    <span style="font-weight: 600;">NIS: <?= e($st['nis']) ?></span>
                                     <?php if (!empty($st['current_mentor_name'])): ?>
-                                        <span style="color: #10b981; font-weight: 600;" title="Mentor Saat Ini: <?= e($st['current_mentor_name']) ?> (<?= e($st['current_group_name']) ?>)">
-                                            • <?= e(mb_strimwidth($st['current_mentor_name'], 0, 12, '..')) ?>
+                                        <span style="color: #059669; font-weight: 700; background: #ecfdf5; padding: 1px 6px; border-radius: 4px;" title="Mentor Saat Ini: <?= e($st['current_mentor_name']) ?> (<?= e($st['current_group_name']) ?>)">
+                                            <i class="fa-solid fa-check"></i> <?= e(mb_strimwidth($st['current_mentor_name'], 0, 14, '..')) ?>
                                         </span>
                                     <?php endif; ?>
                                 </div>
                             </div>
-                        </label>
+                        </div>
                     <?php endforeach; ?>
                 </div>
             </div>
@@ -819,6 +822,17 @@ function filterStudentsForm() {
     document.getElementById('formVisibleCount').innerText = `Menampilkan ${visibleCount} santri`;
 }
 
+// Checklist Item Santri via Baris Card
+function toggleStudentItemCheckbox(container, event) {
+    // Jika yang diklik langsung checkbox-nya, biarkan event native berjalan
+    if (event.target.type === 'checkbox') return;
+    const cb = container.querySelector('.form-student-checkbox');
+    if (cb) {
+        cb.checked = !cb.checked;
+        updateFormSelectedCount();
+    }
+}
+
 // Checklist Semua yang Terlihat
 function checkAllVisible(check) {
     const items = document.querySelectorAll('.student-select-item');
@@ -887,10 +901,26 @@ function confirmBulkAssign() {
 }
 
 function openEditGroupModal(mentorId, mentorName, groupName) {
-    document.getElementById('modalTargetMentorId').value = mentorId;
-    document.getElementById('modalMentorNameText').innerText = mentorName;
-    document.getElementById('modalNewGroupName').value = groupName;
-    document.getElementById('modalEditGroup').style.display = 'flex';
+    // 1. Set data ke form utama pembuatan/alokasi kelompok
+    document.getElementById('cardFormKelompok').style.display = 'block';
+    document.getElementById('formGroupName').value = groupName;
+    document.getElementById('formMentorUserId').value = mentorId;
+
+    // 2. Centang otomatis santri yang saat ini dibimbing oleh mentor tersebut
+    const items = document.querySelectorAll('.student-select-item');
+    items.forEach(item => {
+        const titleSpan = item.querySelector('span[title]');
+        const cb = item.querySelector('.form-student-checkbox');
+        if (titleSpan && titleSpan.getAttribute('title').includes(mentorName)) {
+            cb.checked = true;
+        } else {
+            cb.checked = false;
+        }
+    });
+    updateFormSelectedCount();
+
+    // 3. Scroll halus ke form kelompok
+    document.getElementById('cardFormKelompok').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function closeEditGroupModal() {
