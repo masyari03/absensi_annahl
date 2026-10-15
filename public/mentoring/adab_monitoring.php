@@ -113,12 +113,24 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     exit;
 }
 
-// TARIK DAFTAR KELAS (untuk dropdown)
-$classesList = $pdo->query("
-    SELECT DISTINCT grade_name FROM student_adab_logs 
-    WHERE grade_name != '' 
-    ORDER BY grade_name ASC
-")->fetchAll(PDO::FETCH_COLUMN);
+// TARIK DAFTAR KELAS (untuk dropdown, disesuaikan dengan lingkup santri)
+if ($isPrivileged) {
+    $classesList = $pdo->query("
+        SELECT DISTINCT grade_name FROM student_adab_logs 
+        WHERE grade_name != '' 
+        ORDER BY grade_name ASC
+    ")->fetchAll(PDO::FETCH_COLUMN);
+} else {
+    $stmtCls = $pdo->prepare("
+        SELECT DISTINCT sal.grade_name 
+        FROM student_adab_logs sal
+        JOIN mentoring_assignments ma ON ma.student_id = sal.student_id
+        WHERE sal.grade_name != '' AND ma.mentor_user_id = ? AND ma.is_active = 1
+        ORDER BY sal.grade_name ASC
+    ");
+    $stmtCls->execute([$userId]);
+    $classesList = $stmtCls->fetchAll(PDO::FETCH_COLUMN);
+}
 
 // DAFTAR GURU MENTOR (untuk filter pimpinan)
 $mentorsList = [];
@@ -179,6 +191,11 @@ require __DIR__ . '/../../includes/header.php';
             </h2>
             <p style="margin: 4px 0 0; color: #64748b; font-size: 13.5px;">
                 Radar kepatuhan amalan adab harian dan rekapitulasi refleksi 4 dimensi santri
+                <?php if (!$isPrivileged): ?>
+                    <span style="display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 800; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0;">
+                        <i class="fa-solid fa-user-shield"></i> Mode Mentor (Kelompok Sendiri)
+                    </span>
+                <?php endif; ?>
             </p>
         </div>
 
