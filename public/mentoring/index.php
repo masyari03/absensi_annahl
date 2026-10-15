@@ -254,10 +254,6 @@ require __DIR__ . '/../../includes/header.php';
                 </a>
             <?php endif; ?>
 
-            <a href="app.php" target="_blank" class="btn" style="padding: 8px 16px; font-size: 13px; font-weight: 800; background: linear-gradient(135deg, #059669 0%, #047857 100%); color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 6px -1px rgba(5,150,105,0.25);">
-                <i class="fa-solid fa-desktop"></i> Buka Tampilan Aplikasi Asli (Full SPA)
-            </a>
-
             <?php if ($isPrivileged): ?>
                 <!-- Filter Pilihan Guru Mentor Khusus Pimpinan -->
                 <form method="GET" style="display: flex; gap: 8px; align-items: center;">
