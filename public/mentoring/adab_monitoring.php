@@ -183,6 +183,83 @@ $adabLogs = $stmtList->fetchAll(PDO::FETCH_ASSOC);
 require __DIR__ . '/../../includes/header.php';
 ?>
 
+<style>
+@media (max-width: 768px) {
+    /* Sembunyikan thead tabel */
+    .responsive-card-table thead {
+        display: none !important;
+    }
+    
+    /* Ubah baris tabel menjadi bentuk Card mandiri */
+    .responsive-card-table, 
+    .responsive-card-table tbody, 
+    .responsive-card-table tr {
+        display: block !important;
+        width: 100% !important;
+    }
+    
+    .responsive-card-table tr {
+        background: #ffffff;
+        border: 1px solid #e2e8f0 !important;
+        border-radius: 14px;
+        padding: 14px 16px !important;
+        margin-bottom: 14px;
+        box-shadow: 0 2px 6px -1px rgba(0, 0, 0, 0.05);
+    }
+    
+    /* Setiap td menjadi flex item dengan label */
+    .responsive-card-table td {
+        display: flex !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+        padding: 8px 0 !important;
+        border-bottom: 1px dashed #f1f5f9 !important;
+        text-align: right !important;
+        white-space: normal !important;
+    }
+    
+    .responsive-card-table td:last-child {
+        border-bottom: none !important;
+        padding-top: 12px !important;
+        margin-top: 6px;
+        justify-content: flex-end !important;
+        gap: 8px;
+    }
+    
+    .responsive-card-table td::before {
+        content: attr(data-label);
+        font-weight: 700;
+        font-size: 11.5px;
+        color: #64748b;
+        text-transform: uppercase;
+        text-align: left;
+        padding-right: 12px;
+        flex-shrink: 0;
+    }
+
+    /* Khusus sel santri utama buat rata kiri penuh */
+    .responsive-card-table td[data-label="Santri"] {
+        display: block !important;
+        text-align: left !important;
+        padding-bottom: 10px !important;
+        border-bottom: 1px solid #e2e8f0 !important;
+    }
+    .responsive-card-table td[data-label="Santri"]::before {
+        display: none !important;
+    }
+
+    /* Refleksi Karakter di mobile */
+    .responsive-card-table td[data-label="Refleksi"] {
+        display: block !important;
+        text-align: left !important;
+    }
+    .responsive-card-table td[data-label="Refleksi"]::before {
+        display: block !important;
+        margin-bottom: 4px;
+    }
+}
+</style>
+
 <div class="content">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;">
         <div>
@@ -291,7 +368,7 @@ require __DIR__ . '/../../includes/header.php';
     <!-- Tabel Data Kepatuhan & Refleksi -->
     <div class="card" style="padding: 20px; border-radius: 16px;">
         <div class="table-responsive">
-            <table class="table" style="width: 100%; border-collapse: collapse;">
+            <table class="table responsive-card-table" style="width: 100%; border-collapse: collapse;">
                 <thead>
                     <tr style="background: #f8fafc; border-bottom: 2px solid #e2e8f0; text-align: left;">
                         <th style="padding: 10px;">Waktu Submit</th>
@@ -326,35 +403,42 @@ require __DIR__ . '/../../includes/header.php';
                             }
                             ?>
                             <tr style="border-bottom: 1px solid #f1f5f9; font-size: 13px;">
-                                <td style="padding: 10px; color: #64748b; font-size: 12px;">
-                                    <?= date('d/m/Y H:i', strtotime($log['submitted_at'])) ?>
-                                </td>
-                                <td style="padding: 10px;">
-                                    <strong><?= e($log['student_name']) ?></strong>
-                                    <div style="font-size: 11px; color: #64748b;">NIS: <?= e($log['nis']) ?></div>
+                                <td data-label="Santri" style="padding: 10px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+                                        <div>
+                                            <strong style="font-size: 14px; color: #0f172a;"><?= e($log['student_name']) ?></strong>
+                                            <div style="font-size: 11px; color: #64748b;">NIS: <?= e($log['nis']) ?></div>
+                                        </div>
+                                        <span style="padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 700; background: #e0f2fe; color: #0369a1;">
+                                            <?= e($log['grade_name']) ?>
+                                        </span>
+                                    </div>
                                     <?php if (!empty($log['group_name'])): ?>
-                                        <div style="margin-top: 2px;">
+                                        <div style="margin-top: 4px;">
                                             <span style="font-size: 10.5px; font-weight: 700; color: #047857; background: #ecfdf5; padding: 1px 6px; border-radius: 4px; border: 1px solid #a7f3d0; display: inline-block;">
                                                 <i class="fa-solid fa-users"></i> <?= e($log['group_name']) ?>
                                             </span>
                                         </div>
                                     <?php endif; ?>
                                 </td>
-                                <td style="padding: 10px;">
+                                <td data-label="Waktu Submit" style="padding: 10px; color: #64748b; font-size: 12px;">
+                                    <?= date('d/m/Y H:i', strtotime($log['submitted_at'])) ?>
+                                </td>
+                                <td data-label="Kelas" style="padding: 10px;">
                                     <span style="padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 700; background: #e0f2fe; color: #0369a1;">
                                         <?= e($log['grade_name']) ?>
                                     </span>
                                 </td>
-                                <td style="padding: 10px;">
-                                    <div style="font-weight: 700; color: #0f172a;"><?= e($log['week_code']) ?></div>
+                                <td data-label="Pekan & Hari" style="padding: 10px;">
+                                    <div style="font-weight: 700; color: #0f172a; display: inline-block; margin-right: 4px;"><?= e($log['week_code']) ?></div>
                                     <span style="font-size: 11.5px; color: #0284c7; font-weight: 600;"><?= e($log['day_name']) ?></span>
                                 </td>
-                                <td style="padding: 10px; text-align: center;">
+                                <td data-label="Checklist" style="padding: 10px; text-align: center;">
                                     <span style="padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 800; background: <?= $checkedCount >= 3 ? '#ecfdf5' : '#fef2f2' ?>; color: <?= $checkedCount >= 3 ? '#065f46' : '#991b1b' ?>;">
-                                        <?= $checkedCount ?> / <?= $totalItems ?>
+                                        <?= $checkedCount ?> / <?= $totalItems ?> Butir
                                     </span>
                                 </td>
-                                <td style="padding: 10px; max-width: 320px;">
+                                <td data-label="Refleksi" style="padding: 10px; max-width: 320px;">
                                     <?php if (!empty($log['reflection_action'])): ?>
                                         <div style="color: #334155; font-size: 12px; line-height: 1.4;">
                                             <strong style="color: #0284c7;">Aksi:</strong> <?= e(mb_strimwidth($log['reflection_action'], 0, 75, '...')) ?>
@@ -369,9 +453,9 @@ require __DIR__ . '/../../includes/header.php';
                                         <span style="color: #cbd5e1; font-style: italic; font-size: 12px;">Refleksi belum diisi</span>
                                     <?php endif; ?>
                                 </td>
-                                <td style="padding: 10px; text-align: right;">
-                                    <button type="button" class="btn btn-secondary" style="padding: 5px 10px; font-size: 12px;" onclick="showReflectionModal(<?= htmlspecialchars(json_encode($log), ENT_QUOTES, 'UTF-8') ?>)">
-                                        <i class="fa-solid fa-eye"></i> Detail
+                                <td data-label="Aksi" style="padding: 10px; text-align: right;">
+                                    <button type="button" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="showReflectionModal(<?= htmlspecialchars(json_encode($log), ENT_QUOTES, 'UTF-8') ?>)">
+                                        <i class="fa-solid fa-eye"></i> Detail Refleksi
                                     </button>
                                 </td>
                             </tr>

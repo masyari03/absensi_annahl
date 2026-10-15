@@ -247,6 +247,63 @@ $studentsList = $stmtStudents->fetchAll(PDO::FETCH_ASSOC);
 require __DIR__ . '/../../includes/header.php';
 ?>
 
+<style>
+@media (max-width: 768px) {
+    .responsive-card-table thead {
+        display: none !important;
+    }
+    .responsive-card-table, 
+    .responsive-card-table tbody, 
+    .responsive-card-table tr {
+        display: block !important;
+        width: 100% !important;
+    }
+    .responsive-card-table tr {
+        background: #ffffff;
+        border: 1px solid #e2e8f0 !important;
+        border-radius: 14px;
+        padding: 14px 16px !important;
+        margin-bottom: 14px;
+        box-shadow: 0 2px 6px -1px rgba(0, 0, 0, 0.05);
+    }
+    .responsive-card-table td {
+        display: flex !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+        padding: 8px 0 !important;
+        border-bottom: 1px dashed #f1f5f9 !important;
+        text-align: right !important;
+        white-space: normal !important;
+    }
+    .responsive-card-table td:last-child {
+        border-bottom: none !important;
+        padding-top: 12px !important;
+        margin-top: 6px;
+        justify-content: flex-end !important;
+        gap: 8px;
+    }
+    .responsive-card-table td::before {
+        content: attr(data-label);
+        font-weight: 700;
+        font-size: 11.5px;
+        color: #64748b;
+        text-transform: uppercase;
+        text-align: left;
+        padding-right: 12px;
+        flex-shrink: 0;
+    }
+    .responsive-card-table td[data-label="Santri"] {
+        display: block !important;
+        text-align: left !important;
+        padding-bottom: 10px !important;
+        border-bottom: 1px solid #e2e8f0 !important;
+    }
+    .responsive-card-table td[data-label="Santri"]::before {
+        display: none !important;
+    }
+}
+</style>
+
 <div class="content">
     <!-- Header Title & Action -->
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;">
@@ -624,7 +681,7 @@ require __DIR__ . '/../../includes/header.php';
 
             <!-- Tabel Data -->
             <div class="table-responsive">
-                <table class="table" style="width: 100%; border-collapse: collapse;">
+                <table class="table responsive-card-table" style="width: 100%; border-collapse: collapse;">
                     <thead>
                         <tr style="background: #f8fafc; border-bottom: 2px solid #e2e8f0; text-align: left;">
                             <th style="padding: 12px; width: 40px; text-align: center;">#</th>
@@ -646,25 +703,32 @@ require __DIR__ . '/../../includes/header.php';
                         <?php else: ?>
                             <?php foreach ($studentsList as $st): ?>
                                 <tr style="border-bottom: 1px solid #f1f5f9; font-size: 13px;">
-                                    <td style="padding: 12px; text-align: center;">
-                                        <input type="checkbox" name="student_ids[]" value="<?= $st['student_id'] ?>" class="student-checkbox" style="transform: scale(1.15); cursor: pointer;" onchange="updateSelectedCount()">
+                                    <td data-label="Santri" style="padding: 12px;">
+                                        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+                                            <div style="display: flex; align-items: center; gap: 10px;">
+                                                <input type="checkbox" name="student_ids[]" value="<?= $st['student_id'] ?>" class="student-checkbox" style="transform: scale(1.15); cursor: pointer; width: 18px !important; height: 18px !important; min-width: 18px;" onchange="updateSelectedCount()">
+                                                <div>
+                                                    <strong style="font-size: 14.5px; color: #0f172a;"><?= e($st['student_name']) ?></strong>
+                                                    <div style="font-size: 11.5px; color: #64748b;">NIS: <?= e($st['nis']) ?></div>
+                                                </div>
+                                            </div>
+                                            <span style="padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; background: #e0f2fe; color: #0369a1;">
+                                                Kelas <?= e($st['class_name'] ?? 'Santri') ?>
+                                            </span>
+                                        </div>
                                     </td>
-                                    <td style="padding: 12px;">
-                                        <strong><?= e($st['student_name']) ?></strong>
-                                        <div style="font-size: 11.5px; color: #64748b;">NIS: <?= e($st['nis']) ?></div>
-                                    </td>
-                                    <td style="padding: 12px;">
+                                    <td data-label="Sub-Kelas" style="padding: 12px;">
                                         <span style="padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; background: #e0f2fe; color: #0369a1;">
                                             Kelas <?= e($st['class_name'] ?? 'Santri') ?>
                                         </span>
                                     </td>
-                                    <td style="padding: 12px;">
+                                    <td data-label="Halaqah" style="padding: 12px;">
                                         <span style="padding: 3px 9px; border-radius: 6px; font-size: 12px; font-weight: 600; background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb;">
                                             <i class="fa-solid fa-users-line" style="margin-right: 4px; color: #9ca3af;"></i>
                                             <?= e($st['group_name'] ?: 'Halaqah Mandiri') ?>
                                         </span>
                                     </td>
-                                    <td style="padding: 12px;">
+                                    <td data-label="Mentor" style="padding: 12px;">
                                         <?php if (!empty($st['mentor_name'])): ?>
                                             <div style="display: flex; align-items: center; gap: 8px;">
                                                 <i class="fa-solid fa-circle-check" style="color: #10b981;"></i>
@@ -676,9 +740,9 @@ require __DIR__ . '/../../includes/header.php';
                                             </span>
                                         <?php endif; ?>
                                     </td>
-                                    <td style="padding: 12px; text-align: right;">
-                                        <button type="button" class="btn btn-secondary" style="padding: 5px 10px; font-size: 12px;" onclick="openSingleAssignModal(<?= $st['student_id'] ?>, '<?= e(addslashes($st['student_name'])) ?>', <?= (int)$st['mentor_user_id'] ?>, '<?= e(addslashes($st['group_name'] ?? '')) ?>')">
-                                            <i class="fa-solid fa-user-pen"></i> Edit
+                                    <td data-label="Aksi" style="padding: 12px; text-align: right;">
+                                        <button type="button" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; font-weight: 700;" onclick="openSingleAssignModal(<?= $st['student_id'] ?>, '<?= e(addslashes($st['student_name'])) ?>', <?= (int)$st['mentor_user_id'] ?>, '<?= e(addslashes($st['group_name'] ?? '')) ?>')">
+                                            <i class="fa-solid fa-user-pen"></i> Edit Kelompok
                                         </button>
                                     </td>
                                 </tr>

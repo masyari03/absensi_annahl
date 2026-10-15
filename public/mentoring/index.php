@@ -165,6 +165,73 @@ $recentSessions = $stmtRecent->fetchAll(PDO::FETCH_ASSOC);
 require __DIR__ . '/../../includes/header.php';
 ?>
 
+<style>
+@media (max-width: 768px) {
+    /* Sembunyikan thead tabel */
+    .responsive-card-table thead {
+        display: none !important;
+    }
+    
+    /* Ubah baris tabel menjadi bentuk Card mandiri */
+    .responsive-card-table, 
+    .responsive-card-table tbody, 
+    .responsive-card-table tr {
+        display: block !important;
+        width: 100% !important;
+    }
+    
+    .responsive-card-table tr {
+        background: #ffffff;
+        border: 1px solid #e2e8f0 !important;
+        border-radius: 14px;
+        padding: 14px 16px !important;
+        margin-bottom: 14px;
+        box-shadow: 0 2px 6px -1px rgba(0, 0, 0, 0.05);
+    }
+    
+    /* Setiap td menjadi flex item dengan label */
+    .responsive-card-table td {
+        display: flex !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+        padding: 8px 0 !important;
+        border-bottom: 1px dashed #f1f5f9 !important;
+        text-align: right !important;
+        white-space: normal !important;
+    }
+    
+    .responsive-card-table td:last-child {
+        border-bottom: none !important;
+        padding-top: 12px !important;
+        margin-top: 6px;
+        justify-content: flex-end !important;
+        gap: 8px;
+    }
+    
+    .responsive-card-table td::before {
+        content: attr(data-label);
+        font-weight: 700;
+        font-size: 11.5px;
+        color: #64748b;
+        text-transform: uppercase;
+        text-align: left;
+        padding-right: 12px;
+        flex-shrink: 0;
+    }
+
+    /* Khusus sel santri utama buat rata kiri penuh */
+    .responsive-card-table td[data-label="Santri"] {
+        display: block !important;
+        text-align: left !important;
+        padding-bottom: 10px !important;
+        border-bottom: 1px solid #e2e8f0 !important;
+    }
+    .responsive-card-table td[data-label="Santri"]::before {
+        display: none !important;
+    }
+}
+</style>
+
 <div class="content">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;">
         <div>
@@ -254,7 +321,7 @@ require __DIR__ . '/../../includes/header.php';
         </div>
 
         <div class="table-responsive">
-            <table class="table" style="width: 100%; border-collapse: collapse;">
+            <table class="table responsive-card-table" style="width: 100%; border-collapse: collapse;">
                 <thead>
                     <tr style="background: #f8fafc; border-bottom: 2px solid #e2e8f0; text-align: left;">
                         <th style="padding: 12px;">Santri</th>
@@ -276,45 +343,52 @@ require __DIR__ . '/../../includes/header.php';
                     <?php else: ?>
                         <?php foreach ($mentees as $m): ?>
                             <tr style="border-bottom: 1px solid #f1f5f9;">
-                                <td style="padding: 12px;">
-                                    <strong><?= e($m['name']) ?></strong>
-                                    <div style="font-size: 11.5px; color: #64748b;">NIS: <?= e($m['nis']) ?></div>
+                                <td data-label="Santri" style="padding: 12px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+                                        <div>
+                                            <strong style="font-size: 14.5px; color: #0f172a;"><?= e($m['name']) ?></strong>
+                                            <div style="font-size: 11.5px; color: #64748b;">NIS: <?= e($m['nis']) ?></div>
+                                        </div>
+                                        <span style="padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; background: #e0f2fe; color: #0369a1;">
+                                            <?= e($m['class_name'] ?? 'Santri') ?>
+                                        </span>
+                                    </div>
                                     <?php if (!empty($m['group_name'])): ?>
-                                        <div style="margin-top: 3px;">
+                                        <div style="margin-top: 4px;">
                                             <span style="display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10.5px; font-weight: 700; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0;">
                                                 <i class="fa-solid fa-users"></i> <?= e($m['group_name']) ?>
                                             </span>
                                         </div>
                                     <?php endif; ?>
                                 </td>
-                                <td style="padding: 12px;">
+                                <td data-label="Kelas" style="padding: 12px;">
                                     <span style="padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; background: #e0f2fe; color: #0369a1;">
                                         <?= e($m['class_name'] ?? 'Santri') ?>
                                     </span>
                                 </td>
-                                <td style="padding: 12px;">
+                                <td data-label="Mentor" style="padding: 12px;">
                                     <span style="font-size: 13px; font-weight: 600; color: #334155;">
                                         <?= e($m['mentor_name']) ?>
                                     </span>
                                 </td>
-                                <td style="padding: 12px; text-align: center;">
+                                <td data-label="Total Sesi" style="padding: 12px; text-align: center;">
                                     <span style="font-weight: 800; font-size: 14px; color: #0284c7;">
-                                        <?= $m['total_sessions'] ?>
+                                        <?= $m['total_sessions'] ?> Sesi
                                     </span>
                                 </td>
-                                <td style="padding: 12px; text-align: center;">
+                                <td data-label="Rata-rata Adab" style="padding: 12px; text-align: center;">
                                     <?php if (!empty($m['avg_adab'])): ?>
                                         <span style="padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 800; background: #f3e8ff; color: #7e22ce;">
-                                            <?= $m['avg_adab'] ?>
+                                            <?= $m['avg_adab'] ?> / 10
                                         </span>
                                     <?php else: ?>
                                         <span style="color: #94a3b8;">-</span>
                                     <?php endif; ?>
                                 </td>
-                                <td style="padding: 12px; text-align: center; font-size: 12px; color: #64748b;">
+                                <td data-label="Sesi Terakhir" style="padding: 12px; text-align: center; font-size: 12px; color: #64748b;">
                                     <?= !empty($m['last_session_date']) ? date('d/m/Y', strtotime($m['last_session_date'])) : '<span style="color:#cbd5e1;">Belum ada</span>' ?>
                                 </td>
-                                <td style="padding: 12px; text-align: right; white-space: nowrap;">
+                                <td data-label="Aksi" style="padding: 12px; text-align: right; white-space: nowrap;">
                                     <a href="report.php?student_id=<?= $m['id'] ?>" class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px; font-weight: 700; border-radius: 8px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; margin-right: 4px;" title="Lihat Laporan & Cetak Raport">
                                         <i class="fa-solid fa-print"></i> Raport
                                     </a>
@@ -337,7 +411,7 @@ require __DIR__ . '/../../includes/header.php';
         </h3>
 
         <div class="table-responsive">
-            <table class="table" style="width: 100%; border-collapse: collapse;">
+            <table class="table responsive-card-table" style="width: 100%; border-collapse: collapse;">
                 <thead>
                     <tr style="background: #f8fafc; border-bottom: 2px solid #e2e8f0; text-align: left;">
                         <th style="padding: 10px;">Tanggal / Sesi</th>
@@ -360,30 +434,38 @@ require __DIR__ . '/../../includes/header.php';
                     <?php else: ?>
                         <?php foreach ($recentSessions as $rs): ?>
                             <tr style="border-bottom: 1px solid #f1f5f9; font-size: 12.5px;">
-                                <td style="padding: 10px;">
+                                <td data-label="Santri" style="padding: 10px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+                                        <div>
+                                            <strong style="font-size: 14px; color: #0f172a;"><?= e($rs['student_name']) ?></strong>
+                                            <div style="font-size: 11px; color: #64748b;"><?= e($rs['class_name'] ?? '-') ?></div>
+                                        </div>
+                                        <div style="text-align: right;">
+                                            <strong style="font-size: 12px; color: #334155;"><?= date('d/m/Y', strtotime($rs['session_date'])) ?></strong>
+                                            <div style="font-size: 11px; color: #0284c7; font-weight: 700;"><?= e($rs['session_code']) ?></div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td data-label="Tanggal & Sesi" style="padding: 10px;">
                                     <strong><?= date('d/m/Y', strtotime($rs['session_date'])) ?></strong>
                                     <div style="font-size: 11px; color: #0284c7; font-weight: 700;"><?= e($rs['session_code']) ?></div>
                                 </td>
-                                <td style="padding: 10px;">
-                                    <strong><?= e($rs['student_name']) ?></strong>
-                                    <div style="font-size: 11px; color: #64748b;"><?= e($rs['class_name'] ?? '-') ?></div>
-                                </td>
-                                <td style="padding: 10px; color: #334155;">
+                                <td data-label="Mentor" style="padding: 10px; color: #334155;">
                                     <?= e($rs['mentor_name']) ?>
                                 </td>
-                                <td style="padding: 10px; text-align: center; font-weight: 800; color: #0284c7;">
+                                <td data-label="Skor MIP" style="padding: 10px; text-align: center; font-weight: 800; color: #0284c7;">
                                     <?= !empty($rs['score_mip']) ? $rs['score_mip'] : '-' ?>
                                 </td>
-                                <td style="padding: 10px; text-align: center; font-weight: 800; color: #10b981;">
+                                <td data-label="Skor Akademik" style="padding: 10px; text-align: center; font-weight: 800; color: #10b981;">
                                     <?= !empty($rs['score_academic']) ? $rs['score_academic'] : '-' ?>
                                 </td>
-                                <td style="padding: 10px; text-align: center; font-weight: 800; color: #f59e0b;">
+                                <td data-label="Skor Mutaba'ah" style="padding: 10px; text-align: center; font-weight: 800; color: #f59e0b;">
                                     <?= !empty($rs['score_mutabaah']) ? $rs['score_mutabaah'] : '-' ?>
                                 </td>
-                                <td style="padding: 10px; text-align: center; font-weight: 800; color: #8b5cf6;">
+                                <td data-label="Skor Adab" style="padding: 10px; text-align: center; font-weight: 800; color: #8b5cf6;">
                                     <?= !empty($rs['score_adab']) ? $rs['score_adab'] : '-' ?>
                                 </td>
-                                <td style="padding: 10px; color: #475569; max-width: 250px;">
+                                <td data-label="Catatan" style="padding: 10px; color: #475569; max-width: 250px;">
                                     <?= !empty($rs['notes_feedback']) ? e(mb_strimwidth($rs['notes_feedback'], 0, 80, '...')) : '-' ?>
                                 </td>
                             </tr>
