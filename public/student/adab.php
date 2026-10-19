@@ -1,6 +1,35 @@
 <?php
-$pageTitle = 'Pembiasaan Adab & Refleksi Santri';
-require_once __DIR__ . '/includes/header.php';
+ob_start();
+
+require_once __DIR__ . '/../../config/config.php';
+require_once __DIR__ . '/../../config/database.php';
+require_once __DIR__ . '/../../config/auth.php';
+require_once __DIR__ . '/../../config/security.php';
+require_once __DIR__ . '/../../includes/functions.php';
+
+requireStudent();
+
+$currentUserId = (int)$_SESSION['user_id'];
+$studentId = (int)($_SESSION['student_id'] ?? 0);
+
+if ($studentId <= 0 && $currentUserId > 0) {
+    $stmtFind = $pdo->prepare("SELECT student_id FROM users WHERE id = ?");
+    $stmtFind->execute([$currentUserId]);
+    $studentId = (int)$stmtFind->fetchColumn();
+    $_SESSION['student_id'] = $studentId;
+}
+
+// Tarik data kelas siswa saat ini
+$stmtStudent = $pdo->prepare("
+    SELECT s.*, cg.name as class_name, g.grade
+    FROM students s
+    LEFT JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
+    LEFT JOIN class_groups cg ON cg.id = se.class_group_id
+    LEFT JOIN grades g ON g.id = cg.grade_id
+    WHERE s.id = ? LIMIT 1
+");
+$stmtStudent->execute([$studentId]);
+$studentData = $stmtStudent->fetch(PDO::FETCH_ASSOC);
 
 // Tentukan Tingkat Kelas (7, 8, atau 9)
 $className = $studentData['class_name'] ?? '';
@@ -44,7 +73,6 @@ $monthName = $monthsList[$selectedMonth] ?? 'Bulan ' . $selectedMonth;
 $activeAyId = (int)$pdo->query("SELECT id FROM academic_years WHERE status = 'active' LIMIT 1")->fetchColumn() ?: 1;
 
 // Tarik Materi Kurikulum Sesuai Jenjang, Pekan, Bulan & Tahun Pelajaran Aktif
-// Gunakan fallback cerdas: cari yang cocok bulan ini, jika belum diset per bulan maka ambil default pekan terkait
 $stmtCurr = $pdo->prepare("
     SELECT * FROM mentoring_curriculums 
     WHERE grade_level = ? AND week_code = ? AND is_active = 1
@@ -81,7 +109,7 @@ if ($existingLog && !empty($existingLog['checklist_json'])) {
     }
 }
 
-// PROSES SUBMIT FORM
+// PROSES SUBMIT FORM (SEBELUM HEADER HTML RENDERED)
 $successMessage = '';
 $errorMessage = '';
 
@@ -92,9 +120,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 
     if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
-        setFlash('danger', 'Sesi telah kadaluarsa. Silakan ulangi kembali.');
-        header("Location: adab.php?month=" . $selectedMonth . "&week=" . urlencode($selectedWeek) . "&day=" . urlencode($selectedDay));
-        exit;
+        flash('danger', 'Sesi telah kadaluarsa. Silakan ulangi kembali.');
+        redirect("adab.php?month=" . $selectedMonth . "&week=" . urlencode($selectedWeek) . "&day=" . urlencode($selectedDay));
     }
 
     $postDay = $_POST['day'] ?? $selectedDay;
@@ -165,19 +192,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             ]);
         }
 
-        setFlash('success', 'Alhamdulillah! Catatan pembiasaan adab dan refleksi Anda berhasil disimpan.');
-        header("Location: adab.php?month=" . $selectedMonth . "&week=" . urlencode($selectedWeek) . "&day=" . urlencode($selectedDay));
-        exit;
+        flash('success', 'Alhamdulillah! Catatan pembiasaan adab dan refleksi Anda berhasil disimpan.');
+        redirect("adab.php?month=" . $selectedMonth . "&week=" . urlencode($selectedWeek) . "&day=" . urlencode($selectedDay));
     } catch (Exception $e) {
         $errorMessage = 'Gagal menyimpan data: ' . $e->getMessage();
     }
 }
+
+// SETELAH POST SELESAI DIPROSES, BARU INCLUDE HEADER VIEW HTML
+$pageTitle = 'Pembiasaan Adab & Refleksi Santri';
+require_once __DIR__ . '/includes/header.php';
 ?>
 
 <div style="display: flex; flex-direction: column; gap: 20px;">
 
     <!-- Flash message -->
-    <?php if ($flash): ?>
+    <?php $flash = $flash ?? getFlash(); if ($flash): ?>
         <div class="alert alert-<?= $flash['type'] === 'success' ? 'success' : 'danger' ?>" style="display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: 12px; background: <?= $flash['type'] === 'success' ? '#ecfdf5' : '#fef2f2' ?>; color: <?= $flash['type'] === 'success' ? '#065f46' : '#991b1b' ?>; border: 1px solid <?= $flash['type'] === 'success' ? '#a7f3d0' : '#fecaca' ?>;">
             <i class="fa-solid <?= $flash['type'] === 'success' ? 'fa-circle-check' : 'fa-circle-exclamation' ?>" style="font-size: 18px;"></i>
             <span style="font-size: 13.5px; font-weight: 600;"><?= e($flash['message']) ?></span>

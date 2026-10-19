@@ -6,6 +6,10 @@ require_once __DIR__ . '/../../config/security.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
 requireLogin();
+if (($_SESSION['role'] ?? '') === 'siswa') {
+    header('Location: ../student/adab.php');
+    exit;
+}
 
 $pageTitle = 'Pemantauan Pembiasaan Adab & Refleksi Santri';
 $currentRole = currentRole();
@@ -28,13 +32,17 @@ $params = [];
 
 // Jika role mentor biasa (atau pimpinan memilih filter mentor), kunci ke santri binaan mentor tersebut
 if ($filterMentor > 0) {
+    $linkedMentorIds = getMentorLinkedUserIds($pdo, $filterMentor);
+    $inQ = implode(',', array_fill(0, count($linkedMentorIds), '?'));
     $where[] = "EXISTS (
         SELECT 1 FROM mentoring_assignments ma 
         WHERE ma.student_id = sal.student_id 
-          AND ma.mentor_user_id = ? 
+          AND ma.mentor_user_id IN ($inQ) 
           AND ma.is_active = 1
     )";
-    $params[] = $filterMentor;
+    foreach ($linkedMentorIds as $lId) {
+        $params[] = $lId;
+    }
 }
 
 if ($filterClass !== '') {
@@ -121,14 +129,16 @@ if ($isPrivileged) {
         ORDER BY grade_name ASC
     ")->fetchAll(PDO::FETCH_COLUMN);
 } else {
+    $linkedMentorIds = getMentorLinkedUserIds($pdo, $userId);
+    $inQ = implode(',', array_fill(0, count($linkedMentorIds), '?'));
     $stmtCls = $pdo->prepare("
         SELECT DISTINCT sal.grade_name 
         FROM student_adab_logs sal
         JOIN mentoring_assignments ma ON ma.student_id = sal.student_id
-        WHERE sal.grade_name != '' AND ma.mentor_user_id = ? AND ma.is_active = 1
+        WHERE sal.grade_name != '' AND ma.mentor_user_id IN ($inQ) AND ma.is_active = 1
         ORDER BY sal.grade_name ASC
     ");
-    $stmtCls->execute([$userId]);
+    $stmtCls->execute($linkedMentorIds);
     $classesList = $stmtCls->fetchAll(PDO::FETCH_COLUMN);
 }
 

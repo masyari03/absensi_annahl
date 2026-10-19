@@ -7,8 +7,8 @@ require_once __DIR__ . '/../../includes/functions.php';
 
 requireLogin();
 
-// Hanya Super Admin & Kepala Sekolah yang boleh mengelola pembagian mentor
-if (!in_array(currentRole(), ['super_admin', 'kepala_sekolah'])) {
+// Hanya Super Admin, Admin, dan Kepala Sekolah yang boleh mengelola pembagian mentor
+if (!in_array(currentRole(), ['super_admin', 'admin', 'kepala_sekolah'])) {
     flash('danger', 'Anda tidak memiliki hak akses untuk mengelola pembagian kelompok mentoring.');
     redirect('index.php');
 }

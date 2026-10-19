@@ -7,9 +7,9 @@ require_once __DIR__ . '/../../includes/functions.php';
 
 requireLogin();
 
-// Hanya Super Admin & Kepala Sekolah yang boleh mengelola kurikulum
-if (!in_array(currentRole(), ['super_admin', 'kepala_sekolah'])) {
-    flash('danger', 'Anda tidak memiliki hak akses untuk mengelola master kurikulum.');
+// Hanya Super Admin, Admin, dan Kepala Sekolah yang boleh mengelola kurikulum adab
+if (!in_array(currentRole(), ['super_admin', 'admin', 'kepala_sekolah'])) {
+    flash('danger', 'Anda tidak memiliki hak akses untuk mengelola kurikulum adab.');
     redirect('index.php');
 }
 

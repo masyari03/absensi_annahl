@@ -6,9 +6,13 @@ require_once __DIR__ . '/../../config/security.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
 requireLogin();
+if (($_SESSION['role'] ?? '') === 'siswa') {
+    header('Location: ../student/mentoring_notes.php');
+    exit;
+}
 
 $pageTitle = 'Laporan & Raport Mentoring Siswa';
-$isPrivileged = in_array(currentRole(), ['super_admin', 'kepala_sekolah']);
+$isPrivileged = in_array(currentRole(), ['super_admin', 'admin', 'kepala_sekolah']);
 $currentUserId = currentUserId();
 
 // 1. FILTER TAHUN PELAJARAN, BULAN & MENTOR
@@ -63,8 +67,12 @@ $sqlMentees = "
 ";
 $paramsMentees = [$filterAyId];
 if ($filterMentor > 0) {
-    $sqlMentees .= " AND ma.mentor_user_id = ?";
-    $paramsMentees[] = $filterMentor;
+    $linkedMentorIds = getMentorLinkedUserIds($pdo, $filterMentor);
+    $inQ = implode(',', array_fill(0, count($linkedMentorIds), '?'));
+    $sqlMentees .= " AND ma.mentor_user_id IN ($inQ)";
+    foreach ($linkedMentorIds as $lId) {
+        $paramsMentees[] = $lId;
+    }
 }
 if (!empty($filterClass)) {
     $sqlMentees .= " AND cg.name = ?";

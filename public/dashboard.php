@@ -6,6 +6,10 @@ require_once '../config/config.php';
 require_once '../includes/functions.php';
 
 requireLogin();
+if (($_SESSION['role'] ?? '') === 'siswa') {
+    header('Location: student/dashboard.php');
+    exit;
+}
 $pageTitle = 'Dashboard';
 $role = $_SESSION['role'];
 $userId = currentUserId();

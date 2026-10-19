@@ -13,7 +13,12 @@ if (!function_exists('cal_days_in_month')) {
 
 if (!function_exists('redirect')) {
     function redirect($url) {
-        header('Location: ' . $url);
+        if (!headers_sent()) {
+            header('Location: ' . $url);
+            exit;
+        }
+        echo '<script>window.location.href = ' . json_encode($url) . ';</script>';
+        echo '<noscript><meta http-equiv="refresh" content="0;url=' . htmlspecialchars($url, ENT_QUOTES, 'UTF-8') . '"></noscript>';
         exit;
     }
 }
@@ -38,6 +43,12 @@ if (!function_exists('getFlash')) {
         $flash = $_SESSION['flash'] ?? null;
         unset($_SESSION['flash']);
         return $flash;
+    }
+}
+
+if (!function_exists('setFlash')) {
+    function setFlash($type, $message) {
+        flash($type, $message);
     }
 }
 
@@ -1457,5 +1468,59 @@ if (!function_exists('getAttendanceSessionLimits')) {
             'tutupPulang' => $tutupPulang,
             'batasTerlaluLamaDetik' => $batasTerlaluLamaDetik
         ];
+    }
+}
+
+/**
+ * Resolusi ID Akun Mentor Terhubung (Official NIP User ID & Akun Duplikat/Alias)
+ * Memastikan bila guru mentor login menggunakan NIP maupun username nama,
+ * sistem secara otomatis menarik santri binaan sesuai kelompoknya.
+ */
+if (!function_exists('getMentorLinkedUserIds')) {
+    function getMentorLinkedUserIds(PDO $pdo, int $userId): array
+    {
+        if ($userId <= 0) {
+            return [];
+        }
+
+        // Peta relasi akun resmi NIP vs akun cadangan/alias hasil import sheet
+        static $aliasMap = [
+            // Abdul Azis Hawari, S.Pd
+            8      => [8, 100132],
+            100132 => [8, 100132],
+            // Achmad Arizal Hamdhani Batamas Putra S.Pd
+            22     => [22, 100139],
+            100139 => [22, 100139],
+            // M. Munarul Hidayat, S.Pd
+            19     => [19, 100134],
+            100134 => [19, 100134],
+            // Muhammad Nauval Hamdi, M.Pd (User 32 aktif, 24 staff alt, 100137 dup)
+            32     => [32, 24, 100137],
+            24     => [32, 24, 100137],
+            100137 => [32, 24, 100137],
+            // R. Lina Pratiwi Putri, S.P.
+            20     => [20, 100136],
+            100136 => [20, 100136],
+            // Restu, S.Pd.
+            23     => [23, 100138],
+            100138 => [23, 100138],
+            // Surniyah Suta, S.Pd
+            16     => [16, 100127],
+            100127 => [16, 100127],
+            // Widia Utami Ningsih, S.Pd.
+            38     => [38, 100128],
+            100128 => [38, 100128],
+            // Subaehah
+            17     => [17, 100133],
+            100133 => [17, 100133],
+            // Eko Sukristian Adi Nugeroho, M.Pd
+            13     => [13, 100135],
+            100135 => [13, 100135],
+            // Ade Iwan, S.Sy
+            25     => [25, 100142],
+            100142 => [25, 100142],
+        ];
+
+        return $aliasMap[$userId] ?? [$userId];
     }
 }

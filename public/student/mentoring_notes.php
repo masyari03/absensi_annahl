@@ -34,7 +34,7 @@ $counts = ['mip' => 0, 'academic' => 0, 'mutabaah' => 0, 'adab' => 0];
 foreach ($sessions as $s) {
     if (!empty($s['score_mip'])) { $avgScores['mip'] += (float)$s['score_mip']; $counts['mip']++; }
     if (!empty($s['score_academic'])) { $avgScores['academic'] += (float)$s['score_academic']; $counts['academic']++; }
-    if (!empty($s['score_mutabaah'])) { $avgScores['score_mutabaah'] = ($avgScores['mutabaah'] ?? 0) + (float)$s['score_mutabaah']; $counts['mutabaah']++; }
+    if (!empty($s['score_mutabaah'])) { $avgScores['mutabaah'] += (float)$s['score_mutabaah']; $counts['mutabaah']++; }
     if (!empty($s['score_adab'])) { $avgScores['adab'] += (float)$s['score_adab']; $counts['adab']++; }
 }
 foreach ($avgScores as $k => $v) {

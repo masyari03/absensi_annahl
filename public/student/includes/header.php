@@ -1,5 +1,8 @@
 <?php
 // public/student/includes/header.php
+if (ob_get_level() === 0) {
+    ob_start();
+}
 require_once __DIR__ . '/../../../config/config.php';
 require_once __DIR__ . '/../../../config/database.php';
 require_once __DIR__ . '/../../../config/auth.php';
@@ -13,6 +16,13 @@ $flash = getFlash();
 
 $currentUserId = (int)$_SESSION['user_id'];
 $studentId = (int)($_SESSION['student_id'] ?? 0);
+
+if ($studentId <= 0 && $currentUserId > 0) {
+    $stmtFind = $pdo->prepare("SELECT student_id FROM users WHERE id = ?");
+    $stmtFind->execute([$currentUserId]);
+    $studentId = (int)$stmtFind->fetchColumn();
+    $_SESSION['student_id'] = $studentId;
+}
 
 // Tarik data lengkap siswa dari DB
 $stmtStudent = $pdo->prepare("
@@ -226,16 +236,12 @@ $studentPhoto = $studentData['photo'] ?? $studentData['user_photo'] ?? null;
     .student-profile-btn small {
         display: none !important;
     }
-    .main {
-        margin-left: 0 !important;
-        width: 100% !important;
-    }
 }
 </style>
 </head>
 <body style="background: #f8fafc; margin: 0; font-family: system-ui, -apple-system, sans-serif;">
 
-<div class="sidebar-overlay" id="studentSidebarOverlay" onclick="closeStudentSidebar(event)"></div>
+<div class="sidebar-overlay" id="studentSidebarOverlay" onclick="toggleStudentSidebar()"></div>
 
 <div class="app">
     <?php require_once __DIR__ . '/sidebar.php'; ?>
@@ -391,50 +397,12 @@ $studentPhoto = $studentData['photo'] ?? $studentData['user_photo'] ?? null;
 <?php endif; ?>
 
 <script>
-window.openStudentSidebar = function() {
+function toggleStudentSidebar() {
     const sb = document.getElementById('studentSidebar');
     const ov = document.getElementById('studentSidebarOverlay');
-    if (sb) sb.classList.add('active');
-    if (ov) ov.classList.add('active');
-    document.body.style.overflow = 'hidden';
-};
-
-window.closeStudentSidebar = function(e) {
-    if (e) {
-        if (typeof e.stopPropagation === 'function') e.stopPropagation();
-        if (typeof e.preventDefault === 'function') e.preventDefault();
-    }
-    const sb = document.getElementById('studentSidebar');
-    const ov = document.getElementById('studentSidebarOverlay');
-    if (sb) sb.classList.remove('active');
-    if (ov) ov.classList.remove('active');
-    document.body.style.overflow = '';
-};
-
-window.toggleStudentSidebar = function(e) {
-    if (e) {
-        if (typeof e.stopPropagation === 'function') e.stopPropagation();
-        if (typeof e.preventDefault === 'function') e.preventDefault();
-    }
-    const sb = document.getElementById('studentSidebar');
-    if (sb && sb.classList.contains('active')) {
-        window.closeStudentSidebar(e);
-    } else {
-        window.openStudentSidebar();
-    }
-};
-
-document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') {
-        window.closeStudentSidebar();
-    }
-});
-
-window.addEventListener('resize', function() {
-    if (window.innerWidth > 992) {
-        window.closeStudentSidebar();
-    }
-});
+    if (sb) sb.classList.toggle('active');
+    if (ov) ov.classList.toggle('active');
+}
 
 function toggleStudentDropdown(e) {
     e.stopPropagation();
