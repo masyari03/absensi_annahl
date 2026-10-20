@@ -13,19 +13,19 @@ $httpHost = $_SERVER['HTTP_HOST'] ?? 'localhost';
 // Deteksi subdirektori aplikasi (misal: /absensi-anak di Laragon, atau root di subdomain live)
 $subPath = '';
 if (!empty($_SERVER['DOCUMENT_ROOT'])) {
-    $docRoot = str_replace('\', '/', realpath($_SERVER['DOCUMENT_ROOT']) ?: $_SERVER['DOCUMENT_ROOT']);
-    $appRoot = str_replace('\', '/', dirname(__DIR__));
+    $docRoot = str_replace('\\', '/', realpath($_SERVER['DOCUMENT_ROOT']) ?: $_SERVER['DOCUMENT_ROOT']);
+    $appRoot = str_replace('\\', '/', dirname(__DIR__));
     if ($docRoot && strpos($appRoot, $docRoot) === 0) {
         $subPath = substr($appRoot, strlen($docRoot));
     }
 }
 if ($subPath === '' && isset($_SERVER['SCRIPT_NAME'])) {
-    $scriptDir = str_replace('\', '/', dirname($_SERVER['SCRIPT_NAME']));
+    $scriptDir = str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME']));
     if (strpos($scriptDir, '/public') !== false) {
         $subPath = substr($scriptDir, 0, strpos($scriptDir, '/public'));
     }
 }
-$subPath = rtrim(str_replace('\', '/', $subPath), '/');
+$subPath = rtrim(str_replace('\\', '/', $subPath), '/');
 
 if (!defined('BASE_URL')) {
     define('BASE_URL', getenv('APP_BASE_URL') ?: ($subPath ? ($scheme . $httpHost . $subPath . '/public') : '/public'));
@@ -78,15 +78,16 @@ if (!defined('SCHOOL_RADIUS_METERS')) {
     define('SCHOOL_RADIUS_METERS', (int)(getenv('SCHOOL_RADIUS_METERS') ?: 250));
 }
 
-// PSR-4 Autoloader untuk namespace Appspl_autoload_register(function ($class) {
-    $prefix = 'App\';
+// PSR-4 Autoloader untuk namespace App
+spl_autoload_register(function ($class) {
+    $prefix = 'App\\';
     $baseDir = dirname(__DIR__) . '/src/';
     $len = strlen($prefix);
     if (strncmp($prefix, $class, $len) !== 0) {
         return;
     }
     $relativeClass = substr($class, $len);
-    $file = $baseDir . str_replace('\', '/', $relativeClass) . '.php';
+    $file = $baseDir . str_replace('\\', '/', $relativeClass) . '.php';
     if (file_exists($file)) {
         require_once $file;
     }

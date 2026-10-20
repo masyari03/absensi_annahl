@@ -10,9 +10,10 @@ if (($_SESSION['role'] ?? '') === 'siswa') {
     header('Location: ../student/mentoring_notes.php');
     exit;
 }
+requireMenuAccess('mentoring_report');
 
 $pageTitle = 'Laporan & Raport Mentoring Siswa';
-$isPrivileged = in_array(currentRole(), ['super_admin', 'admin', 'kepala_sekolah']);
+$isPrivileged = in_array(currentRole(), ['super_admin', 'admin', 'kepala_sekolah']) || hasMenuAccess('mentoring_assignments');
 $currentUserId = currentUserId();
 
 // 1. FILTER TAHUN PELAJARAN, BULAN & MENTOR
@@ -51,8 +52,40 @@ foreach ($academicYears as $ay) {
     }
 }
 
-// 2. DAFTAR GURU MENTOR & KELAS
-$mentorsList = $pdo->query("SELECT id, name FROM users WHERE role IN ('staff', 'admin', 'kepala_sekolah') ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+// 2. DAFTAR GURU MENTOR (Deduplikasi Akun Guru Berdasarkan Nama & Memiliki Penugasan Aktif)
+$stmtMentors = $pdo->prepare("
+    SELECT MIN(u.id) as id, TRIM(u.name) as name, COUNT(ma.id) as total_mentees
+    FROM users u
+    INNER JOIN mentoring_assignments ma ON ma.mentor_user_id = u.id AND ma.is_active = 1
+    WHERE (ma.academic_year_id = ? OR ? = 0)
+    GROUP BY TRIM(u.name)
+    ORDER BY TRIM(u.name) ASC
+");
+$stmtMentors->execute([$filterAyId, $filterAyId]);
+$mentorsList = $stmtMentors->fetchAll(PDO::FETCH_ASSOC);
+
+// Fallback: Jika belum ada penugasan di TP ini, ambil dari semua TP
+if (empty($mentorsList)) {
+    $mentorsList = $pdo->query("
+        SELECT MIN(u.id) as id, TRIM(u.name) as name, COUNT(ma.id) as total_mentees
+        FROM users u
+        INNER JOIN mentoring_assignments ma ON ma.mentor_user_id = u.id AND ma.is_active = 1
+        GROUP BY TRIM(u.name)
+        ORDER BY TRIM(u.name) ASC
+    ")->fetchAll(PDO::FETCH_ASSOC);
+}
+
+// Fallback kedua: Jika tabel penugasan masih kosong
+if (empty($mentorsList)) {
+    $mentorsList = $pdo->query("
+        SELECT MIN(id) as id, TRIM(name) as name, 0 as total_mentees
+        FROM users 
+        WHERE role IN ('staff', 'admin', 'kepala_sekolah')
+        GROUP BY TRIM(name)
+        ORDER BY TRIM(name) ASC
+    ")->fetchAll(PDO::FETCH_ASSOC);
+}
+
 $classGroups = $pdo->query("SELECT id, name FROM class_groups ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
 
 // 3. DAFTAR SELURUH SANTRI SESUAI FILTER
@@ -67,11 +100,12 @@ $sqlMentees = "
 ";
 $paramsMentees = [$filterAyId];
 if ($filterMentor > 0) {
-    $linkedMentorIds = getMentorLinkedUserIds($pdo, $filterMentor);
+    // Ambil SEMUA akun milik mentor tersebut (mencegah santri terputus akibat akun duplikat NIP vs Nama)
+    $linkedMentorIds = getMentorAllAccountIds($pdo, $filterMentor);
     $inQ = implode(',', array_fill(0, count($linkedMentorIds), '?'));
     $sqlMentees .= " AND ma.mentor_user_id IN ($inQ)";
     foreach ($linkedMentorIds as $lId) {
-        $paramsMentees[] = $lId;
+        $paramsMentees[] = (int)$lId;
     }
 }
 if (!empty($filterClass)) {
@@ -141,6 +175,19 @@ if ($selectedStudentId > 0) {
 
     foreach ($allSessionsForStudent as $s) {
         $pKey = strtoupper(trim($s['week_code'] ?? ''));
+        if (empty($pKey) || !in_array($pKey, ['P1', 'P2', 'P3', 'P4'])) {
+            $rawStr = ($s['week_code'] ?? '') . ' ' . ($s['session_code'] ?? '');
+            if (preg_match('/Pekan\s*1\b|P1\b/i', $rawStr)) {
+                $pKey = 'P1';
+            } elseif (preg_match('/Pekan\s*2\b|P2\b/i', $rawStr)) {
+                $pKey = 'P2';
+            } elseif (preg_match('/Pekan\s*3\b|P3\b/i', $rawStr)) {
+                $pKey = 'P3';
+            } elseif (preg_match('/Pekan\s*4\b|P4\b/i', $rawStr)) {
+                $pKey = 'P4';
+            }
+        }
+
         if (in_array($pKey, ['P1', 'P2', 'P3', 'P4'])) {
             $pekanData[$pKey] = $s;
         } elseif (empty($pekanData['P1'])) {
@@ -614,7 +661,8 @@ require __DIR__ . '/../../includes/header.php';
                                 <!-- Tiang Bar Chart -->
                                 <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; align-items: flex-end; height: 50px; padding: 2px 0;">
                                     <?php foreach ($scores as $s): 
-                                        $heightPct = $s !== null ? min(100, max(15, round(($s / 10) * 100))) : 0;
+                                        $scaleMax = ($aspect['key'] === 'score_adab' || ($avgText !== '-' && (float)$avgText > 10)) ? 100 : 10;
+                                        $heightPct = $s !== null ? min(100, max(15, round(($s / $scaleMax) * 100))) : 0;
                                     ?>
                                         <div style="width: 100%; height: 100%; background-color: #f1f5f9 !important; border-radius: 3px 3px 0 0; display: flex; align-items: flex-end; overflow: hidden;">
                                             <div class="print-bar-fill" style="width: 100%; height: <?= $heightPct ?>%; background-color: <?= $aspect['hex'] ?> !important; border-radius: 3px 3px 0 0;"></div>
@@ -634,7 +682,7 @@ require __DIR__ . '/../../includes/header.php';
                             <!-- Footer Diagram -->
                             <div style="display: flex; justify-content: space-between; align-items: center; font-size: 9px; color: #475569;">
                                 <span>Rata-rata: <strong style="color: #0f172a; font-weight: 900;"><?= $avgText ?></strong></span>
-                                <span style="color: #94a3b8; font-size: 8px;">Skala 10</span>
+                                <span style="color: #94a3b8; font-size: 8px;"><?= ($aspect['key'] === 'score_adab' || ($avgText !== '-' && (float)$avgText > 10)) ? 'Skala 100' : 'Skala 10' ?></span>
                             </div>
                         </div>
                     <?php endforeach; ?>

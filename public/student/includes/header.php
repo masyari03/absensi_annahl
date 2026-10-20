@@ -236,6 +236,11 @@ $studentPhoto = $studentData['photo'] ?? $studentData['user_photo'] ?? null;
     .student-profile-btn small {
         display: none !important;
     }
+    .main {
+        margin-left: 0 !important;
+        width: 100% !important;
+        max-width: 100vw !important;
+    }
 }
 </style>
 </head>

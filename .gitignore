@@ -5,6 +5,13 @@
 *.7z
 *.log
 
+# Environment & Secrets
+.env*
+*.pem
+*.key
+credentials*.json
+*.sql.gz
+
 # Uploads directory (keep directory with .gitkeep, ignore uploaded images)
 /uploads/admins/*
 !/uploads/admins/.gitkeep

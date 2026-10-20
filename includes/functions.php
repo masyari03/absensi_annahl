@@ -1524,3 +1524,42 @@ if (!function_exists('getMentorLinkedUserIds')) {
         return $aliasMap[$userId] ?? [$userId];
     }
 }
+
+/**
+ * Mengambil seluruh user ID yang berelasi dengan mentor:
+ * Mencakup user ID asli, alias ID, serta seluruh akun yang memiliki kesamaan nama lengkap.
+ * Mencegah data santri binaan terputus bila ada akun duplikat hasil import sheet.
+ */
+if (!function_exists('getMentorAllAccountIds')) {
+    function getMentorAllAccountIds(PDO $pdo, int $userId): array
+    {
+        if ($userId <= 0) {
+            return [];
+        }
+
+        $ids = [$userId];
+
+        try {
+            $stmt = $pdo->prepare("SELECT TRIM(name) FROM users WHERE id = ? LIMIT 1");
+            $stmt->execute([$userId]);
+            $name = $stmt->fetchColumn();
+
+            if (!empty($name)) {
+                $stmtAll = $pdo->prepare("SELECT id FROM users WHERE TRIM(name) = ?");
+                $stmtAll->execute([$name]);
+                $sameNameIds = $stmtAll->fetchAll(PDO::FETCH_COLUMN);
+                if (!empty($sameNameIds)) {
+                    $ids = array_merge($ids, $sameNameIds);
+                }
+            }
+        } catch (Exception $e) {
+            // Null safety
+        }
+
+        if (function_exists('getMentorLinkedUserIds')) {
+            $ids = array_merge($ids, getMentorLinkedUserIds($pdo, $userId));
+        }
+
+        return array_values(array_unique(array_map('intval', $ids)));
+    }
+}

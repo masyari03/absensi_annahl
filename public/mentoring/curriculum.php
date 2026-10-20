@@ -7,11 +7,7 @@ require_once __DIR__ . '/../../includes/functions.php';
 
 requireLogin();
 
-// Hanya Super Admin, Admin, dan Kepala Sekolah yang boleh mengelola kurikulum adab
-if (!in_array(currentRole(), ['super_admin', 'admin', 'kepala_sekolah'])) {
-    flash('danger', 'Anda tidak memiliki hak akses untuk mengelola kurikulum adab.');
-    redirect('index.php');
-}
+requireMenuAccess('mentoring_curriculum');
 
 $pageTitle = 'Master Kurikulum Adab Santri';
 
@@ -68,27 +64,90 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $description  = trim($_POST['description'] ?? '');
     $fileLink     = trim($_POST['file_link'] ?? '');
 
-    $task1 = trim($_POST['task_1'] ?? '');
-    $task2 = trim($_POST['task_2'] ?? '');
-    $task3 = trim($_POST['task_3'] ?? '');
-    $task4 = trim($_POST['task_4'] ?? '');
+    // Hari aktif pemantauan adab (fleksibel diseting pimpinan: misal Rabu, Kamis, Jumat)
+    $activeDays = $_POST['active_days'] ?? ['Rabu', 'Kamis', 'Jumat'];
+    if (!is_array($activeDays) || empty($activeDays)) {
+        $activeDays = ['Rabu', 'Kamis', 'Jumat'];
+    }
+    $activeDaysJson = json_encode(array_values($activeDays));
 
-    $p1 = trim($_POST['reflection_prompt_1'] ?? 'Bagaimana amalan adab ini berhasil saya laksanakan pekan ini?');
-    $p2 = trim($_POST['reflection_prompt_2'] ?? 'Tantangan atau kendala apa yang saya temui saat mengamalkannya?');
-    $p3 = trim($_POST['reflection_prompt_3'] ?? 'Langkah perbaikan apa yang akan saya lakukan selanjutnya?');
-    $p4 = trim($_POST['reflection_prompt_4'] ?? 'Rasa syukur atau hikmah apa yang saya rasakan setelah melakukannya?');
+    // Butir Penugasan Dinamis (Bebas jumlahnya)
+    $rawTasks = $_POST['tasks'] ?? [];
+    $cleanTasks = [];
+    if (is_array($rawTasks)) {
+        foreach ($rawTasks as $t) {
+            $t = trim($t);
+            if (!empty($t)) {
+                $cleanTasks[] = $t;
+            }
+        }
+    }
+    if (empty($cleanTasks)) {
+        for ($i = 1; $i <= 4; $i++) {
+            $tVal = trim($_POST['task_' . $i] ?? '');
+            if (!empty($tVal)) $cleanTasks[] = $tVal;
+        }
+    }
+    if (empty($cleanTasks)) {
+        $cleanTasks = [
+            'Berwudhu sebelum membaca Al-Qur\'an.',
+            'Berniat ikhlas karna Allah.',
+            'Mengawali dengan ta\'awudz dan basmalah.',
+            'Membaca Al-Qur\'an dengan tartil.',
+            'Mengamalkan kandungan Al-Qur\'an.'
+        ];
+    }
+    $tasksJson = json_encode(array_values($cleanTasks));
+    $task1 = $cleanTasks[0] ?? '';
+    $task2 = $cleanTasks[1] ?? '';
+    $task3 = $cleanTasks[2] ?? '';
+    $task4 = $cleanTasks[3] ?? '';
+
+    // Pertanyaan Refleksi Dinamis
+    $rawPrompts = $_POST['reflection_prompts'] ?? [];
+    $cleanPrompts = [];
+    if (is_array($rawPrompts)) {
+        foreach ($rawPrompts as $p) {
+            $p = trim($p);
+            if (!empty($p)) {
+                $cleanPrompts[] = $p;
+            }
+        }
+    }
+    if (empty($cleanPrompts)) {
+        for ($i = 1; $i <= 4; $i++) {
+            $pVal = trim($_POST['reflection_prompt_' . $i] ?? '');
+            if (!empty($pVal)) $cleanPrompts[] = $pVal;
+        }
+    }
+    if (empty($cleanPrompts)) {
+        $cleanPrompts = [
+            'Apa yang kamu rasakan ketika membaca atau mendengarkan ayat-ayat Al-Qur\'an?',
+            'Apa yang biasanya kamu lakukan ketika menemukan Al-Qur\'an diletakkan di tempat yang kurang layak?',
+            'Apakah kamu sudah menjadikan Al-Qur\'an sebagai pedoman hidupmu?',
+            'Sudahkah kamu membiasakan tilawah setiap hari?',
+            'Selanjutnya apa yang akan kamu perbaiki dari adab terhadap Al-Qur\'an?'
+        ];
+    }
+    $reflectionsJson = json_encode(array_values($cleanPrompts));
+    $p1 = $cleanPrompts[0] ?? '';
+    $p2 = $cleanPrompts[1] ?? '';
+    $p3 = $cleanPrompts[2] ?? '';
+    $p4 = $cleanPrompts[3] ?? '';
 
     if ($action === 'create' && !empty($title)) {
         $stmtIns = $pdo->prepare("
             INSERT INTO mentoring_curriculums (
                 title, grade_level, academic_year_id, semester, month_number, week_code, description, file_link,
+                tasks_json, active_days, reflection_prompts_json,
                 task_1, task_2, task_3, task_4,
                 reflection_prompt_1, reflection_prompt_2, reflection_prompt_3, reflection_prompt_4,
                 is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ");
         $stmtIns->execute([
             $title, $gradeLevel, $postAyId, $semester, $monthNumber, $weekCode, $description, $fileLink,
+            $tasksJson, $activeDaysJson, $reflectionsJson,
             $task1, $task2, $task3, $task4,
             $p1, $p2, $p3, $p4
         ]);
@@ -100,6 +159,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 UPDATE mentoring_curriculums SET
                     title = ?, grade_level = ?, academic_year_id = ?, semester = ?, month_number = ?,
                     week_code = ?, description = ?, file_link = ?,
+                    tasks_json = ?, active_days = ?, reflection_prompts_json = ?,
                     task_1 = ?, task_2 = ?, task_3 = ?, task_4 = ?,
                     reflection_prompt_1 = ?, reflection_prompt_2 = ?, reflection_prompt_3 = ?, reflection_prompt_4 = ?
                 WHERE id = ?
@@ -107,6 +167,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $stmtUp->execute([
                 $title, $gradeLevel, $postAyId, $semester, $monthNumber,
                 $weekCode, $description, $fileLink,
+                $tasksJson, $activeDaysJson, $reflectionsJson,
                 $task1, $task2, $task3, $task4,
                 $p1, $p2, $p3, $p4,
                 $currId
@@ -410,16 +471,67 @@ require __DIR__ . '/../../includes/header.php';
                 <textarea name="description" id="inputDescription" rows="2" placeholder="Tuliskan dalil Al-Qur'an / Hadits / nasihat ulama pengantar adab..." style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 13px; resize: vertical;"></textarea>
             </div>
 
-            <!-- 4 Butir Amalan Checklist -->
+            <!-- PENGATURAN HARI AKTIF PEMANTAUAN ADAB (FLEKSIBEL OLEH PIMPINAN) -->
+            <div style="background: #f0fdf4; border: 1.5px solid #bbf7d0; border-radius: 12px; padding: 14px; margin-bottom: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <label style="font-size: 12px; font-weight: 800; color: #166534; text-transform: uppercase;">
+                        <i class="fa-solid fa-calendar-week"></i> Hari Aktif Pemantauan Adab Santri (Pekan Ini)
+                    </label>
+                    <div style="display: flex; gap: 4px;">
+                        <button type="button" class="btn btn-secondary" onclick="setActiveDaysPreset(['Rabu','Kamis','Jumat'])" style="padding: 2px 8px; font-size: 11px;">Rabu - Jumat</button>
+                        <button type="button" class="btn btn-secondary" onclick="setActiveDaysPreset(['Selasa','Rabu','Kamis'])" style="padding: 2px 8px; font-size: 11px;">Selasa - Kamis</button>
+                        <button type="button" class="btn btn-secondary" onclick="setActiveDaysPreset(['Senin','Selasa','Rabu','Kamis','Jumat'])" style="padding: 2px 8px; font-size: 11px;">Senin - Jumat</button>
+                    </div>
+                </div>
+                <small style="display: block; font-size: 11.5px; color: #15803d; margin-bottom: 10px;">
+                    Centang hari apa saja santri harus mencentang amalan adab ini (misal Pekan 1 dimulai hari Rabu, pilih Rabu s.d. Jumat):
+                </small>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <?php 
+                    $allDaysList = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Ahad'];
+                    foreach ($allDaysList as $dayName):
+                    ?>
+                        <label style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 12px; font-weight: 700; color: #1e293b; cursor: pointer;">
+                            <input type="checkbox" name="active_days[]" value="<?= $dayName ?>" class="chk-active-day" style="accent-color: #16a34a; width: 16px; height: 16px;">
+                            <?= $dayName ?>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+
+            <!-- BUTIR PENUGASAN DINAMIS (BEBAS BERAPA SAJA) -->
             <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px; margin-bottom: 16px;">
-                <label style="display: block; font-size: 12px; font-weight: 800; color: #059669; text-transform: uppercase; margin-bottom: 8px;">
-                    <i class="fa-solid fa-square-check"></i> 4 Butir Checklist Amalan Santri (Selasa, Rabu, Kamis)
-                </label>
-                <div style="display: flex; flex-direction: column; gap: 8px;">
-                    <input type="text" name="task_1" id="inputTask1" placeholder="Amalan 1: misal Senyum, salam, dan menyapa saat berpapasan..." style="width: 100%; padding: 7px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12.5px;">
-                    <input type="text" name="task_2" id="inputTask2" placeholder="Amalan 2: misal Berbicara jujur dan tidak memotong pembicaraan..." style="width: 100%; padding: 7px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12.5px;">
-                    <input type="text" name="task_3" id="inputTask3" placeholder="Amalan 3: misal Menjaga kebersihan meja dan loker pribadi..." style="width: 100%; padding: 7px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12.5px;">
-                    <input type="text" name="task_4" id="inputTask4" placeholder="Amalan 4: misal Mendoakan kebaikan untuk teman dan guru..." style="width: 100%; padding: 7px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12.5px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <div>
+                        <label style="display: block; font-size: 12px; font-weight: 800; color: #0284c7; text-transform: uppercase;">
+                            <i class="fa-solid fa-list-check"></i> Butir Penugasan Adab Santri (Dinamis / Fleksibel)
+                        </label>
+                        <small style="color: #64748b; font-size: 11.5px;">Bisa disesuaikan berapa banyak butir amalan (contoh di lembar resmi: 5 tugas)</small>
+                    </div>
+                    <button type="button" class="btn btn-secondary" onclick="addTaskRow()" style="padding: 4px 10px; font-size: 11.5px; font-weight: 700; color: #0284c7; border-color: #bae6fd; background: #f0f9ff;">
+                        <i class="fa-solid fa-plus"></i> Tambah Butir
+                    </button>
+                </div>
+                <div id="tasksListContainer" style="display: flex; flex-direction: column; gap: 8px;">
+                    <!-- Diisi dinamis via JS -->
+                </div>
+            </div>
+
+            <!-- PERTANYAAN REFLEKSI DINAMIS -->
+            <div style="background: #fdf2f8; border: 1px solid #fbcfe8; border-radius: 12px; padding: 14px; margin-bottom: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <div>
+                        <label style="display: block; font-size: 12px; font-weight: 800; color: #db2777; text-transform: uppercase;">
+                            <i class="fa-solid fa-heart-pulse"></i> Pertanyaan Refleksi Karakter Santri
+                        </label>
+                        <small style="color: #9d174d; font-size: 11.5px;">Pertanyaan refleksi pekanan yang akan dijawab murid & dinilai guru (contoh di lembar resmi: 5 pertanyaan)</small>
+                    </div>
+                    <button type="button" class="btn btn-secondary" onclick="addPromptRow()" style="padding: 4px 10px; font-size: 11.5px; font-weight: 700; color: #db2777; border-color: #fbcfe8; background: #fff1f2;">
+                        <i class="fa-solid fa-plus"></i> Tambah Refleksi
+                    </button>
+                </div>
+                <div id="promptsListContainer" style="display: flex; flex-direction: column; gap: 8px;">
+                    <!-- Diisi dinamis via JS -->
                 </div>
             </div>
 
@@ -434,6 +546,118 @@ require __DIR__ . '/../../includes/header.php';
 </div>
 
 <script>
+// PENGELOLAAN BUTIR TUGAS & PERTANYAAN REFLEKSI SECARA DINAMIS
+function renderTasks(tasksArray) {
+    const container = document.getElementById('tasksListContainer');
+    container.innerHTML = '';
+    if (!tasksArray || tasksArray.length === 0) {
+        tasksArray = [''];
+    }
+    tasksArray.forEach((text, index) => {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '8px';
+        row.style.alignItems = 'center';
+        row.innerHTML = `
+            <span style="font-size: 12px; font-weight: 800; color: #0284c7; width: 24px; text-align: center;">${index + 1}.</span>
+            <input type="text" name="tasks[]" value="${escapeHtml(text)}" placeholder="Butir tugas amalan adab..." style="flex: 1; padding: 7px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12.5px;" required>
+            <button type="button" onclick="removeTaskRow(this)" style="background: none; border: none; color: #ef4444; font-size: 16px; cursor: pointer; padding: 4px 6px;" title="Hapus butir">&times;</button>
+        `;
+        container.appendChild(row);
+    });
+}
+
+function addTaskRow(text = '') {
+    const container = document.getElementById('tasksListContainer');
+    const index = container.children.length;
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.gap = '8px';
+    row.style.alignItems = 'center';
+    row.innerHTML = `
+        <span style="font-size: 12px; font-weight: 800; color: #0284c7; width: 24px; text-align: center;">${index + 1}.</span>
+        <input type="text" name="tasks[]" value="${escapeHtml(text)}" placeholder="Butir tugas amalan adab..." style="flex: 1; padding: 7px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12.5px;" required>
+        <button type="button" onclick="removeTaskRow(this)" style="background: none; border: none; color: #ef4444; font-size: 16px; cursor: pointer; padding: 4px 6px;" title="Hapus butir">&times;</button>
+    `;
+    container.appendChild(row);
+}
+
+function removeTaskRow(btn) {
+    const container = document.getElementById('tasksListContainer');
+    if (container.children.length > 1) {
+        btn.parentElement.remove();
+        // Update nomor urut
+        Array.from(container.children).forEach((r, idx) => {
+            r.querySelector('span').textContent = (idx + 1) + '.';
+        });
+    } else {
+        alert('Minimal harus memiliki 1 butir penugasan adab!');
+    }
+}
+
+function renderPrompts(promptsArray) {
+    const container = document.getElementById('promptsListContainer');
+    container.innerHTML = '';
+    if (!promptsArray || promptsArray.length === 0) {
+        promptsArray = [''];
+    }
+    promptsArray.forEach((text, index) => {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '8px';
+        row.style.alignItems = 'center';
+        row.innerHTML = `
+            <span style="font-size: 12px; font-weight: 800; color: #db2777; width: 24px; text-align: center;">${index + 1}.</span>
+            <input type="text" name="reflection_prompts[]" value="${escapeHtml(text)}" placeholder="Pertanyaan refleksi untuk santri..." style="flex: 1; padding: 7px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12.5px;" required>
+            <button type="button" onclick="removePromptRow(this)" style="background: none; border: none; color: #ef4444; font-size: 16px; cursor: pointer; padding: 4px 6px;" title="Hapus pertanyaan">&times;</button>
+        `;
+        container.appendChild(row);
+    });
+}
+
+function addPromptRow(text = '') {
+    const container = document.getElementById('promptsListContainer');
+    const index = container.children.length;
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.gap = '8px';
+    row.style.alignItems = 'center';
+    row.innerHTML = `
+        <span style="font-size: 12px; font-weight: 800; color: #db2777; width: 24px; text-align: center;">${index + 1}.</span>
+        <input type="text" name="reflection_prompts[]" value="${escapeHtml(text)}" placeholder="Pertanyaan refleksi untuk santri..." style="flex: 1; padding: 7px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12.5px;" required>
+        <button type="button" onclick="removePromptRow(this)" style="background: none; border: none; color: #ef4444; font-size: 16px; cursor: pointer; padding: 4px 6px;" title="Hapus pertanyaan">&times;</button>
+    `;
+    container.appendChild(row);
+}
+
+function removePromptRow(btn) {
+    const container = document.getElementById('promptsListContainer');
+    if (container.children.length > 1) {
+        btn.parentElement.remove();
+        Array.from(container.children).forEach((r, idx) => {
+            r.querySelector('span').textContent = (idx + 1) + '.';
+        });
+    } else {
+        alert('Minimal harus memiliki 1 pertanyaan refleksi!');
+    }
+}
+
+function setActiveDaysPreset(daysArray) {
+    document.querySelectorAll('.chk-active-day').forEach(chk => {
+        chk.checked = daysArray.includes(chk.value);
+    });
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    return text.toString()
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
 function openAddModal() {
     document.getElementById('modalCurrTitle').innerHTML = '<i class="fa-solid fa-plus" style="color:#059669;"></i> Tambah Modul Kurikulum Baru';
     document.getElementById('modalCurrAction').value = 'create';
@@ -445,10 +669,28 @@ function openAddModal() {
     document.getElementById('inputGradeLevel').value = '7';
     document.getElementById('inputWeekCode').value = 'Pekan 1';
     document.getElementById('inputDescription').value = '';
-    document.getElementById('inputTask1').value = '';
-    document.getElementById('inputTask2').value = '';
-    document.getElementById('inputTask3').value = '';
-    document.getElementById('inputTask4').value = '';
+    
+    // Default hari aktif: Rabu, Kamis, Jumat (sesuai kebutuhan pekan riil)
+    setActiveDaysPreset(['Rabu', 'Kamis', 'Jumat']);
+
+    // Default 5 butir penugasan sesuai lembar resmi An Nahl
+    renderTasks([
+        'Berwudhu sebelum membaca Al-Qur\'an.',
+        'Berniat ikhlas karna Allah.',
+        'Mengawali dengan ta\'awudz dan basmalah.',
+        'Membaca Al-Qur\'an dengan tartil.',
+        'Mengamalkan kandungan Al-Qur\'an.'
+    ]);
+
+    // Default 5 pertanyaan refleksi sesuai lembar resmi An Nahl
+    renderPrompts([
+        'Apa yang kamu rasakan ketika membaca atau mendengarkan ayat-ayat Al-Qur\'an?',
+        'Apa yang biasanya kamu lakukan ketika menemukan Al-Qur\'an diletakkan di tempat yang kurang layak?',
+        'Apakah kamu sudah menjadikan Al-Qur\'an sebagai pedoman hidupmu?',
+        'Sudahkah kamu membiasakan tilawah setiap hari?',
+        'Selanjutnya apa yang akan kamu perbaiki dari adab terhadap Al-Qur\'an?'
+    ]);
+
     document.getElementById('modalCurr').style.display = 'flex';
 }
 
@@ -463,10 +705,46 @@ function openEditModal(c) {
     document.getElementById('inputGradeLevel').value = c.grade_level || '7';
     document.getElementById('inputWeekCode').value = c.week_code || 'Pekan 1';
     document.getElementById('inputDescription').value = c.description || '';
-    document.getElementById('inputTask1').value = c.task_1 || '';
-    document.getElementById('inputTask2').value = c.task_2 || '';
-    document.getElementById('inputTask3').value = c.task_3 || '';
-    document.getElementById('inputTask4').value = c.task_4 || '';
+
+    // Parse active_days
+    let activeDays = ['Rabu', 'Kamis', 'Jumat'];
+    if (c.active_days) {
+        try {
+            activeDays = typeof c.active_days === 'string' ? JSON.parse(c.active_days) : c.active_days;
+        } catch(e) {}
+    }
+    setActiveDaysPreset(activeDays);
+
+    // Parse tasks
+    let tasks = [];
+    if (c.tasks_json) {
+        try {
+            tasks = typeof c.tasks_json === 'string' ? JSON.parse(c.tasks_json) : c.tasks_json;
+        } catch(e) {}
+    }
+    if (!tasks || tasks.length === 0) {
+        tasks = [c.task_1, c.task_2, c.task_3, c.task_4].filter(t => t && t.trim() !== '');
+    }
+    if (tasks.length === 0) {
+        tasks = ['Amalan adab 1'];
+    }
+    renderTasks(tasks);
+
+    // Parse reflection prompts
+    let prompts = [];
+    if (c.reflection_prompts_json) {
+        try {
+            prompts = typeof c.reflection_prompts_json === 'string' ? JSON.parse(c.reflection_prompts_json) : c.reflection_prompts_json;
+        } catch(e) {}
+    }
+    if (!prompts || prompts.length === 0) {
+        prompts = [c.reflection_prompt_1, c.reflection_prompt_2, c.reflection_prompt_3, c.reflection_prompt_4].filter(p => p && p.trim() !== '');
+    }
+    if (prompts.length === 0) {
+        prompts = ['Pertanyaan refleksi 1'];
+    }
+    renderPrompts(prompts);
+
     document.getElementById('modalCurr').style.display = 'flex';
 }
 

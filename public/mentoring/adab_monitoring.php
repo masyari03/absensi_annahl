@@ -10,11 +10,12 @@ if (($_SESSION['role'] ?? '') === 'siswa') {
     header('Location: ../student/adab.php');
     exit;
 }
+requireMenuAccess('mentoring_adab');
 
 $pageTitle = 'Pemantauan Pembiasaan Adab & Refleksi Santri';
 $currentRole = currentRole();
 $userId = currentUserId();
-$isPrivileged = in_array($currentRole, ['super_admin', 'kepala_sekolah']);
+$isPrivileged = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah']) || hasMenuAccess('mentoring_assignments') || hasMenuAccess('mentoring_report');
 
 // FILTER PARAMETERS
 $filterClass  = trim($_GET['class'] ?? '');
@@ -32,7 +33,7 @@ $params = [];
 
 // Jika role mentor biasa (atau pimpinan memilih filter mentor), kunci ke santri binaan mentor tersebut
 if ($filterMentor > 0) {
-    $linkedMentorIds = getMentorLinkedUserIds($pdo, $filterMentor);
+    $linkedMentorIds = getMentorAllAccountIds($pdo, $filterMentor);
     $inQ = implode(',', array_fill(0, count($linkedMentorIds), '?'));
     $where[] = "EXISTS (
         SELECT 1 FROM mentoring_assignments ma 
@@ -146,11 +147,12 @@ if ($isPrivileged) {
 $mentorsList = [];
 if ($isPrivileged) {
     $mentorsList = $pdo->query("
-        SELECT DISTINCT u.id, u.name 
+        SELECT MIN(u.id) as id, TRIM(u.name) as name 
         FROM users u 
         JOIN mentoring_assignments ma ON ma.mentor_user_id = u.id 
         WHERE ma.is_active = 1 
-        ORDER BY u.name ASC
+        GROUP BY TRIM(u.name)
+        ORDER BY TRIM(u.name) ASC
     ")->fetchAll(PDO::FETCH_ASSOC);
 }
 

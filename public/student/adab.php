@@ -50,13 +50,6 @@ if (!in_array($selectedWeek, $validWeeks)) {
     $selectedWeek = 'Pekan 1';
 }
 
-// Tentukan Hari Aktif untuk tab checklist ('Selasa', 'Rabu', 'Kamis')
-$selectedDay = $_GET['day'] ?? 'Selasa';
-$validDays = ['Selasa', 'Rabu', 'Kamis'];
-if (!in_array($selectedDay, $validDays)) {
-    $selectedDay = 'Selasa';
-}
-
 // Tentukan Bulan Kalender & Tahun Pelajaran Aktif
 $monthsList = [
     7 => 'Juli', 8 => 'Agustus', 9 => 'September', 10 => 'Oktober',
@@ -83,29 +76,120 @@ $stmtCurr = $pdo->prepare("
 $stmtCurr->execute([$gradeNum, $selectedWeek, $activeAyId, $selectedMonth]);
 $curriculum = $stmtCurr->fetch(PDO::FETCH_ASSOC);
 
-// Tarik data log adab yang sudah tersimpan untuk santri ini di bulan & pekan tersebut
+// 1. Tentukan Hari Aktif Pemantauan (Fleksibel dari Kurikulum Adab atau Default Sekolah)
+$validDays = ['Rabu', 'Kamis', 'Jumat'];
+if ($curriculum && !empty($curriculum['active_days'])) {
+    $decodedDays = json_decode($curriculum['active_days'], true);
+    if (is_array($decodedDays) && !empty($decodedDays)) {
+        $validDays = $decodedDays;
+    }
+} else {
+    $defaultDaysSetting = getSystemSetting($pdo, 'mentoring_default_active_days', '["Rabu","Kamis","Jumat"]');
+    $decodedDefault = json_decode($defaultDaysSetting, true);
+    if (is_array($decodedDefault) && !empty($decodedDefault)) {
+        $validDays = $decodedDefault;
+    }
+}
+
+$selectedDay = $_GET['day'] ?? $validDays[0];
+if (!in_array($selectedDay, $validDays)) {
+    $selectedDay = $validDays[0];
+}
+
+// 2. Tentukan Butir Penugasan Dinamis (Bebas berapa saja)
+$curriculumTasks = [];
+if ($curriculum && !empty($curriculum['tasks_json'])) {
+    $decodedTasks = json_decode($curriculum['tasks_json'], true);
+    if (is_array($decodedTasks) && !empty($decodedTasks)) {
+        $curriculumTasks = $decodedTasks;
+    }
+}
+if (empty($curriculumTasks) && $curriculum) {
+    $curriculumTasks = array_values(array_filter([
+        $curriculum['task_1'] ?? '',
+        $curriculum['task_2'] ?? '',
+        $curriculum['task_3'] ?? '',
+        $curriculum['task_4'] ?? ''
+    ], fn($t) => !empty($t) && $t !== '-'));
+}
+if (empty($curriculumTasks)) {
+    $curriculumTasks = [
+        'Berwudhu sebelum membaca Al-Qur\'an.',
+        'Berniat ikhlas karna Allah.',
+        'Mengawali dengan ta\'awudz dan basmalah.',
+        'Membaca Al-Qur\'an dengan tartil.',
+        'Mengamalkan kandungan Al-Qur\'an.'
+    ];
+}
+$totalTasksCount = count($curriculumTasks);
+
+// 3. Tentukan Pertanyaan Refleksi Dinamis
+$reflectionPrompts = [];
+if ($curriculum && !empty($curriculum['reflection_prompts_json'])) {
+    $decodedPrompts = json_decode($curriculum['reflection_prompts_json'], true);
+    if (is_array($decodedPrompts) && !empty($decodedPrompts)) {
+        $reflectionPrompts = $decodedPrompts;
+    }
+}
+if (empty($reflectionPrompts) && $curriculum) {
+    $reflectionPrompts = array_values(array_filter([
+        $curriculum['reflection_prompt_1'] ?? '',
+        $curriculum['reflection_prompt_2'] ?? '',
+        $curriculum['reflection_prompt_3'] ?? '',
+        $curriculum['reflection_prompt_4'] ?? ''
+    ], fn($p) => !empty($p)));
+}
+if (empty($reflectionPrompts)) {
+    $reflectionPrompts = [
+        'Apa yang kamu rasakan ketika membaca atau mendengarkan ayat-ayat Al-Qur\'an?',
+        'Apa yang biasanya kamu lakukan ketika menemukan Al-Qur\'an diletakkan di tempat yang kurang layak?',
+        'Apakah kamu sudah menjadikan Al-Qur\'an sebagai pedoman hidupmu?',
+        'Sudahkah kamu membiasakan tilawah setiap hari?',
+        'Selanjutnya apa yang akan kamu perbaiki dari adab terhadap Al-Qur\'an?'
+    ];
+}
+
+// 4. Tarik data log adab yang sudah tersimpan untuk santri ini di pekan & kurikulum tersebut
+$currId = $curriculum ? (int)$curriculum['id'] : 0;
 $stmtLog = $pdo->prepare("
     SELECT * FROM student_adab_logs 
-    WHERE student_id = ? AND week_code = ? AND MONTH(submitted_at) = ?
+    WHERE student_id = ? AND week_code = ?
+      AND (curriculum_id = ? OR ? = 0)
     ORDER BY submitted_at DESC LIMIT 1
 ");
-$stmtLog->execute([$studentId, $selectedWeek, $selectedMonth]);
+$stmtLog->execute([$studentId, $selectedWeek, $currId, $currId]);
 $existingLog = $stmtLog->fetch(PDO::FETCH_ASSOC);
 
-// Parse JSON checklist
-$checklistData = [
-    'Selasa' => [false, false, false, false],
-    'Rabu'   => [false, false, false, false],
-    'Kamis'  => [false, false, false, false]
-];
+// Inisialisasi struktur checklist untuk seluruh hari aktif
+$checklistData = [];
+foreach ($validDays as $d) {
+    $checklistData[$d] = array_fill(0, $totalTasksCount, false);
+}
 if ($existingLog && !empty($existingLog['checklist_json'])) {
     $decoded = json_decode($existingLog['checklist_json'], true);
     if (is_array($decoded)) {
-        foreach (['Selasa', 'Rabu', 'Kamis'] as $d) {
-            if (isset($decoded[$d]) && is_array($decoded[$d])) {
-                $checklistData[$d] = array_slice(array_pad($decoded[$d], 4, false), 0, 4);
+        foreach ($decoded as $dKey => $checks) {
+            if (is_array($checks)) {
+                $checklistData[$dKey] = array_values(array_pad($checks, $totalTasksCount, false));
             }
         }
+    }
+}
+
+// Inisialisasi jawaban refleksi yang sudah tersimpan
+$savedReflections = [];
+if ($existingLog) {
+    if (!empty($existingLog['reflections_json'])) {
+        $decRef = json_decode($existingLog['reflections_json'], true);
+        if (is_array($decRef)) $savedReflections = $decRef;
+    }
+    if (empty($savedReflections)) {
+        $savedReflections = [
+            $existingLog['reflection_action'] ?? '',
+            $existingLog['reflection_obstacle'] ?? '',
+            $existingLog['reflection_solution'] ?? '',
+            $existingLog['reflection_gratitude'] ?? ''
+        ];
     }
 }
 
@@ -129,20 +213,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $selectedDay = $postDay;
     }
 
-    // Ambil nilai checkbox 4 butir amalan untuk hari yang disubmit
+    // Ambil nilai checkbox butir amalan untuk hari yang disubmit
     $dayChecks = [];
-    for ($i = 0; $i < 4; $i++) {
+    for ($i = 0; $i < $totalTasksCount; $i++) {
         $dayChecks[] = !empty($_POST['task_' . $i]);
     }
     $checklistData[$selectedDay] = $dayChecks;
 
-    $reflectionAction    = trim($_POST['reflection_action'] ?? '');
-    $reflectionObstacle  = trim($_POST['reflection_obstacle'] ?? '');
-    $reflectionSolution  = trim($_POST['reflection_solution'] ?? '');
-    $reflectionGratitude = trim($_POST['reflection_gratitude'] ?? '');
+    // Ambil jawaban refleksi dinamis
+    $submittedReflections = [];
+    for ($i = 0; $i < count($reflectionPrompts); $i++) {
+        $submittedReflections[] = trim($_POST['reflection_' . $i] ?? '');
+    }
+    $jsonReflections = json_encode($submittedReflections, JSON_UNESCAPED_UNICODE);
+
+    // Kompatibilitas dengan 4 kolom refleksi lama
+    $reflectionAction    = $submittedReflections[0] ?? '';
+    $reflectionObstacle  = $submittedReflections[1] ?? '';
+    $reflectionSolution  = $submittedReflections[2] ?? '';
+    $reflectionGratitude = $submittedReflections[3] ?? '';
 
     try {
-        $jsonChecklist = json_encode($checklistData);
+        $jsonChecklist = json_encode($checklistData, JSON_UNESCAPED_UNICODE);
         $currId = $curriculum ? (int)$curriculum['id'] : null;
 
         if ($existingLog) {
@@ -152,6 +244,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     curriculum_id = ?,
                     day_name = ?,
                     checklist_json = ?,
+                    reflections_json = ?,
                     reflection_action = ?,
                     reflection_obstacle = ?,
                     reflection_solution = ?,
@@ -163,6 +256,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $currId,
                 $selectedDay,
                 $jsonChecklist,
+                $jsonReflections,
                 $reflectionAction,
                 $reflectionObstacle,
                 $reflectionSolution,
@@ -174,9 +268,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $stmtIns = $pdo->prepare("
                 INSERT INTO student_adab_logs (
                     student_id, curriculum_id, grade_name, week_code, day_name,
-                    checklist_json, reflection_action, reflection_obstacle,
+                    checklist_json, reflections_json, reflection_action, reflection_obstacle,
                     reflection_solution, reflection_gratitude, submitted_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
             ");
             $stmtIns->execute([
                 $studentId,
@@ -185,6 +279,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $selectedWeek,
                 $selectedDay,
                 $jsonChecklist,
+                $jsonReflections,
                 $reflectionAction,
                 $reflectionObstacle,
                 $reflectionSolution,
@@ -273,7 +368,7 @@ require_once __DIR__ . '/includes/header.php';
             <input type="hidden" name="day" id="inputDay" value="<?= e($selectedDay) ?>">
 
             <!-- Tab Pemilihan Hari Amalan -->
-            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f1f5f9; padding-bottom: 12px; margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f1f5f9; padding-bottom: 12px; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
                 <div>
                     <h3 style="margin: 0; font-size: 16px; font-weight: 800; color: #0f172a;">
                         <i class="fa-solid fa-clipboard-check" style="color: #0284c7;"></i> Checklist Amalan Harian
@@ -281,7 +376,7 @@ require_once __DIR__ . '/includes/header.php';
                     <small style="color: #64748b;">Pilih hari dan centang amalan yang telah Anda laksanakan dengan jujur</small>
                 </div>
 
-                <div style="display: flex; gap: 8px;">
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                     <?php foreach ($validDays as $d): ?>
                         <a href="adab.php?month=<?= $selectedMonth ?>&week=<?= urlencode($selectedWeek) ?>&day=<?= urlencode($d) ?>"
                            style="padding: 8px 16px; border-radius: 10px; font-size: 13px; font-weight: 700; text-decoration: none; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; color: <?= $selectedDay === $d ? '#ffffff' : '#64748b' ?>; background: <?= $selectedDay === $d ? '#0284c7' : '#f1f5f9' ?>;">
@@ -291,18 +386,12 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
             </div>
 
-            <!-- 4 Butir Tugas Amalan Berdasarkan Kurikulum -->
+            <!-- Butir Tugas Amalan Berdasarkan Kurikulum Dinamis -->
             <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 28px;">
                 <?php
-                $tasks = [
-                    $curriculum['task_1'] ?? 'Menjalankan kewajiban sholat tepat waktu.',
-                    $curriculum['task_2'] ?? 'Senantiasa menjaga lisan dan sopan santun.',
-                    $curriculum['task_3'] ?? 'Merasa diawasi oleh Allah SWT dalam setiap aktivitas.',
-                    $curriculum['task_4'] ?? 'Menjauhi perbuatan yang dilarang agama.'
-                ];
-                $currentChecks = $checklistData[$selectedDay] ?? [false, false, false, false];
+                $currentChecks = $checklistData[$selectedDay] ?? array_fill(0, $totalTasksCount, false);
 
-                foreach ($tasks as $idx => $tText):
+                foreach ($curriculumTasks as $idx => $tText):
                     if (empty($tText) || $tText === '-') continue;
                     $isChecked = !empty($currentChecks[$idx]);
                 ?>
@@ -311,66 +400,42 @@ require_once __DIR__ . '/includes/header.php';
                                style="width: 20px; height: 20px; accent-color: #0284c7; margin-top: 2px; cursor: pointer;">
                         <div style="flex: 1;">
                             <span style="font-size: 13.5px; font-weight: 600; color: #1e293b; line-height: 1.5;">
-                                <?= e($tText) ?>
+                                <?= ($idx + 1) ?>. <?= e($tText) ?>
                             </span>
                         </div>
                     </label>
                 <?php endforeach; ?>
             </div>
 
-            <!-- Bagian 4 Dimensi Refleksi Karakter -->
+            <!-- Bagian Refleksi Karakter Dinamis -->
             <div style="border-top: 2px solid #f1f5f9; padding-top: 20px; margin-bottom: 24px;">
                 <h3 style="margin: 0 0 4px; font-size: 16px; font-weight: 800; color: #0f172a;">
-                    <i class="fa-solid fa-heart-pulse" style="color: #ec4899;"></i> Refleksi Karakter 4 Dimensi
+                    <i class="fa-solid fa-heart-pulse" style="color: #ec4899;"></i> Refleksi Karakter & Pemahaman Santri
                 </h3>
                 <p style="margin: 0 0 16px; font-size: 12.5px; color: #64748b;">
-                    Tuangkan pengalaman nyata, rintangan yang dihadapi, ikhtiar solusi, dan rasa syukur Anda pada pekan ini.
+                    Tuangkan pengalaman nyata, pemahaman materi adab, dan muhasabah diri Anda pada pekan ini secara jujur.
                 </p>
 
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
-                    <!-- 1. Aksi Nyata -->
-                    <div style="background: #f8fafc; padding: 16px; border-radius: 12px; border: 1px solid #e2e8f0;">
-                        <label style="display: block; font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 6px;">
-                            <i class="fa-solid fa-bullseye" style="color: #0284c7;"></i> 1. Aksi Nyata
-                        </label>
-                        <small style="display: block; font-size: 11.5px; color: #64748b; margin-bottom: 8px;">
-                            Apa tindakan konkret adab yang telah berhasil Anda praktikkan?
-                        </small>
-                        <textarea name="reflection_action" rows="3" class="filter-input" style="width: 100%; border-radius: 8px; border: 1px solid #cbd5e1; padding: 10px; font-size: 13px; resize: vertical;" placeholder="Contoh: Saya menahan diri untuk tidak membalas ejekan teman dan meminta izin sebelum meminjam buku..."><?= e($existingLog['reflection_action'] ?? '') ?></textarea>
-                    </div>
-
-                    <!-- 2. Hambatan -->
-                    <div style="background: #f8fafc; padding: 16px; border-radius: 12px; border: 1px solid #e2e8f0;">
-                        <label style="display: block; font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 6px;">
-                            <i class="fa-solid fa-mountain" style="color: #f59e0b;"></i> 2. Hambatan
-                        </label>
-                        <small style="display: block; font-size: 11.5px; color: #64748b; margin-bottom: 8px;">
-                            Apa godaan, kemalasan, atau kendala yang sempat Anda rasakan?
-                        </small>
-                        <textarea name="reflection_obstacle" rows="3" class="filter-input" style="width: 100%; border-radius: 8px; border: 1px solid #cbd5e1; padding: 10px; font-size: 13px; resize: vertical;" placeholder="Contoh: Terkadang masih terbawa emosi saat bermain dan lupa membaca doa safar..."><?= e($existingLog['reflection_obstacle'] ?? '') ?></textarea>
-                    </div>
-
-                    <!-- 3. Solusi -->
-                    <div style="background: #f8fafc; padding: 16px; border-radius: 12px; border: 1px solid #e2e8f0;">
-                        <label style="display: block; font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 6px;">
-                            <i class="fa-solid fa-lightbulb" style="color: #10b981;"></i> 3. Solusi
-                        </label>
-                        <small style="display: block; font-size: 11.5px; color: #64748b; margin-bottom: 8px;">
-                            Apa langkah perbaikan yang akan Anda lakukan selanjutnya?
-                        </small>
-                        <textarea name="reflection_solution" rows="3" class="filter-input" style="width: 100%; border-radius: 8px; border: 1px solid #cbd5e1; padding: 10px; font-size: 13px; resize: vertical;" placeholder="Contoh: Mengingatkan diri dengan mencatat jadwal sholat dan beristighfar jika mulai marah..."><?= e($existingLog['reflection_solution'] ?? '') ?></textarea>
-                    </div>
-
-                    <!-- 4. Rasa Syukur -->
-                    <div style="background: #f8fafc; padding: 16px; border-radius: 12px; border: 1px solid #e2e8f0;">
-                        <label style="display: block; font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 6px;">
-                            <i class="fa-solid fa-hands-praying" style="color: #8b5cf6;"></i> 4. Rasa Syukur
-                        </label>
-                        <small style="display: block; font-size: 11.5px; color: #64748b; margin-bottom: 8px;">
-                            Nikmat atau kebaikan apa yang paling Anda syukuri pekan ini?
-                        </small>
-                        <textarea name="reflection_gratitude" rows="3" class="filter-input" style="width: 100%; border-radius: 8px; border: 1px solid #cbd5e1; padding: 10px; font-size: 13px; resize: vertical;" placeholder="Contoh: Bersyukur masih diberikan kesehatan, teman yang saling mengingatkan kebaikan, dan bimbingan guru..."><?= e($existingLog['reflection_gratitude'] ?? '') ?></textarea>
-                    </div>
+                    <?php 
+                    $refIcons = ['fa-bullseye', 'fa-mountain', 'fa-lightbulb', 'fa-hands-praying', 'fa-compass', 'fa-shield-heart'];
+                    $refColors = ['#0284c7', '#f59e0b', '#10b981', '#8b5cf6', '#0ea5e9', '#ec4899'];
+                    
+                    foreach ($reflectionPrompts as $idx => $promptText):
+                        $icon = $refIcons[$idx % count($refIcons)];
+                        $color = $refColors[$idx % count($refColors)];
+                        $val = $savedReflections[$idx] ?? '';
+                    ?>
+                        <div style="background: #f8fafc; padding: 16px; border-radius: 12px; border: 1px solid #e2e8f0;">
+                            <label style="display: block; font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 6px;">
+                                <i class="fa-solid <?= $icon ?>" style="color: <?= $color ?>;"></i> <?= ($idx + 1) ?>. Refleksi <?= ($idx + 1) ?>
+                            </label>
+                            <small style="display: block; font-size: 11.5px; color: #64748b; margin-bottom: 8px; line-height: 1.4;">
+                                <?= e($promptText) ?>
+                            </small>
+                            <textarea name="reflection_<?= $idx ?>" rows="3" class="filter-input" style="width: 100%; border-radius: 8px; border: 1px solid #cbd5e1; padding: 10px; font-size: 13px; resize: vertical;" placeholder="Tuliskan jawaban refleksi Anda..."><?= e($val) ?></textarea>
+                        </div>
+                    <?php endforeach; ?>
                 </div>
             </div>
 
