@@ -13,32 +13,48 @@ $currentUserId = currentUserId();
 $currentRole = currentRole();
 
 // =========================================================================
-// QUERY STATISTIK KPI UTAMA
+// QUERY STATISTIK KPI UTAMA & SCOPING UNIT
 // =========================================================================
+$userUnit = getUserUnitInfo($pdo, $currentUserId);
+$userUnitId = $userUnit['unit_id'] ?? null;
+$userUnitName = $userUnit['unit_name'] ?? null;
+$isSuperAdmin = ($currentRole === 'super_admin');
+
+$unitJoin = ($userUnitId && !$isSuperAdmin) ? "JOIN staff s ON s.id = ss.teacher_id WHERE s.unit_id = ?" : "";
+$unitParam = ($userUnitId && !$isSuperAdmin) ? [$userUnitId] : [];
+
 // 1. Total Dokumen Supervisi
-$stmtTotal = $pdo->query("SELECT COUNT(*) FROM supervision_sessions");
+$stmtTotal = $pdo->prepare("SELECT COUNT(*) FROM supervision_sessions ss {$unitJoin}");
+$stmtTotal->execute($unitParam);
 $totalSupervisi = (int)$stmtTotal->fetchColumn();
 
-// 2. Rata-rata Skor Sekolah
-$stmtAvg = $pdo->query("SELECT COALESCE(AVG(percentage_score), 0) FROM supervision_sessions");
+// 2. Rata-rata Skor
+$stmtAvg = $pdo->prepare("SELECT COALESCE(AVG(ss.percentage_score), 0) FROM supervision_sessions ss {$unitJoin}");
+$stmtAvg->execute($unitParam);
 $avgScore = round((float)$stmtAvg->fetchColumn(), 1);
 
 // 3. Guru Outstanding
-$stmtOut = $pdo->query("SELECT COUNT(*) FROM supervision_sessions WHERE predicate_name = 'Outstanding'");
+$whereOut = ($userUnitId && !$isSuperAdmin) ? "JOIN staff s ON s.id = ss.teacher_id WHERE s.unit_id = ? AND ss.predicate_name = 'Outstanding'" : "WHERE predicate_name = 'Outstanding'";
+$stmtOut = $pdo->prepare("SELECT COUNT(*) FROM supervision_sessions ss {$whereOut}");
+$stmtOut->execute($unitParam);
 $totalOutstanding = (int)$stmtOut->fetchColumn();
 
 // 4. Guru Need Improvement
-$stmtNeed = $pdo->query("SELECT COUNT(*) FROM supervision_sessions WHERE predicate_name = 'Need Improvement'");
+$whereNeed = ($userUnitId && !$isSuperAdmin) ? "JOIN staff s ON s.id = ss.teacher_id WHERE s.unit_id = ? AND ss.predicate_name = 'Need Improvement'" : "WHERE predicate_name = 'Need Improvement'";
+$stmtNeed = $pdo->prepare("SELECT COUNT(*) FROM supervision_sessions ss {$whereNeed}");
+$stmtNeed->execute($unitParam);
 $totalNeedImprovement = (int)$stmtNeed->fetchColumn();
 
 // =========================================================================
 // QUERY CHART DISTRIBUSI PREDIKAT (DONUT CHART)
 // =========================================================================
-$stmtPredDist = $pdo->query("
-    SELECT predicate_name, COUNT(*) as count
-    FROM supervision_sessions
-    GROUP BY predicate_name
+$stmtPredDist = $pdo->prepare("
+    SELECT ss.predicate_name, COUNT(*) as count
+    FROM supervision_sessions ss
+    {$unitJoin}
+    GROUP BY ss.predicate_name
 ");
+$stmtPredDist->execute($unitParam);
 $rawPredDist = $stmtPredDist->fetchAll(PDO::FETCH_KEY_PAIR);
 
 $predLabels = ['Outstanding', 'Excellent', 'Good', 'Need Improvement'];
@@ -90,15 +106,21 @@ if (empty($barLabels)) {
 // =========================================================================
 // QUERY DOKUMEN SUPERVISI TERBARU
 // =========================================================================
-$stmtRecent = $pdo->query("
+$recentSql = "
     SELECT ss.*, st.name as type_name, s.name as teacher_name, u.name as observer_name
     FROM supervision_sessions ss
     JOIN supervision_types st ON st.id = ss.type_id
     JOIN staff s ON s.id = ss.teacher_id
     JOIN users u ON u.id = ss.observer_id
-    ORDER BY ss.observation_date DESC, ss.id DESC
-    LIMIT 5
-");
+";
+$recentParams = [];
+if (!$isSuperAdmin && $userUnitId > 0) {
+    $recentSql .= " WHERE s.unit_id = ? ";
+    $recentParams = [$userUnitId];
+}
+$recentSql .= " ORDER BY ss.observation_date DESC, ss.id DESC LIMIT 5";
+$stmtRecent = $pdo->prepare($recentSql);
+$stmtRecent->execute($recentParams);
 $recentSupervisions = $stmtRecent->fetchAll(PDO::FETCH_ASSOC);
 
 function getPredBadgeColor($name) {
@@ -121,7 +143,7 @@ require_once __DIR__ . '/../../includes/header.php';
                 <span style="background: #e0e7ff; color: #4338ca; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 6px; text-transform: uppercase;">
                     <i class="fa-solid fa-chart-line"></i> Analytics & Overview
                 </span>
-                <span style="color: #94a3b8; font-size: 13px;">&bull; SMP An Nahl Islamic School &bull; Integrasi KURMAA</span>
+                <span style="color: #94a3b8; font-size: 13px;">&bull; <?= $userUnitName ? 'Unit ' . htmlspecialchars($userUnitName) : 'Seluruh Unit Sekolah' ?> &bull; An Nahl Islamic School &bull; Integrasi KURMAA</span>
             </div>
             <h1 style="margin: 0; font-size: 24px; font-weight: 800; color: #0f172a;">
                 Dashboard Supervisi Guru & Teman Sejawat

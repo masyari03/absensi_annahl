@@ -44,8 +44,14 @@ $mentors = $pdo->query("
 ")->fetchAll(PDO::FETCH_ASSOC);
 
 // DAFTAR TINGKAT KELAS BESERTA SUB KELAS (ROMBEL)
-$grades = $pdo->query("SELECT id, grade FROM grades ORDER BY sort_order ASC, id ASC")->fetchAll(PDO::FETCH_ASSOC);
-$classGroups = $pdo->query("SELECT id, grade_id, name FROM class_groups ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$accDd = getMentoringAccessCondition('g', 'cg');
+$accGrades = getMentoringGradeCondition('g');
+$grades = $pdo->prepare("SELECT g.id, g.grade FROM grades g WHERE " . $accGrades['condition'] . " ORDER BY g.sort_order ASC, g.id ASC");
+$grades->execute($accGrades['params']);
+$grades = $grades->fetchAll(PDO::FETCH_ASSOC);
+$classGroups = $pdo->prepare("SELECT cg.id, cg.grade_id, cg.name FROM class_groups cg JOIN grades g ON g.id = cg.grade_id WHERE " . $accDd['condition'] . " ORDER BY cg.name ASC");
+$classGroups->execute($accDd['params']);
+$classGroups = $classGroups->fetchAll(PDO::FETCH_ASSOC);
 
 // DAFTAR SELURUH SANTRI AKTIF UNTUK PILIHAN FORM (LENGKAP DENGAN KELAS & SUB-KELAS)
 $stmtAllStudents = $pdo->prepare("
@@ -62,10 +68,10 @@ $stmtAllStudents = $pdo->prepare("
          AND ma.semester = ? 
          AND ma.is_active = 1
     LEFT JOIN users u ON u.id = ma.mentor_user_id
-    WHERE s.deleted_at IS NULL
+    WHERE s.deleted_at IS NULL AND " . $accDd['condition'] . "
     ORDER BY g.sort_order ASC, cg.name ASC, s.name ASC
 ");
-$stmtAllStudents->execute([$filterAyId, $filterSemester]);
+$stmtAllStudents->execute(array_merge([$filterAyId, $filterSemester], $accDd["params"]));
 $allStudents = $stmtAllStudents->fetchAll(PDO::FETCH_ASSOC);
 
 // ==========================================
@@ -206,6 +212,11 @@ if ($filterStatus === 'assigned') {
     $where[] = "ma.mentor_user_id IS NULL";
 }
 
+$accList = getMentoringAccessCondition('g', 'cg');
+if ($accList['condition'] !== '1 = 1') {
+    $where[] = $accList['condition'];
+    foreach ($accList['params'] as $ap) { $params[] = $ap; }
+}
 $whereSql = implode(' AND ', $where);
 
 // STATISTIK KELOMPOK
@@ -216,10 +227,14 @@ $stmtStats = $pdo->prepare("
     FROM users u
     JOIN mentoring_assignments ma ON ma.mentor_user_id = u.id AND ma.academic_year_id = ? AND ma.semester = ? AND ma.is_active = 1
     JOIN students s ON s.id = ma.student_id AND s.deleted_at IS NULL
+    LEFT JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
+    LEFT JOIN class_groups cg ON cg.id = se.class_group_id
+    LEFT JOIN grades g ON g.id = cg.grade_id
+    WHERE " . $accDd['condition'] . "
     GROUP BY u.id, u.name
     ORDER BY total_mentee DESC, u.name ASC
 ");
-$stmtStats->execute([$filterAyId, $filterSemester]);
+$stmtStats->execute(array_merge([$filterAyId, $filterSemester], $accDd["params"]));
 $mentorStats = $stmtStats->fetchAll(PDO::FETCH_ASSOC);
 
 $totalAssignedStudents = array_sum(array_column($mentorStats, 'total_mentee'));
@@ -232,6 +247,7 @@ $stmtStudents = $pdo->prepare("
     FROM students s
     JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
     JOIN class_groups cg ON cg.id = se.class_group_id
+    JOIN grades g ON g.id = cg.grade_id
     LEFT JOIN mentoring_assignments ma ON ma.student_id = s.id AND ma.academic_year_id = ? AND ma.semester = ? AND ma.is_active = 1
     LEFT JOIN users u ON u.id = ma.mentor_user_id
     WHERE {$whereSql}

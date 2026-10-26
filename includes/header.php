@@ -157,6 +157,65 @@ if ($currentUserId > 0 && isset($pdo)) {
             width: 100% !important;
         }
     }
+    /* ===== MODAL POPUP (custom-modal) GLOBAL =====
+       Definisi kelas modal dipindahkan ke header global agar seluruh halaman
+       (mis. Supervisi: Tambah/Edit Jadwal, Kategori & Butir Rubrik) menampilkan
+       form sebagai popup overlay, bukan blok biasa di bawah tabel. */
+    .custom-modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(15, 23, 42, 0.65);
+        backdrop-filter: blur(4px);
+        z-index: 9999;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+    }
+    .custom-modal-box {
+        background: #ffffff;
+        border-radius: 16px;
+        width: 100%;
+        max-width: 900px;
+        max-height: 90vh;
+        display: flex;
+        flex-direction: column;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+        animation: modalSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes modalSlideIn {
+        from { opacity: 0; transform: scale(0.95) translateY(10px); }
+        to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .custom-modal-header {
+        padding: 18px 24px;
+        border-bottom: 1px solid #e2e8f0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .custom-modal-body {
+        padding: 24px;
+        overflow-y: auto;
+        flex: 1;
+    }
+    .custom-modal-footer {
+        padding: 16px 24px;
+        border-top: 1px solid #e2e8f0;
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+        background: #f8fafc;
+        border-radius: 0 0 16px 16px;
+    }
+    @media (max-width: 768px) {
+        .custom-modal-overlay { padding: 10px; }
+        .custom-modal-box { max-height: calc(100vh - 20px); border-radius: 14px; }
+        .custom-modal-header { padding: 14px 16px; }
+        .custom-modal-body { padding: 16px 14px; }
+        .custom-modal-footer { padding: 12px 14px; flex-wrap: wrap; }
+        .custom-modal-footer .btn { width: 100%; }
+    }
 </style>
 </head>
 <body>

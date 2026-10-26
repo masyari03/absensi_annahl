@@ -31,56 +31,59 @@ if (isset($pdo) && $currentUserId > 0) {
         ");
         $rawMenus = $stmtNav->fetchAll(PDO::FETCH_ASSOC);
     } else {
-        // User biasa: ambil dari user_menu_access + sertakan parent menu otomatis jika punya child yang diizinkan
+        // User biasa: ambil dari multi-role additive union (user_roles + roles + user_menu_access)
+        // serta sertakan parent menu otomatis jika punya child yang diizinkan
         $stmtNav = $pdo->prepare("
             SELECT am.id, am.menu_key, am.menu_name, am.category, am.menu_url, am.menu_icon, am.parent_id, am.sort_order
             FROM app_menus am
-            INNER JOIN user_menu_access uma ON uma.menu_id = am.id
-            WHERE uma.user_id = ? AND am.is_active = 1
+            LEFT JOIN user_menu_access uma 
+                ON uma.menu_id = am.id AND uma.user_id = ?
+            LEFT JOIN user_roles ur 
+                ON ur.user_id = ?
+            LEFT JOIN roles r_ur 
+                ON r_ur.id = ur.role_id
+            LEFT JOIN users u 
+                ON u.id = ?
+            LEFT JOIN roles r_primary 
+                ON r_primary.role_key = u.role
+            LEFT JOIN role_menu_access rma 
+                ON rma.menu_id = am.id AND (rma.role_id = ur.role_id OR rma.role_id = r_primary.id)
+            WHERE am.is_active = 1
+            GROUP BY am.id, am.menu_key, am.menu_name, am.category, am.menu_url, am.menu_icon, am.parent_id, am.sort_order
+            HAVING GREATEST(COALESCE(MAX(uma.can_read), 0), COALESCE(MAX(rma.can_read), 0)) > 0
+
             UNION
+
             SELECT p.id, p.menu_key, p.menu_name, p.category, p.menu_url, p.menu_icon, p.parent_id, p.sort_order
             FROM app_menus p
             INNER JOIN app_menus ch ON ch.parent_id = p.id
-            INNER JOIN user_menu_access uma ON uma.menu_id = ch.id
-            WHERE uma.user_id = ? AND p.is_active = 1 AND ch.is_active = 1
+            LEFT JOIN user_menu_access uma 
+                ON uma.menu_id = ch.id AND uma.user_id = ?
+            LEFT JOIN user_roles ur 
+                ON ur.user_id = ?
+            LEFT JOIN roles r_ur 
+                ON r_ur.id = ur.role_id
+            LEFT JOIN users u 
+                ON u.id = ?
+            LEFT JOIN roles r_primary 
+                ON r_primary.role_key = u.role
+            LEFT JOIN role_menu_access rma 
+                ON rma.menu_id = ch.id AND (rma.role_id = ur.role_id OR rma.role_id = r_primary.id)
+            WHERE p.is_active = 1 AND ch.is_active = 1
+            GROUP BY p.id, p.menu_key, p.menu_name, p.category, p.menu_url, p.menu_icon, p.parent_id, p.sort_order
+            HAVING GREATEST(COALESCE(MAX(uma.can_read), 0), COALESCE(MAX(rma.can_read), 0)) > 0
+
             ORDER BY sort_order ASC, id ASC
         ");
-        $stmtNav->execute([$currentUserId, $currentUserId]);
+        $stmtNav->execute([
+            $currentUserId, $currentUserId, $currentUserId,
+            $currentUserId, $currentUserId, $currentUserId
+        ]);
         $rawMenus = $stmtNav->fetchAll(PDO::FETCH_ASSOC);
 
-        // Fallback ke default role jika user_menu_access belum ada
-        if (empty($rawMenus) && !empty($currentRole)) {
-            $stmtFallback = $pdo->prepare("
-                SELECT am.id, am.menu_key, am.menu_name, am.category, am.menu_url, am.menu_icon, am.parent_id, am.sort_order
-                FROM app_menus am
-                INNER JOIN role_menu_access rma ON rma.menu_id = am.id
-                INNER JOIN roles r ON r.id = rma.role_id
-                WHERE r.role_key = ? AND am.is_active = 1
-                UNION
-                SELECT p.id, p.menu_key, p.menu_name, p.category, p.menu_url, p.menu_icon, p.parent_id, p.sort_order
-                FROM app_menus p
-                INNER JOIN app_menus ch ON ch.parent_id = p.id
-                INNER JOIN role_menu_access rma ON rma.menu_id = ch.id
-                INNER JOIN roles r ON r.id = rma.role_id
-                WHERE r.role_key = ? AND p.is_active = 1 AND ch.is_active = 1
-                ORDER BY sort_order ASC, id ASC
-            ");
-            $stmtFallback->execute([$currentRole, $currentRole]);
-            $rawMenus = $stmtFallback->fetchAll(PDO::FETCH_ASSOC);
-
-            // Auto seed ke user_menu_access
-            if (!empty($rawMenus)) {
-                try {
-                    $stmtSeed = $pdo->prepare("
-                        INSERT IGNORE INTO user_menu_access (user_id, menu_id)
-                        SELECT ?, rma.menu_id
-                        FROM role_menu_access rma
-                        INNER JOIN roles r ON r.id = rma.role_id
-                        WHERE r.role_key = ?
-                    ");
-                    $stmtSeed->execute([$currentUserId, $currentRole]);
-                } catch (Exception $e) {}
-            }
+        // Realtime session synchronization agar hak akses langsung sinkron tanpa logout
+        if (function_exists('loadUserPermissions')) {
+            loadUserPermissions($pdo, $currentUserId);
         }
     }
 

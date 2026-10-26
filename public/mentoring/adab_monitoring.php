@@ -31,6 +31,20 @@ if (!$isPrivileged) {
 $where = ["1=1"];
 $params = [];
 
+// Scoping unit: hanya santri dari grade/kelas dalam lingkup unit pengguna
+$accAdab = getMentoringAccessCondition('g', 'cg');
+if ($accAdab['condition'] !== '1 = 1') {
+    $unitExists = "EXISTS (
+        SELECT 1 FROM student_enrollments seX
+        JOIN class_groups cg ON cg.id = seX.class_group_id
+        JOIN grades g ON g.id = cg.grade_id
+        WHERE seX.student_id = s.id AND seX.status = 'active'
+        AND (" . $accAdab['condition'] . ")
+    )";
+    array_unshift($where, $unitExists);
+    array_unshift($params, ...$accAdab['params']);
+}
+
 // Jika role mentor biasa (atau pimpinan memilih filter mentor), kunci ke santri binaan mentor tersebut
 if ($filterMentor > 0) {
     $linkedMentorIds = getMentorAllAccountIds($pdo, $filterMentor);
@@ -124,11 +138,26 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
 
 // TARIK DAFTAR KELAS (untuk dropdown, disesuaikan dengan lingkup santri)
 if ($isPrivileged) {
-    $classesList = $pdo->query("
-        SELECT DISTINCT grade_name FROM student_adab_logs 
-        WHERE grade_name != '' 
-        ORDER BY grade_name ASC
-    ")->fetchAll(PDO::FETCH_COLUMN);
+    $accCls = getMentoringAccessCondition('g', 'cg');
+    if ($accCls['condition'] === '1 = 1') {
+        $classesList = $pdo->query("
+            SELECT DISTINCT grade_name FROM student_adab_logs 
+            WHERE grade_name != '' 
+            ORDER BY grade_name ASC
+        ")->fetchAll(PDO::FETCH_COLUMN);
+    } else {
+        $stmtCls = $pdo->prepare("
+            SELECT DISTINCT sal.grade_name 
+            FROM student_adab_logs sal
+            WHERE sal.grade_name != '' AND EXISTS (
+                SELECT 1 FROM class_groups cg JOIN grades g ON g.id = cg.grade_id
+                WHERE sal.grade_name = cg.name COLLATE utf8mb4_general_ci AND " . $accCls['condition'] . "
+            )
+            ORDER BY sal.grade_name ASC
+        ");
+        $stmtCls->execute($accCls['params']);
+        $classesList = $stmtCls->fetchAll(PDO::FETCH_COLUMN);
+    }
 } else {
     $linkedMentorIds = getMentorLinkedUserIds($pdo, $userId);
     $inQ = implode(',', array_fill(0, count($linkedMentorIds), '?'));

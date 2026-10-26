@@ -18,11 +18,12 @@ $currentRole = currentRole();
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
-    // 1. TAMBAH JADWAL BARU
+    // 1. TAMBAH JADWAL
     if ($action === 'add_schedule') {
         $typeId = (int)($_POST['type_id'] ?? 1);
         $teacherId = (int)($_POST['teacher_id'] ?? 0);
-        $observerId = (int)($_POST['observer_id'] ?? 0);
+        $canChooseObserver = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true);
+        $observerId = $canChooseObserver ? (int)($_POST['observer_id'] ?? $currentUserId) : $currentUserId;
         $subjectName = trim($_POST['subject_name'] ?? '');
         $className = trim($_POST['class_name'] ?? '');
         $schedDate = trim($_POST['scheduled_date'] ?? '');
@@ -84,23 +85,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // =========================================================================
-// QUERY DATA TAMPILAN
+// QUERY DATA TAMPILAN & SCOPING UNIT
 // =========================================================================
+$userUnit = getUserUnitInfo($pdo, $currentUserId);
+$userUnitId = $userUnit['unit_id'] ?? null;
+$userUnitName = $userUnit['unit_name'] ?? null;
+
+$isSuperAdmin = ($currentRole === 'super_admin');
+$canChooseObserver = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true);
+
 $search = trim($_GET['search'] ?? '');
 $filterType = (int)($_GET['type_id'] ?? 0);
+$filterUnit = (int)($_GET['unit_id'] ?? 0);
 
 $query = "
     SELECT ss.*, 
            st.name as type_name, st.type_key,
-           s.name as teacher_name, s.nik as teacher_nik,
-           u.name as observer_name
+           s.name as teacher_name, s.nik as teacher_nik, s.unit_id as teacher_unit_id,
+           u.name as observer_name,
+           sess.id as session_id, sess.status as session_status
     FROM supervision_schedules ss
     JOIN supervision_types st ON st.id = ss.type_id
     JOIN staff s ON s.id = ss.teacher_id
     JOIN users u ON u.id = ss.observer_id
+    LEFT JOIN supervision_sessions sess ON sess.schedule_id = ss.id
     WHERE 1=1
 ";
 $params = [];
+
+if (!$isSuperAdmin && $userUnitId > 0) {
+    // Non-super_admin: hanya jadwal unitnya atau di mana dia observer/guru
+    $query .= " AND (s.unit_id = ? OR ss.observer_id = ?)";
+    $params[] = $userUnitId;
+    $params[] = $currentUserId;
+} elseif ($isSuperAdmin && $filterUnit > 0) {
+    $query .= " AND s.unit_id = ?";
+    $params[] = $filterUnit;
+}
 
 if ($filterType > 0) {
     $query .= " AND ss.type_id = ?";
@@ -119,10 +140,12 @@ $stmtSchedules = $pdo->prepare($query);
 $stmtSchedules->execute($params);
 $schedules = $stmtSchedules->fetchAll(PDO::FETCH_ASSOC);
 
-// Master Data untuk Dropdown Form
+// Master Data untuk Dropdown Form & Filter
 $types = $pdo->query("SELECT id, name, type_key FROM supervision_types WHERE is_active = 1 ORDER BY sort_order ASC")->fetchAll(PDO::FETCH_ASSOC);
-$teachers = $pdo->query("SELECT id, name, nik FROM staff WHERE deleted_at IS NULL ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
-$observers = $pdo->query("SELECT id, name, username, role FROM users WHERE deleted_at IS NULL ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$unitsList = $pdo->query("SELECT id, unit FROM units WHERE id IN (1, 2, 3, 7) ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+
+$teachers = getSupervisionTeachers($pdo, $userUnitId);
+$observers = getSupervisionObservers($pdo, $userUnitId);
 
 $mapelList = [
     "Pendidikan Agama Islam / Al-Qur'an",
@@ -160,7 +183,7 @@ require_once __DIR__ . '/../../includes/header.php';
                 <span style="background: #e0f2fe; color: #0369a1; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 6px; text-transform: uppercase;">
                     <i class="fa-solid fa-calendar-days"></i> Manajemen Waktu
                 </span>
-                <span style="color: #94a3b8; font-size: 13px;">&bull; SMP An Nahl Islamic School</span>
+                <span style="color: #94a3b8; font-size: 13px;">&bull; <?= $userUnitName ? 'Unit ' . htmlspecialchars($userUnitName) : 'Seluruh Unit Sekolah' ?> &bull; An Nahl Islamic School</span>
             </div>
             <h1 style="margin: 0; font-size: 24px; font-weight: 800; color: #0f172a;">
                 Jadwal Supervisi Sekolah
@@ -195,6 +218,19 @@ require_once __DIR__ . '/../../includes/header.php';
                     <?php endforeach; ?>
                 </select>
             </div>
+
+            <?php if ($isSuperAdmin): ?>
+                <div style="width: 170px;">
+                    <select name="unit_id" class="form-control" onchange="this.form.submit()">
+                        <option value="0">-- Semua Unit --</option>
+                        <?php foreach ($unitsList as $un): ?>
+                            <option value="<?= $un['id'] ?>" <?= ($filterUnit == $un['id']) ? 'selected' : '' ?>>
+                                Unit <?= htmlspecialchars($un['unit']) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+            <?php endif; ?>
 
             <button type="submit" class="btn btn-secondary">
                 <i class="fa-solid fa-filter"></i> Filter
@@ -274,18 +310,26 @@ require_once __DIR__ . '/../../includes/header.php';
                                 </td>
                                 <td style="padding: 14px 16px; text-align: right;">
                                     <div style="display: inline-flex; align-items: center; gap: 6px;">
-                                        <?php if ($isCompleted): ?>
+                                        <?php if (!empty($sc['session_id']) && $sc['session_status'] === 'draft'): ?>
+                                            <!-- DRAF SUDAH ADA: TOMBOL LANJUTKAN DRAF -->
+                                            <?php 
+                                            $resumeUrl = ($sc['type_key'] === 'peer') ? "peer.php?session_id={$sc['session_id']}" : "principal.php?session_id={$sc['session_id']}";
+                                            ?>
+                                            <a href="<?= $resumeUrl ?>" class="btn btn-sm btn-warning" style="background: #f59e0b; border-color: #f59e0b; color: white; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 6px; text-decoration: none;" title="Lanjutkan Pengisian Draf Supervisi">
+                                                <i class="fa-solid fa-clock-rotate-left"></i> Lanjutkan Draf
+                                            </a>
+                                        <?php elseif ($isCompleted || (!empty($sc['session_id']) && $sc['session_status'] === 'completed')): ?>
                                             <span style="background: #dcfce7; color: #15803d; font-size: 11px; font-weight: 700; padding: 5px 10px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;">
                                                 <i class="fa-solid fa-check-circle"></i> Selesai
                                             </span>
                                         <?php else: ?>
-                                            <!-- TOMBOL HIJAU NILAI SEKARANG SESUAI SCREENSHOT 4 -->
+                                            <!-- BELUM DIMULAI: TOMBOL NILAI SEKARANG -->
                                             <a href="<?= $evalUrl ?>" class="btn btn-sm btn-success" style="background: #10b981; border-color: #10b981; color: white; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 6px; text-decoration: none;">
                                                 <i class="fa-solid fa-plus"></i> Nilai Sekarang
                                             </a>
                                         <?php endif; ?>
 
-                                        <button type="button" class="btn btn-sm btn-secondary" onclick='openEditScheduleModal(<?= json_encode($sc) ?>)' title="Edit Jadwal">
+                                        <button type="button" class="btn btn-sm btn-secondary" onclick='openEditScheduleModal(<?= json_encode($sc, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>)' title="Edit Jadwal">
                                             <i class="fa-solid fa-pen"></i>
                                         </button>
 
@@ -334,22 +378,54 @@ require_once __DIR__ . '/../../includes/header.php';
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
                     <div>
-                        <label style="display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #334155;">Guru yang Dinilai *</label>
+                        <label style="display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #334155;">
+                            Guru yang Dinilai *
+                            <?php if ($userUnitName): ?>
+                                <span style="font-size: 10.5px; font-weight: 600; color: #0284c7; background: #e0f2fe; padding: 1px 5px; border-radius: 4px; margin-left: 2px;">
+                                    Unit <?= htmlspecialchars($userUnitName) ?>
+                                </span>
+                            <?php endif; ?>
+                        </label>
+                        <input type="text" id="teacherSearchFilter" placeholder="Cari nama guru..." class="form-control" style="margin-bottom: 6px; font-size: 13px;" onkeyup="filterTeacherOptions(this.value)">
                         <select name="teacher_id" id="schedTeacherSelect" class="form-control" required>
                             <option value="">-- Pilih Guru --</option>
-                            <?php foreach ($teachers as $tc): ?>
-                                <option value="<?= $tc['id'] ?>"><?= htmlspecialchars($tc['name']) ?></option>
-                            <?php endforeach; ?>
+                            <?php if ($isSuperAdmin && empty($userUnitId)): ?>
+                                <?php 
+                                $groupedTeachers = [];
+                                foreach ($teachers as $tc) {
+                                    $uName = $tc['unit_name'] ?: 'Lainnya';
+                                    $groupedTeachers[$uName][] = $tc;
+                                }
+                                foreach ($groupedTeachers as $uLabel => $tList): ?>
+                                    <optgroup label="Unit <?= htmlspecialchars($uLabel) ?>">
+                                        <?php foreach ($tList as $tc): ?>
+                                            <option value="<?= $tc['id'] ?>"><?= htmlspecialchars($tc['name']) ?></option>
+                                        <?php endforeach; ?>
+                                    </optgroup>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <?php foreach ($teachers as $tc): ?>
+                                    <option value="<?= $tc['id'] ?>"><?= htmlspecialchars($tc['name']) ?></option>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
                         </select>
                     </div>
                     <div>
                         <label style="display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #334155;">Guru Observer *</label>
-                        <select name="observer_id" id="schedObserverSelect" class="form-control" required>
-                            <option value="">-- Pilih Observer --</option>
-                            <?php foreach ($observers as $ob): ?>
-                                <option value="<?= $ob['id'] ?>"><?= htmlspecialchars($ob['name']) ?> (<?= htmlspecialchars($ob['role']) ?>)</option>
-                            <?php endforeach; ?>
-                        </select>
+                        <?php if ($canChooseObserver): ?>
+                            <select name="observer_id" id="schedObserverSelect" class="form-control" required>
+                                <option value="">-- Pilih Observer --</option>
+                                <?php foreach ($observers as $ob): ?>
+                                    <option value="<?= $ob['id'] ?>"><?= htmlspecialchars($ob['name']) ?> (<?= htmlspecialchars($ob['role']) ?><?= !empty($ob['unit_name']) ? ' - ' . $ob['unit_name'] : '' ?>)</option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php else: ?>
+                            <input type="hidden" name="observer_id" id="schedObserverHidden" value="<?= $currentUserId ?>">
+                            <div class="form-control" style="background: #f8fafc; font-weight: 700; color: #1e293b; display: flex; align-items: center; justify-content: space-between; border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 10px 14px;">
+                                <span><i class="fa-solid fa-user-check" style="color: #10b981; margin-right: 6px;"></i> <?= htmlspecialchars($_SESSION['name'] ?? 'Akun Anda') ?></span>
+                                <span class="badge" style="background: #e0e7ff; color: #4338ca; font-size: 10px; padding: 2px 6px; border-radius: 4px;">Akun Anda</span>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -414,7 +490,7 @@ function openAddScheduleModal() {
     document.getElementById('schedActionInput').value = 'add_schedule';
     document.getElementById('schedIdInput').value = '';
     document.getElementById('schedTeacherSelect').value = '';
-    document.getElementById('schedObserverSelect').value = '<?= $currentUserId ?>';
+    const elObs = document.getElementById('schedObserverSelect'); if (elObs) elObs.value = '<?= $currentUserId ?>';
     document.getElementById('schedSubjectInput').value = '';
     document.getElementById('schedClassInput').value = '';
     document.getElementById('schedDateInput').value = '<?= date('Y-m-d') ?>';
@@ -431,7 +507,7 @@ function openEditScheduleModal(sc) {
     document.getElementById('schedIdInput').value = sc.id;
     document.getElementById('schedTypeSelect').value = sc.type_id;
     document.getElementById('schedTeacherSelect').value = sc.teacher_id;
-    document.getElementById('schedObserverSelect').value = sc.observer_id;
+    const elObs2 = document.getElementById('schedObserverSelect'); if (elObs2) elObs2.value = sc.observer_id;
     document.getElementById('schedSubjectInput').value = sc.subject_name;
     document.getElementById('schedClassInput').value = sc.class_name;
     document.getElementById('schedDateInput').value = sc.scheduled_date;
@@ -446,6 +522,22 @@ function openEditScheduleModal(sc) {
 function closeModal(id) {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
+}
+
+function filterTeacherOptions(keyword) {
+    const term = keyword.toLowerCase();
+    const select = document.getElementById('schedTeacherSelect');
+    const options = select.options;
+    for (let i = 0; i < options.length; i++) {
+        const opt = options[i];
+        if (opt.value === "") continue;
+        const text = opt.text.toLowerCase();
+        if (text.includes(term)) {
+            opt.style.display = "";
+        } else {
+            opt.style.display = "none";
+        }
+    }
 }
 </script>
 

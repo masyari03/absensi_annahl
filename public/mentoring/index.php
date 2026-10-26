@@ -311,6 +311,12 @@ if ($filterMentorId > 0) {
     }
 }
 
+$accMentees = getMentoringAccessCondition('g', 'cg');
+if ($accMentees['condition'] !== '1 = 1') {
+    $whereAssigned[] = $accMentees['condition'];
+    foreach ($accMentees['params'] as $ap) { $paramsAssigned[] = $ap; }
+}
+
 $whereSql = !empty($whereAssigned) ? "WHERE " . implode(' AND ', $whereAssigned) : "";
 
 $stmtMentees = $pdo->prepare("
@@ -325,6 +331,7 @@ $stmtMentees = $pdo->prepare("
     JOIN users u ON u.id = ma.mentor_user_id
     LEFT JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
     LEFT JOIN class_groups cg ON cg.id = se.class_group_id
+    LEFT JOIN grades g ON g.id = cg.grade_id
     {$whereSql}
     ORDER BY cg.name ASC, s.name ASC
 ");
@@ -357,6 +364,12 @@ if ($filterMentorId > 0) {
     $paramsRecent = [];
 }
 
+$accRecent = getMentoringAccessCondition('g', 'cg');
+if ($accRecent['condition'] !== '1 = 1') {
+    $whereRecentSql = ($whereRecentSql === '' ? 'WHERE ' : $whereRecentSql . ' AND ') . $accRecent['condition'];
+    $paramsRecent = array_merge($paramsRecent ?? [], $accRecent['params']);
+}
+
 $stmtRecent = $pdo->prepare("
     SELECT ms.*, s.name as student_name, s.nis, cg.name as class_name, u.name as mentor_name
     FROM mentoring_sessions ms
@@ -364,6 +377,7 @@ $stmtRecent = $pdo->prepare("
     JOIN users u ON u.id = ms.mentor_user_id
     LEFT JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
     LEFT JOIN class_groups cg ON cg.id = se.class_group_id
+    LEFT JOIN grades g ON g.id = cg.grade_id
     {$whereRecentSql}
     ORDER BY ms.session_date DESC, ms.id DESC
     LIMIT 25

@@ -143,20 +143,104 @@ if (!function_exists('isStudent')) {
 
 /**
  * =========================================================================
- * SISTEM RBAC FLEKSIBEL (DATABASE-DRIVEN ACL)
+ * SISTEM RBAC FLEKSIBEL (DATABASE-DRIVEN ACL DENGAN GRANULAR CRUD & MULTI-ROLE)
  * =========================================================================
  */
 
+if (!function_exists('currentUserRoles')) {
+    /**
+     * Mengambil daftar role key yang dimiliki user saat ini (mendukung multi-role).
+     */
+    function currentUserRoles(): array
+    {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        $roles = $_SESSION['roles'] ?? [];
+        if (empty($roles) && !empty($_SESSION['role'])) {
+            $roles = [$_SESSION['role']];
+        }
+        return array_values(array_unique($roles));
+    }
+}
+
+if (!function_exists('hasRole')) {
+    /**
+     * Memeriksa apakah user memiliki role tertentu (mendukung multi-role additive).
+     * Super Admin selalu true.
+     *
+     * @param string|array $roleKey Role key atau array of role keys
+     * @param int|null $userId
+     * @return bool
+     */
+    function hasRole($roleKey, ?int $userId = null): bool
+    {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        $uid = $userId !== null ? $userId : (int)($_SESSION['user_id'] ?? 0);
+        if ($uid <= 0) {
+            return false;
+        }
+
+        $checkKeys = is_array($roleKey) ? $roleKey : [$roleKey];
+        $currentPrimary = $_SESSION['role'] ?? '';
+
+        if ($uid === (int)($_SESSION['user_id'] ?? 0)) {
+            if ($currentPrimary === 'super_admin') {
+                return true;
+            }
+            $userRoles = currentUserRoles();
+            foreach ($checkKeys as $k) {
+                if (in_array($k, $userRoles, true)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        global $pdo;
+        if (isset($pdo)) {
+            try {
+                $stmt = $pdo->prepare("SELECT role FROM users WHERE id = ?");
+                $stmt->execute([$uid]);
+                $primary = $stmt->fetchColumn();
+                if ($primary === 'super_admin') {
+                    return true;
+                }
+                if (in_array($primary, $checkKeys, true)) {
+                    return true;
+                }
+
+                $inPlaceholders = implode(',', array_fill(0, count($checkKeys), '?'));
+                $stmtUR = $pdo->prepare("
+                    SELECT COUNT(*) 
+                    FROM user_roles ur
+                    JOIN roles r ON r.id = ur.role_id
+                    WHERE ur.user_id = ? AND r.role_key IN ($inPlaceholders)
+                ");
+                $stmtUR->execute(array_merge([$uid], $checkKeys));
+                return ((int)$stmtUR->fetchColumn()) > 0;
+            } catch (Exception $e) {
+                return false;
+            }
+        }
+        return false;
+    }
+}
+
 if (!function_exists('hasMenuAccess')) {
     /**
-     * Memeriksa apakah user saat ini memiliki hak akses terhadap menu_key tertentu.
-     * Super Admin selalu diizinkan (true).
+     * Memeriksa hak akses granular (Read, Create, Edit, Delete) terhadap menu_key.
+     * Super Admin selalu diizinkan penuh (true).
+     * Mendukung multi-role additive union.
      *
-     * @param string $menuKey Kode unik menu (misal: 'mentoring_report', 'mentoring_assignments')
+     * @param string $menuKey Kode unik menu (misal: 'supervisi_rubrik', 'mentoring_report')
+     * @param string $action  'read' (default), 'create', 'edit', atau 'delete'
      * @param int|null $userId ID pengguna (opsional, default: session saat ini)
      * @return bool
      */
-    function hasMenuAccess(string $menuKey, ?int $userId = null): bool
+    function hasMenuAccess(string $menuKey, string $action = 'read', ?int $userId = null): bool
     {
         if (session_status() === PHP_SESSION_NONE) {
             session_start();
@@ -172,38 +256,81 @@ if (!function_exists('hasMenuAccess')) {
             return false;
         }
 
-        // Cek cache session jika user adalah user yang sedang aktif login
-        if ($uid === (int)($_SESSION['user_id'] ?? 0) && isset($_SESSION['menu_keys']) && is_array($_SESSION['menu_keys'])) {
+        // Dashboard selalu diizinkan untuk read bagi user yang login
+        if ($menuKey === 'dashboard' && $action === 'read') {
+            return true;
+        }
+
+        $action = strtolower($action);
+        if (!in_array($action, ['read', 'create', 'edit', 'delete'], true)) {
+            $action = 'read';
+        }
+        $actField = 'can_' . $action;
+
+        // Cek cache session permissions jika user yang dicek adalah user yang login
+        if ($uid === (int)($_SESSION['user_id'] ?? 0) && isset($_SESSION['menu_permissions']) && is_array($_SESSION['menu_permissions'])) {
+            if (isset($_SESSION['menu_permissions'][$menuKey])) {
+                $p = $_SESSION['menu_permissions'][$menuKey];
+                return !empty($p[$action]);
+            }
+        }
+
+        // Jika hanya check 'read' dan ada $_SESSION['menu_keys']
+        if ($action === 'read' && $uid === (int)($_SESSION['user_id'] ?? 0) && isset($_SESSION['menu_keys']) && is_array($_SESSION['menu_keys'])) {
             if (in_array($menuKey, $_SESSION['menu_keys'], true)) {
                 return true;
             }
         }
 
-        // Cek langsung ke database (user_menu_access atau fallback role_menu_access)
+        // Cek langsung ke database dengan model additive union
         global $pdo;
         if (isset($pdo)) {
             try {
-                $stmt = $pdo->prepare("
-                    SELECT COUNT(*)
+                $sql = "
+                    SELECT 
+                        GREATEST(
+                            COALESCE(MAX(uma.$actField), 0),
+                            COALESCE(MAX(rma.$actField), 0)
+                        ) as allowed
                     FROM app_menus am
-                    LEFT JOIN user_menu_access uma ON uma.menu_id = am.id AND uma.user_id = ?
-                    LEFT JOIN role_menu_access rma ON rma.menu_id = am.id
-                    LEFT JOIN roles r ON r.id = rma.role_id
-                    LEFT JOIN users u ON u.id = ? AND u.role COLLATE utf8mb4_general_ci = r.role_key
+                    LEFT JOIN user_menu_access uma 
+                        ON uma.menu_id = am.id AND uma.user_id = ?
+                    LEFT JOIN user_roles ur 
+                        ON ur.user_id = ?
+                    LEFT JOIN roles r_ur 
+                        ON r_ur.id = ur.role_id
+                    LEFT JOIN users u 
+                        ON u.id = ?
+                    LEFT JOIN roles r_primary 
+                        ON r_primary.role_key = u.role
+                    LEFT JOIN role_menu_access rma 
+                        ON rma.menu_id = am.id AND (rma.role_id = ur.role_id OR rma.role_id = r_primary.id)
                     WHERE am.menu_key = ? AND am.is_active = 1
-                      AND (uma.user_id IS NOT NULL OR u.id IS NOT NULL)
-                ");
-                $stmt->execute([$uid, $uid, $menuKey]);
-                $allowed = ($stmt->fetchColumn() > 0);
+                ";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$uid, $uid, $uid, $menuKey]);
+                $allowed = ((int)$stmt->fetchColumn()) > 0;
 
-                if ($allowed && $uid === (int)($_SESSION['user_id'] ?? 0)) {
-                    if (!isset($_SESSION['menu_keys']) || !is_array($_SESSION['menu_keys'])) {
-                        $_SESSION['menu_keys'] = [];
+                // Update session cache
+                if ($uid === (int)($_SESSION['user_id'] ?? 0)) {
+                    if (!isset($_SESSION['menu_permissions'])) {
+                        $_SESSION['menu_permissions'] = [];
                     }
-                    if (!in_array($menuKey, $_SESSION['menu_keys'], true)) {
-                        $_SESSION['menu_keys'][] = $menuKey;
+                    if (!isset($_SESSION['menu_permissions'][$menuKey])) {
+                        $_SESSION['menu_permissions'][$menuKey] = ['read' => 0, 'create' => 0, 'edit' => 0, 'delete' => 0];
+                    }
+                    $_SESSION['menu_permissions'][$menuKey][$action] = $allowed ? 1 : 0;
+
+                    if ($allowed && $action === 'read') {
+                        if (!isset($_SESSION['menu_keys'])) {
+                            $_SESSION['menu_keys'] = [];
+                        }
+                        if (!in_array($menuKey, $_SESSION['menu_keys'], true)) {
+                            $_SESSION['menu_keys'][] = $menuKey;
+                        }
                     }
                 }
+
                 return $allowed;
             } catch (Exception $e) {
                 return false;
@@ -211,6 +338,30 @@ if (!function_exists('hasMenuAccess')) {
         }
 
         return false;
+    }
+}
+
+if (!function_exists('canRead')) {
+    function canRead(string $menuKey, ?int $userId = null): bool {
+        return hasMenuAccess($menuKey, 'read', $userId);
+    }
+}
+
+if (!function_exists('canCreate')) {
+    function canCreate(string $menuKey, ?int $userId = null): bool {
+        return hasMenuAccess($menuKey, 'create', $userId);
+    }
+}
+
+if (!function_exists('canEdit')) {
+    function canEdit(string $menuKey, ?int $userId = null): bool {
+        return hasMenuAccess($menuKey, 'edit', $userId);
+    }
+}
+
+if (!function_exists('canDelete')) {
+    function canDelete(string $menuKey, ?int $userId = null): bool {
+        return hasMenuAccess($menuKey, 'delete', $userId);
     }
 }
 
@@ -297,4 +448,4 @@ if (!function_exists('getUserAllowedUnitIds')) {
 
         return [];
     }
-}
+}

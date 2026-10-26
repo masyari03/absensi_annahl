@@ -86,7 +86,10 @@ if (empty($mentorsList)) {
     ")->fetchAll(PDO::FETCH_ASSOC);
 }
 
-$classGroups = $pdo->query("SELECT id, name FROM class_groups ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$accRep = getMentoringAccessCondition('g', 'cg');
+$cgStmt = $pdo->prepare("SELECT cg.id, cg.name FROM class_groups cg JOIN grades g ON g.id = cg.grade_id WHERE " . $accRep['condition'] . " ORDER BY cg.name ASC");
+$cgStmt->execute($accRep['params']);
+$classGroups = $cgStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // 3. DAFTAR SELURUH SANTRI SESUAI FILTER
 $sqlMentees = "
@@ -94,11 +97,12 @@ $sqlMentees = "
     FROM students s
     JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
     JOIN class_groups cg ON cg.id = se.class_group_id
+    LEFT JOIN grades g ON g.id = cg.grade_id
     LEFT JOIN mentoring_assignments ma ON ma.student_id = s.id AND ma.academic_year_id = ? AND ma.is_active = 1
     LEFT JOIN users u ON u.id = ma.mentor_user_id
-    WHERE s.deleted_at IS NULL
+    WHERE s.deleted_at IS NULL AND " . $accRep['condition'] . "
 ";
-$paramsMentees = [$filterAyId];
+$paramsMentees = array_merge([$filterAyId], $accRep['params']);
 if ($filterMentor > 0) {
     // Ambil SEMUA akun milik mentor tersebut (mencegah santri terputus akibat akun duplikat NIP vs Nama)
     $linkedMentorIds = getMentorAllAccountIds($pdo, $filterMentor);
