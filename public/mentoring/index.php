@@ -487,12 +487,6 @@ require __DIR__ . '/../../includes/header.php';
                 </a>
             <?php endif; ?>
 
-            <?php if (hasMenuAccess('mentoring_assignments') && $isPrivileged): ?>
-                <a href="assignments.php" class="btn" style="padding: 8px 14px; font-size: 13px; font-weight: 700; background: #0284c7; color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 6px;">
-                    <i class="fa-solid fa-users-rectangle"></i> Kelola Kelompok Mentoring
-                </a>
-            <?php endif; ?>
-
             <?php if ($isPrivileged): ?>
                 <!-- Filter Pilihan Guru Mentor Khusus Pimpinan -->
                 <form method="GET" style="display: flex; gap: 8px; align-items: center;">
