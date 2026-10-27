@@ -600,13 +600,19 @@ try {
                 ]);
             }
 
-            // Kirim Notifikasi WhatsApp Masuk / Telat
+            // Kirim Notifikasi WhatsApp Masuk / Telat & In-App Notification jika terlambat
             try {
                 sendStudentWaNotification($pdo, $studentId, ($statusKehadiran === 'terlambat' ? 'late' : 'in'), [
                     'jam_absen'        => date('H:i', strtotime($timeNow)),
                     'status_kehadiran' => $statusKehadiran
                 ]);
             } catch (Throwable $e) {}
+
+            if ($statusKehadiran === 'terlambat' && function_exists('notifyLateStudentAttendance')) {
+                try {
+                    notifyLateStudentAttendance($pdo, (int)$studentId, (string)$timeNow, 'terlambat');
+                } catch (Throwable $e) {}
+            }
 
         } else {
             // Sesi Pulang

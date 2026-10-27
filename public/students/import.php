@@ -34,7 +34,37 @@ function parseXlsxFile($filePath) {
         }
     }
     
+    // Cari sheet pertama: prioritaskan sheet1.xml, fallback ke workbook.xml -> rels, lalu ke sheet mana pun.
     $sheetXml = $zip->getFromName('xl/worksheets/sheet1.xml');
+    if ($sheetXml === false) {
+        $wbXml = $zip->getFromName('xl/workbook.xml');
+        $relsXml = $zip->getFromName('xl/_rels/workbook.xml.rels');
+        $target = null;
+        if ($wbXml !== false && $relsXml !== false) {
+            $wb = simplexml_load_string($wbXml);
+            $rels = simplexml_load_string($relsXml);
+            if ($wb && $rels) {
+                $firstSheet = $wb->sheets->sheet[0] ?? null;
+                if ($firstSheet !== null) {
+                    $rid = (string)($firstSheet->attributes('http://schemas.openxmlformats.org/officeDocument/2006/relationships')['id'] ?? '');
+                    foreach ($rels->Relationship as $rel) {
+                        if ((string)$rel['Id'] === $rid && $rid !== '') { $target = (string)$rel['Target']; }
+                    }
+                }
+            }
+        }
+        if ($target !== null) {
+            $sheetXml = $zip->getFromName(ltrim($target, '/') !== $target ? $target : 'xl/' . ltrim($target, '/'));
+            if ($sheetXml === false) { $sheetXml = $zip->getFromName('xl/' . ltrim($target, '/')); }
+        }
+        if ($sheetXml === false) {
+            // Fallback terakhir: sheet pertama yang tersedia secara alfabetis
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                $nm = $zip->getNameIndex($i);
+                if (preg_match('#^xl/worksheets/sheet\d+\.xml$#', $nm)) { $sheetXml = $zip->getFromName($nm); break; }
+            }
+        }
+    }
     if ($sheetXml === false) {
         $zip->close();
         throw new Exception("Format Excel tidak sesuai. Sheet pertama tidak ditemukan.");
@@ -54,9 +84,16 @@ function parseXlsxFile($filePath) {
                 }
                 $idx = $colIdx - 1;
                 
-                $val = (string)$c->v;
-                if (isset($c['t']) && (string)$c['t'] == 's') { 
-                    $val = $sharedStrings[(int)$val] ?? ''; 
+                $val = '';
+                $cellType = isset($c['t']) ? (string)$c['t'] : '';
+                if ($cellType === 'inlineStr') {
+                    // Excel hasil ekspor openpyxl / Google Sheets / script: teks tersimpan inline
+                    if (isset($c->is->t)) { $val = (string)$c->is->t; }
+                    elseif (isset($c->is->r)) { foreach ($c->is->r as $rPart) { $val .= (string)$rPart->t; } }
+                } elseif ($cellType === 's') {
+                    $val = $sharedStrings[(int)((string)$c->v)] ?? '';
+                } else {
+                    $val = (string)$c->v; // angka & t=str (formula)
                 }
                 if ($idx < 10) { $rowData[$idx] = $val; }
             }

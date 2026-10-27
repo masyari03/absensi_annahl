@@ -12,12 +12,10 @@ $unitId = (int)($_GET['unit_id'] ?? 0);
 $currentRole = currentRole();
 $userId = currentUserId();
 
-if ($currentRole === 'kepala_sekolah') {
-    $stmtKs = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? LIMIT 1");
-    $stmtKs->execute([$userId]);
-    $ksUnitId = (int)$stmtKs->fetchColumn();
-    if ($unitId !== $ksUnitId) {
-        $unitId = $ksUnitId;
+if ($currentRole !== 'super_admin') {
+    $allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $currentRole);
+    if (!empty($allowedUnitIds) && !in_array($unitId, $allowedUnitIds, true)) {
+        $unitId = $allowedUnitIds[0];
     }
 }
 

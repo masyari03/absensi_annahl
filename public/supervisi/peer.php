@@ -18,10 +18,36 @@ $stmtType = $pdo->prepare("SELECT * FROM supervision_types WHERE id = ? LIMIT 1"
 $stmtType->execute([$typeId]);
 $typeInfo = $stmtType->fetch(PDO::FETCH_ASSOC);
 
-// Cek jika ada schedule_id yang diteruskan dari halaman Jadwal
+// 1. Cek mode: Sesi Baru atau Melanjutkan Sesi Tersimpan (Draf / Edit)
+$sessionId = (int)($_GET['session_id'] ?? 0);
 $scheduleId = (int)($_GET['schedule_id'] ?? 0);
+$editSession = null;
+$savedScores = [];
+
+if ($sessionId > 0) {
+    $stmtSess = $pdo->prepare("SELECT * FROM supervision_sessions WHERE id = ? AND type_id = ? LIMIT 1");
+    $stmtSess->execute([$sessionId, $typeId]);
+    $editSession = $stmtSess->fetch(PDO::FETCH_ASSOC);
+    if (!$editSession) {
+        flash('error', 'Dokumen supervisi tidak ditemukan.');
+        redirect('reports.php');
+    }
+    // Proteksi otorisasi observer
+    if (!in_array($currentRole, ['super_admin', 'admin'], true) && $editSession['observer_id'] != $currentUserId) {
+        flash('error', 'Anda tidak memiliki hak akses untuk mengubah dokumen supervisi ini.');
+        redirect('reports.php');
+    }
+    $scheduleId = (int)($editSession['schedule_id'] ?? 0);
+
+    // Ambil skor tersimpan
+    $stmtScores = $pdo->prepare("SELECT item_id, score FROM supervision_scores WHERE session_id = ?");
+    $stmtScores->execute([$sessionId]);
+    $savedScores = $stmtScores->fetchAll(PDO::FETCH_KEY_PAIR);
+}
+
+// 2. Cek jika ada schedule_id yang diteruskan dari halaman Jadwal
 $prefillSchedule = null;
-if ($scheduleId > 0) {
+if ($scheduleId > 0 && !$editSession) {
     $stmtSched = $pdo->prepare("
         SELECT ss.*, s.name as teacher_name, u.name as observer_name
         FROM supervision_schedules ss
@@ -33,13 +59,65 @@ if ($scheduleId > 0) {
     $prefillSchedule = $stmtSched->fetch(PDO::FETCH_ASSOC);
 }
 
+// 3. Evaluasi Kunci Jam (Time-Lock) & Izin Edit (Edit-Lock)
+$isTimeLocked = false;
+$timeLockMsg = '';
+$isEditLocked = false;
+$editLockMsg = '';
+
+$checkScheduleId = $scheduleId ?: (int)($_POST['schedule_id'] ?? 0);
+$schedData = null;
+if ($checkScheduleId > 0) {
+    $stmtScCheck = $pdo->prepare("SELECT * FROM supervision_schedules WHERE id = ?");
+    $stmtScCheck->execute([$checkScheduleId]);
+    $schedData = $stmtScCheck->fetch(PDO::FETCH_ASSOC);
+}
+
+if ($schedData) {
+    $schedDate = $schedData['scheduled_date'];
+    $timeStart = $schedData['time_start'] ?: '00:00:00';
+    $bypassTime = (int)$schedData['bypass_time_lock'];
+
+    $schedTs = strtotime("{$schedDate} {$timeStart}");
+    if (time() < $schedTs && $bypassTime === 0) {
+        $isTimeLocked = true;
+        $timeLockMsg = "Jadwal supervisi belum dimulai. Waktu pelaksanaan terdaftar pada " . formatIndoDate($schedDate) . " pukul " . substr($timeStart, 0, 5) . ". Penilaian dikunci sampai jam pelaksanaan dimulai, atau sampai Kepala Sekolah membuka kunci jam supervisi.";
+    }
+}
+
+if ($editSession && $editSession['status'] === 'completed') {
+    $isPrivilegedUser = in_array($currentRole, ['super_admin', 'kepala_sekolah', 'admin'], true);
+    $hasAllowEdit = ($schedData && (int)$schedData['allow_edit'] === 1);
+    if (!$isPrivilegedUser && !$hasAllowEdit) {
+        $isEditLocked = true;
+        $editLockMsg = "Dokumen supervisi ini telah diselesaikan dan terkunci secara permanen. Pengubahan data hanya dapat dilakukan jika Kepala Sekolah mengaktifkan 'Izin Edit' pada jadwal supervisi terkait.";
+    }
+}
+$isFormLocked = ($isTimeLocked || $isEditLocked);
+
 // =========================================================================
-// ACTION: SIMPAN FORMULIR SUPERVISI SEJAWAT (TRANSACTION SAFETY)
+// ACTION: SIMPAN FORMULIR SUPERVISI SEJAWAT (DRAF ATAU FINALISASI)
 // =========================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_peer_supervision') {
+    $sessId = (int)($_POST['session_id'] ?? 0);
     $schedId = !empty($_POST['schedule_id']) ? (int)$_POST['schedule_id'] : null;
+
+    if ($isTimeLocked) {
+        flash('error', $timeLockMsg);
+        redirect('peer.php' . ($sessId ? "?session_id={$sessId}" : ($schedId ? "?schedule_id={$schedId}" : '')));
+    }
+    if ($isEditLocked) {
+        flash('error', $editLockMsg);
+        redirect('peer.php' . ($sessId ? "?session_id={$sessId}" : ($schedId ? "?schedule_id={$schedId}" : '')));
+    }
+
+    $submitAction = $_POST['submit_action'] ?? 'save_completed';
+    $isDraft = ($submitAction === 'save_draft');
+    $sessionStatus = $isDraft ? 'draft' : 'completed';
+
     $teacherId = (int)($_POST['teacher_id'] ?? 0);
-    $observerId = (int)($_POST['observer_id'] ?? $currentUserId);
+    $canChooseObserver = in_array($currentRole, ['super_admin', 'admin'], true);
+    $observerId = $canChooseObserver ? (int)($_POST['observer_id'] ?? $currentUserId) : $currentUserId;
     $subjectName = trim($_POST['subject_name'] ?? '');
     $className = trim($_POST['class_name'] ?? '');
     $obsDate = trim($_POST['observation_date'] ?? date('Y-m-d'));
@@ -51,13 +129,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     $scoresInput = $_POST['score'] ?? []; // [item_id => score_val]
 
-    // Validasi dasar
-    if ($teacherId <= 0 || empty($subjectName) || empty($className) || empty($obsDate)) {
-        flash('error', 'Harap lengkapi informasi guru, mata pelajaran, kelas, dan tanggal observasi.');
-        redirect('peer.php' . ($schedId ? "?schedule_id={$schedId}" : ''));
+    // Validasi
+    if ($isDraft) {
+        if ($teacherId <= 0) {
+            flash('error', 'Harap pilih nama guru yang dinilai sebelum menyimpan draf.');
+            redirect('peer.php' . ($sessId ? "?session_id={$sessId}" : ($schedId ? "?schedule_id={$schedId}" : '')));
+        }
+        if (empty($subjectName)) $subjectName = 'Mata Pelajaran (Draf)';
+        if (empty($className)) $className = '-';
+        if (empty($obsDate)) $obsDate = date('Y-m-d');
+    } else {
+        if ($teacherId <= 0 || empty($subjectName) || empty($className) || empty($obsDate)) {
+            flash('error', 'Harap lengkapi informasi guru, mata pelajaran, kelas, dan tanggal observasi.');
+            redirect('peer.php' . ($sessId ? "?session_id={$sessId}" : ($schedId ? "?schedule_id={$schedId}" : '')));
+        }
     }
 
-    // Ambil seluruh butir aktif untuk menghitung skor secara akurat di server-side
+    // Ambil seluruh butir aktif
     $stmtRubrics = $pdo->prepare("
         SELECT sri.id, sri.category_id, sri.min_score, sri.max_score, sri.weight
         FROM supervision_rubric_items sri
@@ -72,7 +160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         redirect('peer.php');
     }
 
-    // Hitung total perolehan skor dan skor maksimal
+    // Hitung total skor & skor maksimal
     $totalScore = 0;
     $maxPossibleScore = 0;
     $validScoresToInsert = [];
@@ -82,29 +170,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $itemWeight = (float)$item['weight'];
         $maxPossibleScore += ($item['max_score'] * $itemWeight);
 
-        $val = isset($scoresInput[$itemId]) ? (float)$scoresInput[$itemId] : (float)$item['min_score'];
-        // Clamp score
-        if ($val < $item['min_score']) $val = (float)$item['min_score'];
-        if ($val > $item['max_score']) $val = (float)$item['max_score'];
-
-        $totalScore += ($val * $itemWeight);
-        $validScoresToInsert[] = [
-            'item_id' => $itemId,
-            'score'   => $val
-        ];
+        if (isset($scoresInput[$itemId]) && $scoresInput[$itemId] !== '') {
+            $val = (float)$scoresInput[$itemId];
+            if ($val < $item['min_score']) $val = (float)$item['min_score'];
+            if ($val > $item['max_score']) $val = (float)$item['max_score'];
+            $totalScore += ($val * $itemWeight);
+            $validScoresToInsert[] = [
+                'item_id' => $itemId,
+                'score'   => $val
+            ];
+        } elseif (!$isDraft) {
+            $val = (float)$item['min_score'];
+            $totalScore += ($val * $itemWeight);
+            $validScoresToInsert[] = [
+                'item_id' => $itemId,
+                'score'   => $val
+            ];
+        }
     }
 
     $percentageScore = ($maxPossibleScore > 0) ? round(($totalScore / $maxPossibleScore) * 100, 2) : 0.00;
 
-    // Tentukan Predikat berdasarkan persentase
-    $stmtPred = $pdo->prepare("
-        SELECT predicate_name 
-        FROM supervision_predicates 
-        WHERE (type_id = ? OR type_id IS NULL) AND min_percentage <= ?
-        ORDER BY min_percentage DESC LIMIT 1
-    ");
-    $stmtPred->execute([$typeId, $percentageScore]);
-    $predicateName = $stmtPred->fetchColumn() ?: 'Need Improvement';
+    if ($isDraft) {
+        $predicateName = 'Draf (Belum Selesai)';
+    } else {
+        $stmtPred = $pdo->prepare("
+            SELECT predicate_name 
+            FROM supervision_predicates 
+            WHERE (type_id = ? OR type_id IS NULL) AND min_percentage <= ?
+            ORDER BY min_percentage DESC LIMIT 1
+        ");
+        $stmtPred->execute([$typeId, $percentageScore]);
+        $predicateName = $stmtPred->fetchColumn() ?: 'Need Improvement';
+    }
 
     // Ambil nama tanda tangan
     $stmtTName = $pdo->prepare("SELECT name FROM staff WHERE id = ?");
@@ -118,26 +216,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     // SIMPAN KE DATABASE DENGAN TRANSAKSI
     $pdo->beginTransaction();
     try {
-        $stmtInsert = $pdo->prepare("
-            INSERT INTO supervision_sessions (
-                schedule_id, type_id, teacher_id, observer_id, subject_name, class_name,
-                observation_date, room_location, total_score, max_possible_score, percentage_score,
-                predicate_name, notes_good_practice, notes_growth_plan, notes_teacher_reflection,
-                signed_teacher_name, signed_observer_name, signed_principal_name
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, 'Awang Darmawan, SS'
-            )
-        ");
-        $stmtInsert->execute([
-            $schedId, $typeId, $teacherId, $observerId, $subjectName, $className,
-            $obsDate, $roomLocation, $totalScore, $maxPossibleScore, $percentageScore,
-            $predicateName, $notesGood, $notesGrowth, $notesReflection,
-            $signedTeacherName, $signedObserverName
-        ]);
-        $sessionId = (int)$pdo->lastInsertId();
+        if ($sessId > 0) {
+            // UPDATE SESI
+            $stmtUpd = $pdo->prepare("
+                UPDATE supervision_sessions SET
+                    schedule_id = ?, status = ?, teacher_id = ?, observer_id = ?,
+                    subject_name = ?, class_name = ?, observation_date = ?, room_location = ?,
+                    total_score = ?, max_possible_score = ?, percentage_score = ?,
+                    predicate_name = ?, notes_good_practice = ?, notes_growth_plan = ?,
+                    notes_teacher_reflection = ?, signed_teacher_name = ?, signed_observer_name = ?
+                WHERE id = ?
+            ");
+            $stmtUpd->execute([
+                $schedId, $sessionStatus, $teacherId, $observerId,
+                $subjectName, $className, $obsDate, $roomLocation,
+                $totalScore, $maxPossibleScore, $percentageScore,
+                $predicateName, $notesGood, $notesGrowth, $notesReflection,
+                $signedTeacherName, $signedObserverName,
+                $sessId
+            ]);
+            $sessionId = $sessId;
+
+            // Hapus skor lama untuk di-refresh
+            $pdo->prepare("DELETE FROM supervision_scores WHERE session_id = ?")->execute([$sessionId]);
+        } else {
+            // INSERT SESI BARU
+            $stmtInsert = $pdo->prepare("
+                INSERT INTO supervision_sessions (
+                    schedule_id, status, type_id, teacher_id, observer_id, subject_name, class_name,
+                    observation_date, room_location, total_score, max_possible_score, percentage_score,
+                    predicate_name, notes_good_practice, notes_growth_plan, notes_teacher_reflection,
+                    signed_teacher_name, signed_observer_name, signed_principal_name
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, 'Awang Darmawan, SS'
+                )
+            ");
+            $stmtInsert->execute([
+                $schedId, $sessionStatus, $typeId, $teacherId, $observerId, $subjectName, $className,
+                $obsDate, $roomLocation, $totalScore, $maxPossibleScore, $percentageScore,
+                $predicateName, $notesGood, $notesGrowth, $notesReflection,
+                $signedTeacherName, $signedObserverName
+            ]);
+            $sessionId = (int)$pdo->lastInsertId();
+        }
 
         // Insert rincian skor per butir
         $stmtScore = $pdo->prepare("INSERT INTO supervision_scores (session_id, item_id, score) VALUES (?, ?, ?)");
@@ -145,31 +269,82 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $stmtScore->execute([$sessionId, $vScore['item_id'], $vScore['score']]);
         }
 
-        // Jika berasal dari jadwal, update status jadwal menjadi 'completed'
+        // Update status jadwal jika tertaut
         if ($schedId && $schedId > 0) {
-            $pdo->prepare("UPDATE supervision_schedules SET status = 'completed' WHERE id = ?")->execute([$schedId]);
+            $schedStatus = $isDraft ? 'in_progress' : 'completed';
+            $pdo->prepare("UPDATE supervision_schedules SET status = ? WHERE id = ?")->execute([$schedStatus, $schedId]);
         }
 
         $pdo->commit();
-        flash('success', "Dokumen Supervisi Teman Sejawat untuk {$signedTeacherName} berhasil disimpan dengan predikat: {$predicateName} ({$percentageScore}%).");
-        redirect('reports.php');
+
+        if ($isDraft) {
+            flash('success', "Draf supervisi untuk {$signedTeacherName} berhasil disimpan sementara. Anda dapat melanjutkan penilaian kapan saja.");
+            redirect("peer.php?session_id={$sessionId}");
+        } else {
+            // Kirim notifikasi hasil supervisi selesai
+            try {
+                // Notif ke guru yang dinilai
+                $stmtTUser = $pdo->prepare("SELECT user_id, name FROM staff WHERE id = ?");
+                $stmtTUser->execute([$teacherId]);
+                $tStaffRow = $stmtTUser->fetch(PDO::FETCH_ASSOC);
+                if ($tStaffRow && !empty($tStaffRow['user_id'])) {
+                    createNotification(
+                        $pdo, 
+                        (int)$tStaffRow['user_id'], 
+                        'supervisi', 
+                        'Supervisi Teman Sejawat Selesai', 
+                        "Supervisi pembelajaran Anda untuk mapel {$subjectName} telah selesai dinilai oleh {$signedObserverName} dengan predikat {$predicateName} ({$percentageScore}%).", 
+                        "supervisi/reports.php"
+                    );
+                }
+
+                // Notif ke Kepala Sekolah (dari jadwal)
+                if ($schedId && $schedId > 0) {
+                    $stmtScP = $pdo->prepare("SELECT principal_id, delegated_user_id FROM supervision_schedules WHERE id = ?");
+                    $stmtScP->execute([$schedId]);
+                    $scP = $stmtScP->fetch(PDO::FETCH_ASSOC);
+                    if ($scP && !empty($scP['principal_id'])) {
+                        createNotification(
+                            $pdo,
+                            (int)$scP['principal_id'],
+                            'supervisi',
+                            'Laporan Supervisi Sejawat Selesai',
+                            "Observer {$signedObserverName} telah menyelesaikan penilaian supervisi sejawat untuk {$signedTeacherName} (Mapel: {$subjectName}) dengan predikat {$predicateName} ({$percentageScore}%).",
+                            "supervisi/reports.php"
+                        );
+                    }
+                }
+            } catch (Throwable $e) {
+                error_log("Supervision completion notification error: " . $e->getMessage());
+            }
+
+            flash('success', "Dokumen Supervisi Teman Sejawat untuk {$signedTeacherName} berhasil difinalisasi & disimpan resmi dengan predikat: {$predicateName} ({$percentageScore}%).");
+            redirect('reports.php');
+        }
     } catch (Exception $e) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
         }
         flash('error', 'Gagal menyimpan supervisi: ' . $e->getMessage());
-        redirect('peer.php');
+        redirect('peer.php' . ($sessId ? "?session_id={$sessId}" : ''));
     }
 }
 
 // =========================================================================
-// QUERY DATA TAMPILAN INSTRUMEN
+// QUERY DATA TAMPILAN INSTRUMEN & SCOPING UNIT
 // =========================================================================
-// 1. Ambil daftar guru dari tabel staff & users
-$teachers = $pdo->query("SELECT id, name, nik FROM staff WHERE deleted_at IS NULL ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$userUnit = getUserUnitInfo($pdo, $currentUserId);
+$userUnitId = $userUnit['unit_id'] ?? null;
+$userUnitName = $userUnit['unit_name'] ?? null;
 
-// 2. Ambil daftar observer (user staff/guru/kepsek)
-$observers = $pdo->query("SELECT id, name, username, role FROM users WHERE deleted_at IS NULL ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$isSuperAdmin = ($currentRole === 'super_admin');
+$canChooseObserver = in_array($currentRole, ['super_admin', 'admin'], true);
+
+// 1. Ambil daftar guru terobservasi (scoped per unit pengguna, mengecualikan observer sendiri dan siswa)
+$teachers = getSupervisionTeachers($pdo, $userUnitId, $currentUserId);
+
+// 2. Ambil daftar observer (hanya jika super admin/admin yang berhak memilih observer lain)
+$observers = getSupervisionObservers($pdo, $userUnitId);
 
 // 3. Ambil Kategori & Butir Aktif untuk Sejawat (type_id = 1)
 $stmtCats = $pdo->prepare("SELECT * FROM supervision_categories WHERE type_id = ? AND is_active = 1 ORDER BY sort_order ASC, id ASC");
@@ -269,15 +444,65 @@ require_once __DIR__ . '/../../includes/header.php';
                     Need Improvement
                 </span>
             </div>
-            <button type="button" class="btn btn-primary" onclick="document.getElementById('formSupervisiPeer').requestSubmit()" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px;">
-                <i class="fa-solid fa-floppy-disk"></i> Simpan Hasil Supervisi
-            </button>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <button type="button" class="btn btn-warning" onclick="submitAsDraft()" <?= $isFormLocked ? 'disabled style="background: #94a3b8; border-color: #94a3b8; color: white; opacity: 0.6; cursor: not-allowed; padding: 9px 15px; border-radius: 8px;"' : 'style="background: #f59e0b; border-color: #f59e0b; color: white; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; padding: 9px 15px; border-radius: 8px;"' ?> title="<?= $isFormLocked ? 'Form terkunci' : 'Simpan penilaian sementara dan lanjutkan nanti' ?>">
+                    <i class="fa-solid fa-file-pen"></i> Simpan Draf
+                </button>
+                <button type="button" class="btn btn-primary" onclick="submitAsCompleted()" <?= $isFormLocked ? 'disabled style="background: #94a3b8; border-color: #94a3b8; opacity: 0.6; cursor: not-allowed; padding: 9px 16px; border-radius: 8px;"' : 'style="display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: 8px; font-weight: 700;"' ?> title="<?= $isFormLocked ? 'Form terkunci' : 'Finalisasi dokumen supervisi' ?>">
+                    <i class="fa-solid fa-check-double"></i> Selesaikan Penilaian
+                </button>
+            </div>
         </div>
     </div>
+
+    <?php if ($isTimeLocked): ?>
+        <!-- BANNER KUNCI JAM (TIME-LOCK) -->
+        <div style="background: #fffbeb; border: 1.5px solid #fde68a; border-left: 5px solid #f59e0b; padding: 16px 20px; border-radius: 10px; margin-bottom: 24px; color: #92400e; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <div style="font-weight: 800; font-size: 14.5px; display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-clock-rotate-left" style="font-size: 18px;"></i> Jadwal Supervisi Belum Dimulai (Form Terkunci)
+            </div>
+            <p style="margin: 6px 0 0; font-size: 13px; line-height: 1.5;">
+                <?= htmlspecialchars($timeLockMsg) ?>
+            </p>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($isEditLocked): ?>
+        <!-- BANNER IZIN EDIT TERKUNCI (EDIT-LOCK) -->
+        <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-left: 5px solid #64748b; padding: 16px 20px; border-radius: 10px; margin-bottom: 24px; color: #334155; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <div style="font-weight: 800; font-size: 14.5px; display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-lock" style="font-size: 18px;"></i> Dokumen Supervisi Telah Selesai &amp; Terkunci Permanen
+            </div>
+            <p style="margin: 6px 0 0; font-size: 13px; line-height: 1.5;">
+                <?= htmlspecialchars($editLockMsg) ?>
+            </p>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($editSession): ?>
+        <!-- BANNER MODE RESUME / DRAF -->
+        <div style="background: <?= $editSession['status'] === 'draft' ? '#fef3c7' : '#eff6ff' ?>; border-left: 4px solid <?= $editSession['status'] === 'draft' ? '#f59e0b' : '#3b82f6' ?>; padding: 14px 20px; border-radius: 10px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <div>
+                <div style="font-weight: 800; font-size: 14px; color: <?= $editSession['status'] === 'draft' ? '#92400e' : '#1e40af' ?>;">
+                    <i class="fa-solid fa-pen-to-square"></i> Melanjutkan Penilaian Supervisi (<?= $editSession['status'] === 'draft' ? 'Mode Draf' : 'Mode Edit' ?>)
+                </div>
+                <div style="font-size: 12.5px; color: #475569; margin-top: 2px;">
+                    Guru: <strong><?= htmlspecialchars($editSession['signed_teacher_name'] ?: 'Guru') ?></strong> &bull; Butir Terisi: <strong><?= count($savedScores) ?> / <?= $totalItemsCount ?> butir</strong>
+                </div>
+            </div>
+            <span style="background: white; border: 1.5px solid <?= $editSession['status'] === 'draft' ? '#fde68a' : '#bfdbfe' ?>; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 800; color: <?= $editSession['status'] === 'draft' ? '#b45309' : '#1d4ed8' ?>;">
+                STATUS: <?= strtoupper($editSession['status']) ?>
+            </span>
+        </div>
+    <?php endif; ?>
 
     <!-- FORM PENILAIAN -->
     <form method="POST" id="formSupervisiPeer" onsubmit="return validateBeforeSubmit();">
         <input type="hidden" name="action" value="save_peer_supervision">
+        <input type="hidden" name="submit_action" id="submitActionInput" value="save_completed">
+        <?php if ($sessionId): ?>
+            <input type="hidden" name="session_id" value="<?= $sessionId ?>">
+        <?php endif; ?>
         <?php if ($scheduleId): ?>
             <input type="hidden" name="schedule_id" value="<?= $scheduleId ?>">
         <?php endif; ?>
@@ -294,16 +519,41 @@ require_once __DIR__ . '/../../includes/header.php';
                 <div>
                     <label style="display: block; font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 6px;">
                         Guru yang Dinilai (Terobservasi) *
+                        <?php if ($userUnitName): ?>
+                            <span style="font-size: 11px; font-weight: 600; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; margin-left: 4px;">
+                                Unit <?= htmlspecialchars($userUnitName) ?>
+                            </span>
+                        <?php endif; ?>
                     </label>
                     <select name="teacher_id" id="teacherSelect" class="form-control" required style="font-size: 13.5px; font-weight: 600;">
                         <option value="">-- Pilih Nama Guru --</option>
-                        <?php foreach ($teachers as $tc): 
-                            $isSelected = ($prefillSchedule && $prefillSchedule['teacher_id'] == $tc['id']);
-                        ?>
-                            <option value="<?= $tc['id'] ?>" <?= $isSelected ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($tc['name']) ?> <?= !empty($tc['nik']) ? '(' . $tc['nik'] . ')' : '' ?>
-                            </option>
-                        <?php endforeach; ?>
+                        <?php if ($isSuperAdmin && empty($userUnitId)): ?>
+                            <?php 
+                            $groupedTeachers = [];
+                            foreach ($teachers as $tc) {
+                                $uName = $tc['unit_name'] ?: 'Lainnya';
+                                $groupedTeachers[$uName][] = $tc;
+                            }
+                            foreach ($groupedTeachers as $uLabel => $tList): ?>
+                                <optgroup label="Unit <?= htmlspecialchars($uLabel) ?>">
+                                    <?php foreach ($tList as $tc): 
+                                        $isSelected = ($editSession && $editSession['teacher_id'] == $tc['id']) || ($prefillSchedule && $prefillSchedule['teacher_id'] == $tc['id']);
+                                    ?>
+                                        <option value="<?= $tc['id'] ?>" <?= $isSelected ? 'selected' : '' ?>>
+                                            <?= htmlspecialchars($tc['name']) ?> <?= !empty($tc['nik']) ? '(' . $tc['nik'] . ')' : '' ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </optgroup>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <?php foreach ($teachers as $tc): 
+                                $isSelected = ($editSession && $editSession['teacher_id'] == $tc['id']) || ($prefillSchedule && $prefillSchedule['teacher_id'] == $tc['id']);
+                            ?>
+                                <option value="<?= $tc['id'] ?>" <?= $isSelected ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($tc['name']) ?> <?= !empty($tc['nik']) ? '(' . $tc['nik'] . ')' : '' ?>
+                                </option>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
                     </select>
                 </div>
 
@@ -312,15 +562,29 @@ require_once __DIR__ . '/../../includes/header.php';
                     <label style="display: block; font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 6px;">
                         Guru Observer (Penilai) *
                     </label>
-                    <select name="observer_id" id="observerSelect" class="form-control" required style="font-size: 13.5px;">
-                        <?php foreach ($observers as $ob): 
-                            $isSelected = ($prefillSchedule && $prefillSchedule['observer_id'] == $ob['id']) || (!$prefillSchedule && $ob['id'] == $currentUserId);
-                        ?>
-                            <option value="<?= $ob['id'] ?>" <?= $isSelected ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($ob['name']) ?> (<?= htmlspecialchars($ob['role']) ?>)
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
+                    <?php if ($canChooseObserver): ?>
+                        <select name="observer_id" id="observerSelect" class="form-control" required style="font-size: 13.5px;">
+                            <option value="">-- Pilih Observer --</option>
+                            <?php foreach ($observers as $ob): 
+                                $isSelected = ($editSession && $editSession['observer_id'] == $ob['id']) || ($prefillSchedule && $prefillSchedule['observer_id'] == $ob['id']) || (!$editSession && !$prefillSchedule && $ob['id'] == $currentUserId);
+                            ?>
+                                <option value="<?= $ob['id'] ?>" <?= $isSelected ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($ob['name']) ?> (<?= htmlspecialchars($ob['role']) ?><?= !empty($ob['unit_name']) ? ' - ' . $ob['unit_name'] : '' ?>)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    <?php else: ?>
+                        <input type="hidden" name="observer_id" value="<?= $currentUserId ?>">
+                        <div class="form-control" style="background: #f8fafc; font-weight: 700; color: #1e293b; display: flex; align-items: center; justify-content: space-between; border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 10px 14px;">
+                            <span>
+                                <i class="fa-solid fa-user-check" style="color: #10b981; margin-right: 6px;"></i> 
+                                <?= htmlspecialchars($_SESSION['name'] ?? 'Akun Anda') ?>
+                            </span>
+                            <span class="badge" style="background: #e0e7ff; color: #4338ca; font-size: 11px; padding: 3px 8px; border-radius: 4px;">
+                                Akun Anda (Observer)
+                            </span>
+                        </div>
+                    <?php endif; ?>
                 </div>
 
                 <!-- MATA PELAJARAN -->
@@ -328,7 +592,7 @@ require_once __DIR__ . '/../../includes/header.php';
                     <label style="display: block; font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 6px;">
                         Mata Pelajaran *
                     </label>
-                    <input type="text" name="subject_name" list="mapelOptions" placeholder="Misal: Bahasa Inggris" value="<?= htmlspecialchars($prefillSchedule['subject_name'] ?? '') ?>" class="form-control" required>
+                    <input type="text" name="subject_name" list="mapelOptions" placeholder="Misal: Bahasa Inggris" value="<?= htmlspecialchars($editSession['subject_name'] ?? ($prefillSchedule['subject_name'] ?? '')) ?>" class="form-control" required>
                     <datalist id="mapelOptions">
                         <?php foreach ($mapelList as $mp): ?>
                             <option value="<?= htmlspecialchars($mp) ?>"></option>
@@ -341,7 +605,7 @@ require_once __DIR__ . '/../../includes/header.php';
                     <label style="display: block; font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 6px;">
                         Kelas *
                     </label>
-                    <input type="text" name="class_name" placeholder="Misal: 8B, 7A" value="<?= htmlspecialchars($prefillSchedule['class_name'] ?? '') ?>" class="form-control" required>
+                    <input type="text" name="class_name" placeholder="Misal: 8B, 7A" value="<?= htmlspecialchars($editSession['class_name'] ?? ($prefillSchedule['class_name'] ?? '')) ?>" class="form-control" required>
                 </div>
 
                 <!-- HARI & TANGGAL -->
@@ -349,7 +613,7 @@ require_once __DIR__ . '/../../includes/header.php';
                     <label style="display: block; font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 6px;">
                         Hari & Tanggal Supervisi *
                     </label>
-                    <input type="date" name="observation_date" value="<?= htmlspecialchars($prefillSchedule['scheduled_date'] ?? date('Y-m-d')) ?>" class="form-control" required>
+                    <input type="date" name="observation_date" value="<?= htmlspecialchars($editSession['observation_date'] ?? ($prefillSchedule['scheduled_date'] ?? date('Y-m-d'))) ?>" class="form-control" required>
                 </div>
 
                 <!-- LOKASI / RUANG -->
@@ -357,7 +621,7 @@ require_once __DIR__ . '/../../includes/header.php';
                     <label style="display: block; font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 6px;">
                         Lokasi / Ruang Kelas
                     </label>
-                    <input type="text" name="room_location" placeholder="Misal: Ruang Kelas 8B / Lab IPA" value="<?= htmlspecialchars($prefillSchedule['room_location'] ?? '') ?>" class="form-control">
+                    <input type="text" name="room_location" placeholder="Misal: Ruang Kelas 8B / Lab IPA" value="<?= htmlspecialchars($editSession['room_location'] ?? ($prefillSchedule['room_location'] ?? '')) ?>" class="form-control">
                 </div>
             </div>
         </div>
@@ -420,7 +684,9 @@ require_once __DIR__ . '/../../includes/header.php';
 
                             <!-- TOMBOL LIKERT INTERAKTIF -->
                             <div style="display: flex; gap: 6px; align-items: center;">
-                                <?php for ($sc = $min; $sc <= $max; $sc++): ?>
+                                <?php for ($sc = $min; $sc <= $max; $sc++): 
+                                    $isChecked = (isset($savedScores[$it['id']]) && (int)$savedScores[$it['id']] == $sc);
+                                ?>
                                     <label class="likert-pill" style="cursor: pointer; margin: 0;">
                                         <input type="radio" 
                                                name="score[<?= $it['id'] ?>]" 
@@ -429,8 +695,8 @@ require_once __DIR__ . '/../../includes/header.php';
                                                data-cat-id="<?= $catId ?>"
                                                data-weight="<?= $weight ?>"
                                                onchange="recalculateScores()"
-                                               style="display: none;" 
-                                               required>
+                                               style="display: none;"
+                                               <?= $isChecked ? 'checked' : '' ?>>
                                         <span class="pill-btn"><?= $sc ?></span>
                                     </label>
                                 <?php endfor; ?>
@@ -453,29 +719,32 @@ require_once __DIR__ . '/../../includes/header.php';
                     <label style="display: block; font-size: 13px; font-weight: 700; color: #15803d; margin-bottom: 6px;">
                         <i class="fa-solid fa-thumbs-up"></i> 1. Praktik Baik yang Ditemukan (Good Practices)
                     </label>
-                    <textarea name="notes_good_practice" rows="3" class="form-control" placeholder="Apresiasi keunggulan guru selama observasi pembelajaran..."></textarea>
+                    <textarea name="notes_good_practice" rows="3" class="form-control" placeholder="Apresiasi keunggulan guru selama observasi pembelajaran..."><?= htmlspecialchars($editSession['notes_good_practice'] ?? '') ?></textarea>
                 </div>
 
                 <div>
                     <label style="display: block; font-size: 13px; font-weight: 700; color: #b45309; margin-bottom: 6px;">
                         <i class="fa-solid fa-bullseye"></i> 2. Teacher Growth Plan (Rencana Pengembangan yang Disepakati)
                     </label>
-                    <textarea name="notes_growth_plan" rows="3" class="form-control" placeholder="Aspek yang disepakati untuk diperbaiki atau ditingkatkan pada siklus berikutnya..."></textarea>
+                    <textarea name="notes_growth_plan" rows="3" class="form-control" placeholder="Aspek yang disepakati untuk diperbaiki atau ditingkatkan pada siklus berikutnya..."><?= htmlspecialchars($editSession['notes_growth_plan'] ?? '') ?></textarea>
                 </div>
 
                 <div>
                     <label style="display: block; font-size: 13px; font-weight: 700; color: #4338ca; margin-bottom: 6px;">
                         <i class="fa-solid fa-lightbulb"></i> 3. Refleksi Guru Terobservasi
                     </label>
-                    <textarea name="notes_teacher_reflection" rows="3" class="form-control" placeholder="Catatan refleksi guru mengenai hal yang berhasil dan langkah pendalaman KURMAA..."></textarea>
+                    <textarea name="notes_teacher_reflection" rows="3" class="form-control" placeholder="Catatan refleksi guru mengenai hal yang berhasil dan langkah pendalaman KURMAA..."><?= htmlspecialchars($editSession['notes_teacher_reflection'] ?? '') ?></textarea>
                 </div>
             </div>
         </div>
 
         <!-- TOMBOL SIMPAN AKHIR -->
-        <div style="text-align: right; margin-bottom: 40px;">
-            <button type="submit" class="btn btn-primary" style="padding: 12px 28px; font-size: 15px; font-weight: 800; box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);">
-                <i class="fa-solid fa-floppy-disk"></i> Simpan Dokumen Supervisi Resmi
+        <div style="display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-bottom: 40px; flex-wrap: wrap;">
+            <button type="submit" name="submit_action" value="save_draft" onclick="setSubmitType(true)" class="btn btn-warning" <?= $isFormLocked ? 'disabled style="padding: 12px 24px; font-size: 14.5px; font-weight: 800; background: #94a3b8; border-color: #94a3b8; color: white; border-radius: 8px; opacity: 0.6; cursor: not-allowed;"' : 'style="padding: 12px 24px; font-size: 14.5px; font-weight: 800; background: #f59e0b; border-color: #f59e0b; color: white; border-radius: 8px;"' ?>>
+                <i class="fa-solid fa-file-pen"></i> Simpan Draf (Lanjutkan Nanti)
+            </button>
+            <button type="submit" name="submit_action" value="save_completed" onclick="setSubmitType(false)" class="btn btn-primary" <?= $isFormLocked ? 'disabled style="padding: 12px 28px; font-size: 15px; font-weight: 800; background: #94a3b8; border-color: #94a3b8; opacity: 0.6; cursor: not-allowed; border-radius: 8px;"' : 'style="padding: 12px 28px; font-size: 15px; font-weight: 800; box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4); border-radius: 8px;"' ?>>
+                <i class="fa-solid fa-check-double"></i> Selesaikan &amp; Simpan Resmi
             </button>
         </div>
     </form>
@@ -563,17 +832,52 @@ function recalculateScores() {
     }
 }
 
+let isDraftSubmit = false;
+
+function setSubmitType(isDraft) {
+    isDraftSubmit = isDraft;
+    const input = document.getElementById('submitActionInput');
+    if (input) input.value = isDraft ? 'save_draft' : 'save_completed';
+}
+
+function submitAsDraft() {
+    setSubmitType(true);
+    document.getElementById('formSupervisiPeer').requestSubmit();
+}
+
+function submitAsCompleted() {
+    setSubmitType(false);
+    document.getElementById('formSupervisiPeer').requestSubmit();
+}
+
 function validateBeforeSubmit() {
+    if (isDraftSubmit) {
+        const teacherSelect = document.getElementById('teacherSelect');
+        if (!teacherSelect || !teacherSelect.value) {
+            alert('Harap pilih nama guru yang dinilai sebelum menyimpan draf.');
+            return false;
+        }
+        return true;
+    }
+
     const totalRequired = document.querySelectorAll('.indicator-row').length;
     const totalChecked = document.querySelectorAll('input[type="radio"]:checked').length;
 
     if (totalChecked < totalRequired) {
         const sisa = totalRequired - totalChecked;
-        alert('Perhatian: Masih ada ' + sisa + ' butir indikator yang belum dinilai. Harap berikan skor untuk semua butir sebelum menyimpan.');
+        const confirmDraft = confirm('Perhatian: Masih ada ' + sisa + ' butir indikator yang belum dinilai.\n\nKlik [OK] jika ingin menyimpan sebagai DRAF terlebih dahulu dan melanjutkannya nanti.\nKlik [Batal] jika ingin melengkapi nilai sekarang.');
+        if (confirmDraft) {
+            setSubmitType(true);
+            return true;
+        }
         return false;
     }
-    return confirm('Apakah Anda yakin data supervisi ini sudah benar dan ingin disimpan?');
+    return confirm('Apakah Anda yakin data supervisi ini sudah lengkap dan ingin difinalisasi secara resmi?');
 }
+
+window.addEventListener('DOMContentLoaded', function() {
+    recalculateScores();
+});
 </script>
 
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>

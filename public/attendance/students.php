@@ -308,6 +308,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['quick_record_
             } catch (Exception $e) {}
         }
 
+        // Kirim notifikasi in-app kepada guru/wali kelas pemantau jika terlambat
+        if ($newStat === 'terlambat' && function_exists('notifyLateStudentAttendance')) {
+            try {
+                notifyLateStudentAttendance($pdo, (int)$stuId, (string)$timeIn, 'terlambat');
+            } catch (Throwable $e) {}
+        }
+
         $labelStat = ($newStat === 'terlambat') ? 'TERLAMBAT' : ($newStat === 'tepat_waktu' ? 'TEPAT WAKTU' : ucfirst($newStat));
         flash('success', "Kehadiran siswa berhasil dicatat sebagai {$labelStat}" . ($timeIn ? " (pukul {$timeIn})" : "") . ".");
     } else {

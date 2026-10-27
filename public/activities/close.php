@@ -15,27 +15,26 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $id = (int)($_POST['id'] ?? 0);
 $userId = currentUserId();
 
-// BENTENG KEAMANAN
-if ($currentRole === 'kepala_sekolah') {
-    $stmtKs = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? LIMIT 1");
-    $stmtKs->execute([$userId]);
-    $ksUnitId = $stmtKs->fetchColumn();
+// BENTENG KEAMANAN WEWENANG UNIT
+$allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $currentRole);
 
-    $stmtAct = $pdo->prepare("SELECT unit_id, target_type FROM activities WHERE id = ?");
-    $stmtAct->execute([$id]);
-    $actData = $stmtAct->fetch(PDO::FETCH_ASSOC);
-    $actUnitId = $actData['unit_id'] ?? null;
-    $targetType = $actData['target_type'] ?? 'student';
+$stmtAct = $pdo->prepare("SELECT unit_id, target_type FROM activities WHERE id = ?");
+$stmtAct->execute([$id]);
+$actData = $stmtAct->fetch(PDO::FETCH_ASSOC);
 
-    if ($actUnitId != $ksUnitId) {
-        flash('error', 'Akses ditolak. Anda tidak bisa menutup jadwal kegiatan unit lain.');
-        redirect('index.php?tab=' . urlencode($targetType));
-        exit;
-    }
-} else {
-    $stmtAct = $pdo->prepare("SELECT target_type FROM activities WHERE id = ?");
-    $stmtAct->execute([$id]);
-    $targetType = $stmtAct->fetchColumn() ?: 'student';
+if (!$actData) {
+    flash('error', 'Kegiatan tidak ditemukan.');
+    redirect('index.php');
+    exit;
+}
+
+$actUnitId = (int)($actData['unit_id'] ?? 0);
+$targetType = $actData['target_type'] ?? 'student';
+
+if (!empty($allowedUnitIds) && !in_array($actUnitId, $allowedUnitIds, true)) {
+    flash('error', 'Akses ditolak. Anda tidak berhak menutup kegiatan unit lain.');
+    redirect('index.php?tab=' . urlencode($targetType));
+    exit;
 }
 
 $tab = $_POST['tab'] ?? $targetType;

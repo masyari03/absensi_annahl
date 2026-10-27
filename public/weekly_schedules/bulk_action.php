@@ -42,23 +42,14 @@ if (empty($validIds)) {
     exit;
 }
 
-// BENTENG KEAMANAN KEPALA SEKOLAH
-$ksUnitId = 0;
-if ($currentRole === 'kepala_sekolah') {
-    $stmtKs = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? LIMIT 1");
-    $stmtKs->execute([$userId]);
-    $ksUnitId = (int)$stmtKs->fetchColumn();
-
-    if ($ksUnitId <= 0) {
-        flash('error', 'Akses ditolak. Unit Kepala Sekolah tidak valid.');
-        redirect('index.php');
-        exit;
-    }
-
-    // Filter hanya jadwal yang benar-benar milik unit Kepala Sekolah
+// BENTENG KEAMANAN AKSES UNIT
+$allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $currentRole);
+if (!empty($allowedUnitIds)) {
+    // Filter hanya jadwal yang benar-benar milik unit wewenang pengguna
     $inClause = implode(',', array_fill(0, count($validIds), '?'));
-    $checkUnitStmt = $pdo->prepare("SELECT id FROM weekly_schedules WHERE id IN ($inClause) AND unit_id = ?");
-    $checkParams = array_merge(array_values($validIds), [$ksUnitId]);
+    $unitInClause = implode(',', array_fill(0, count($allowedUnitIds), '?'));
+    $checkUnitStmt = $pdo->prepare("SELECT id FROM weekly_schedules WHERE id IN ($inClause) AND unit_id IN ($unitInClause)");
+    $checkParams = array_merge(array_values($validIds), array_values($allowedUnitIds));
     $checkUnitStmt->execute($checkParams);
     $validIds = array_map('intval', $checkUnitStmt->fetchAll(PDO::FETCH_COLUMN));
 

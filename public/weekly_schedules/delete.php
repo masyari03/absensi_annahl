@@ -13,17 +13,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $userId = currentUserId();
     
     if ($id > 0) {
-        // BENTENG KEAMANAN HAPUS
-        if ($currentRole === 'kepala_sekolah') {
-            $stmtKs = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? LIMIT 1");
-            $stmtKs->execute([$userId]);
-            $ksUnitId = $stmtKs->fetchColumn();
-
+        // BENTENG KEAMANAN HAPUS UNIT
+        $allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $currentRole);
+        if (!empty($allowedUnitIds)) {
             $stmtSch = $pdo->prepare("SELECT unit_id FROM weekly_schedules WHERE id = ?");
             $stmtSch->execute([$id]);
-            $schUnitId = $stmtSch->fetchColumn();
+            $schUnitId = (int)$stmtSch->fetchColumn();
 
-            if ($schUnitId != $ksUnitId) {
+            if (!in_array($schUnitId, $allowedUnitIds, true)) {
                 flash('error', 'Akses ditolak. Anda tidak berhak menghapus jadwal unit lain.');
                 header('Location: index.php');
                 exit;

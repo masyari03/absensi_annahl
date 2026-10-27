@@ -22,17 +22,12 @@ if (!$activity) {
     exit;
 }
 
-// PROTEKSI KEPALA SEKOLAH
-if ($currentRole === 'kepala_sekolah') {
-    $stmtKs = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? LIMIT 1");
-    $stmtKs->execute([$userId]);
-    $ksUnitId = (int)$stmtKs->fetchColumn();
-
-    if ((int)$activity['unit_id'] !== $ksUnitId) {
-        flash('error', 'Akses ditolak. Anda tidak bisa mengubah jadwal unit lain.');
-        redirect('index.php');
-        exit;
-    }
+// PROTEKSI WEWENANG UNIT
+$allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $currentRole);
+if (!empty($allowedUnitIds) && !in_array((int)$activity['unit_id'], $allowedUnitIds, true)) {
+    flash('error', 'Akses ditolak. Anda tidak berhak mengubah kegiatan khusus unit lain.');
+    redirect('index.php');
+    exit;
 }
 
 $currentMode = (!empty($activity['target_type']) && $activity['target_type'] === 'staff') ? 'staff' : 'student';
@@ -81,7 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ]);
 
     if (function_exists('recordActivityAudit')) {
-        recordActivityAudit($pdo, 'activities', 'UPDATE', 'activities', (int)$id, "Ubah Kegiatan Khusus #{$id}: {$name} ({$activityDate})", null, ['name' => $name, 'unit_id' => $act['unit_id'] ?? null, 'date' => $activityDate, 'target_type' => $targetType], (int)($act['unit_id'] ?? 0));
+        recordActivityAudit($pdo, 'activities', 'UPDATE', 'activities', (int)$id, "Ubah Kegiatan Khusus #{$id}: {$name} ({$activityDate})", null, ['name' => $name, 'unit_id' => $activity['unit_id'] ?? null, 'date' => $activityDate, 'target_type' => $targetType], (int)($activity['unit_id'] ?? 0));
     }
 
     flash('success', 'Kegiatan berhasil diperbarui.');

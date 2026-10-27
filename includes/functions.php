@@ -53,78 +53,12 @@ if (!function_exists('setFlash')) {
 }
 
 // =========================================================================
-// ACCESS CONTROL — DATABASE-DRIVEN ACL
+// ACCESS CONTROL â€” DATABASE-DRIVEN ACL DENGAN GRANULAR CRUD & MULTI-ROLE
 // =========================================================================
 
 /**
- * Ambil semua menu_key yang boleh diakses oleh $userId dari DB.
- * Fallback: jika user belum punya entri di user_menu_access, ambil dari default role.
- */
-if (!function_exists('getUserMenuKeys')) {
-    function getUserMenuKeys(PDO $pdo, int $userId): array
-    {
-        $stmt = $pdo->prepare("
-            SELECT am.menu_key
-            FROM user_menu_access uma
-            INNER JOIN app_menus am ON am.id = uma.menu_id
-            WHERE uma.user_id = ? AND am.is_active = 1
-            ORDER BY am.sort_order ASC
-        ");
-        $stmt->execute([$userId]);
-        $keys = $stmt->fetchAll(PDO::FETCH_COLUMN);
-
-        if (!empty($keys)) {
-            return $keys;
-        }
-
-        // Fallback: ambil default permission dari role jika belum di-set per-user
-        $stmtUser = $pdo->prepare("SELECT role FROM users WHERE id = ?");
-        $stmtUser->execute([$userId]);
-        $roleKey = $stmtUser->fetchColumn();
-
-        if ($roleKey) {
-            if ($roleKey === 'super_admin') {
-                $stmtAll = $pdo->query("SELECT menu_key FROM app_menus WHERE is_active = 1 ORDER BY sort_order ASC");
-                return $stmtAll->fetchAll(PDO::FETCH_COLUMN);
-            }
-
-            $stmtRole = $pdo->prepare("
-                SELECT am.menu_key
-                FROM role_menu_access rma
-                INNER JOIN roles r ON r.id = rma.role_id
-                INNER JOIN app_menus am ON am.id = rma.menu_id
-                WHERE r.role_key = ? AND am.is_active = 1
-                ORDER BY am.sort_order ASC
-            ");
-            $stmtRole->execute([$roleKey]);
-            $roleKeys = $stmtRole->fetchAll(PDO::FETCH_COLUMN);
-
-            // Auto-seed ke user_menu_access agar request selanjutnya lebih cepat
-            if (!empty($roleKeys)) {
-                try {
-                    $stmtInsert = $pdo->prepare("
-                        INSERT IGNORE INTO user_menu_access (user_id, menu_id)
-                        SELECT ?, rma.menu_id
-                        FROM role_menu_access rma
-                        INNER JOIN roles r ON r.id = rma.role_id
-                        WHERE r.role_key = ?
-                    ");
-                    $stmtInsert->execute([$userId, $roleKey]);
-                } catch (Exception $e) {
-                    // Ignore insert duplicate
-                }
-            }
-
-            return $roleKeys;
-        }
-
-        return [];
-    }
-}
-
-/**
  * Dipanggil setelah login ATAU setelah Super Admin mengubah hak akses user.
- * Mengisi $_SESSION['menu_keys'] dengan daftar menu_key yang diizinkan.
+ * Mengisi $_SESSION['roles'], $_SESSION['menu_keys'], dan $_SESSION['menu_permissions'].
  */
 if (!function_exists('loadUserPermissions')) {
     function loadUserPermissions(PDO $pdo, int $userId): void
@@ -133,18 +67,109 @@ if (!function_exists('loadUserPermissions')) {
             session_start();
         }
 
-        $role = $_SESSION['role'] ?? '';
+        // Ambil info primary role
+        $stmtUser = $pdo->prepare("SELECT role, name, username FROM users WHERE id = ?");
+        $stmtUser->execute([$userId]);
+        $uData = $stmtUser->fetch(PDO::FETCH_ASSOC);
+        $primaryRole = $uData['role'] ?? 'staff';
+        $_SESSION['role'] = $primaryRole;
 
-        // Super Admin: akses ke semua menu aktif
-        if ($role === 'super_admin') {
-            $stmt = $pdo->query("
-                SELECT menu_key FROM app_menus WHERE is_active = 1 ORDER BY sort_order ASC
-            ");
-            $_SESSION['menu_keys'] = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        // Ambil seluruh role keys dan role names dari user_roles (Multi-Role)
+        $stmtRoles = $pdo->prepare("
+            SELECT r.id, r.role_key, r.role_name, ur.is_primary
+            FROM user_roles ur
+            INNER JOIN roles r ON r.id = ur.role_id
+            WHERE ur.user_id = ?
+            ORDER BY ur.is_primary DESC, r.id ASC
+        ");
+        $stmtRoles->execute([$userId]);
+        $assignedRoles = $stmtRoles->fetchAll(PDO::FETCH_ASSOC);
+
+        $roleKeys = [];
+        $roleNames = [];
+        foreach ($assignedRoles as $ar) {
+            $roleKeys[] = $ar['role_key'];
+            $roleNames[] = $ar['role_name'];
+        }
+        if (!in_array($primaryRole, $roleKeys, true)) {
+            $roleKeys[] = $primaryRole;
+        }
+
+        $_SESSION['roles'] = array_values(array_unique($roleKeys));
+        $_SESSION['role_names'] = array_values(array_unique($roleNames));
+
+        // Jika user adalah super_admin, berikan full akses ke seluruh menu dengan Full CRUD
+        if ($primaryRole === 'super_admin' || in_array('super_admin', $roleKeys, true)) {
+            $stmtAll = $pdo->query("SELECT menu_key FROM app_menus WHERE is_active = 1 ORDER BY sort_order ASC");
+            $allKeys = $stmtAll->fetchAll(PDO::FETCH_COLUMN);
+            $_SESSION['menu_keys'] = $allKeys;
+            $_SESSION['menu_permissions'] = [];
+            foreach ($allKeys as $mk) {
+                $_SESSION['menu_permissions'][$mk] = ['read' => 1, 'create' => 1, 'edit' => 1, 'delete' => 1];
+            }
             return;
         }
 
-        $_SESSION['menu_keys'] = getUserMenuKeys($pdo, $userId);
+        // Hitung Additive Union Permissions dari:
+        // 1. Seluruh role_menu_access untuk semua role yang dimiliki user
+        // 2. user_menu_access custom overrides
+        $sql = "
+            SELECT 
+                am.menu_key,
+                GREATEST(COALESCE(MAX(uma.can_read), 0), COALESCE(MAX(rma.can_read), 0)) as can_read,
+                GREATEST(COALESCE(MAX(uma.can_create), 0), COALESCE(MAX(rma.can_create), 0)) as can_create,
+                GREATEST(COALESCE(MAX(uma.can_edit), 0), COALESCE(MAX(rma.can_edit), 0)) as can_edit,
+                GREATEST(COALESCE(MAX(uma.can_delete), 0), COALESCE(MAX(rma.can_delete), 0)) as can_delete
+            FROM app_menus am
+            LEFT JOIN user_menu_access uma 
+                ON uma.menu_id = am.id AND uma.user_id = ?
+            LEFT JOIN user_roles ur 
+                ON ur.user_id = ?
+            LEFT JOIN roles r_ur 
+                ON r_ur.id = ur.role_id
+            LEFT JOIN users u 
+                ON u.id = ?
+            LEFT JOIN roles r_primary 
+                ON r_primary.role_key = u.role
+            LEFT JOIN role_menu_access rma 
+                ON rma.menu_id = am.id AND (rma.role_id = ur.role_id OR rma.role_id = r_primary.id)
+            WHERE am.is_active = 1
+            GROUP BY am.id, am.menu_key, am.sort_order
+            HAVING can_read > 0 OR can_create > 0 OR can_edit > 0 OR can_delete > 0
+            ORDER BY am.sort_order ASC
+        ";
+        $stmtPerms = $pdo->prepare($sql);
+        $stmtPerms->execute([$userId, $userId, $userId]);
+        $rows = $stmtPerms->fetchAll(PDO::FETCH_ASSOC);
+
+        $allowedMenuKeys = [];
+        $menuPermissions = [];
+        foreach ($rows as $row) {
+            $mKey = $row['menu_key'];
+            if ((int)$row['can_read'] > 0) {
+                $allowedMenuKeys[] = $mKey;
+            }
+            $menuPermissions[$mKey] = [
+                'read'   => (int)$row['can_read'],
+                'create' => (int)$row['can_create'],
+                'edit'   => (int)$row['can_edit'],
+                'delete' => (int)$row['can_delete'],
+            ];
+        }
+
+        $_SESSION['menu_keys'] = array_values(array_unique($allowedMenuKeys));
+        $_SESSION['menu_permissions'] = $menuPermissions;
+    }
+}
+
+/**
+ * Ambil semua menu_key yang boleh diakses oleh $userId dari DB.
+ */
+if (!function_exists('getUserMenuKeys')) {
+    function getUserMenuKeys(PDO $pdo, int $userId): array
+    {
+        loadUserPermissions($pdo, $userId);
+        return $_SESSION['menu_keys'] ?? [];
     }
 }
 
@@ -251,6 +276,39 @@ if (!function_exists('hasMenuAccess')) {
 // ACCESS CONTROL SISWA (Filter berdasarkan izin unit/grade/kelas)
 // =========================================================================
 
+if (!function_exists('getMentoringAccessCondition')) {
+    // Scoping unit untuk halaman Mentoring (MIP): super_admin & admin = semua unit;
+    // lainnya dibatasi unit staff / admin_unit_permissions / grade & class permissions.
+    function getMentoringAccessCondition($gradeAlias = 'g', $classAlias = 'cg') {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        if (in_array(($_SESSION['role'] ?? ''), ['super_admin', 'admin'], true)) {
+            return ['condition' => '1 = 1', 'params' => []];
+        }
+        return getStudentAccessCondition($gradeAlias, $classAlias);
+    }
+}
+
+if (!function_exists('getMentoringGradeCondition')) {
+    // Variant hanya-untuk-tabel-grades (tanpa alias class_groups).
+    function getMentoringGradeCondition($gradeAlias = 'g') {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        if (in_array(($_SESSION['role'] ?? ''), ['super_admin', 'admin'], true)) {
+            return ['condition' => '1 = 1', 'params' => []];
+        }
+        $uid = currentUserId();
+        $condition = "({$gradeAlias}.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)
+            OR {$gradeAlias}.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?)
+            OR {$gradeAlias}.unit_id IN (SELECT unit_id FROM staff WHERE user_id = ? AND unit_id IS NOT NULL)
+            OR EXISTS (SELECT 1 FROM class_groups cgx WHERE cgx.grade_id = {$gradeAlias}.id
+                AND cgx.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?)))";
+        return ['condition' => $condition, 'params' => [$uid, $uid, $uid, $uid]];
+    }
+}
+
 if (!function_exists('getStudentAccessCondition')) {
     function getStudentAccessCondition($gradeAlias = 'g', $classAlias = 'cg') {
         if (session_status() === PHP_SESSION_NONE) {
@@ -302,6 +360,347 @@ if (!function_exists('canExecuteQuickAttendance')) {
         } catch (Exception $e) {
             return false;
         }
+    }
+}
+
+// =========================================================================
+// SUPERVISI PEMBELAJARAN (KURMAA) â€” SCOPING UNIT & ELIGIBLE USERS/STAFF
+// =========================================================================
+
+if (!function_exists('getUserUnitInfo')) {
+    function getUserUnitInfo(PDO $pdo, ?int $userId = null): array {
+        $uid = $userId !== null ? $userId : (int)($_SESSION['user_id'] ?? 0);
+        if ($uid <= 0) return ['unit_id' => null, 'unit_name' => null];
+
+        $sql = '
+            SELECT u.id as unit_id, u.unit as unit_name
+            FROM admin_unit_permissions aup
+            JOIN units u ON u.id = aup.unit_id
+            WHERE aup.user_id = ? AND aup.unit_id IS NOT NULL
+            UNION
+            SELECT u.id as unit_id, u.unit as unit_name
+            FROM staff s
+            JOIN units u ON u.id = s.unit_id
+            WHERE s.user_id = ? AND s.unit_id IS NOT NULL
+            UNION
+            SELECT un.id as unit_id, un.unit as unit_name
+            FROM users usr
+            JOIN staff st ON st.nik = usr.username
+            JOIN units un ON un.id = st.unit_id
+            WHERE usr.id = ? AND st.unit_id IS NOT NULL
+            LIMIT 1
+        ';
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$uid, $uid, $uid]);
+            $res = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($res) {
+                return ['unit_id' => (int)$res['unit_id'], 'unit_name' => $res['unit_name']];
+            }
+        } catch (Exception $e) {}
+        return ['unit_id' => null, 'unit_name' => null];
+    }
+}
+
+if (!function_exists('getSupervisionTeachers')) {
+    function getSupervisionTeachers(PDO $pdo, ?int $unitId = null, ?int $excludeUserId = null): array {
+        $where = ['s.deleted_at IS NULL', "s.name NOT IN ('absen', 'arif')", "s.nik NOT IN ('000', '0000')"];
+        $params = [];
+
+        if ($unitId !== null && $unitId > 0) {
+            $where[] = 's.unit_id = ?';
+            $params[] = $unitId;
+        } else {
+            // Hanya unit akademik (TK, SD, SMP, SMA)
+            $where[] = 's.unit_id IN (1, 2, 3, 7)';
+        }
+
+        if ($excludeUserId !== null && $excludeUserId > 0) {
+            $where[] = '(s.user_id != ? OR s.user_id IS NULL)';
+            $params[] = $excludeUserId;
+            $where[] = '(s.nik != (SELECT username FROM users WHERE id = ?) OR s.nik IS NULL)';
+            $params[] = $excludeUserId;
+        }
+
+        $whereSql = implode(' AND ', $where);
+        $sql = "
+            SELECT s.id, s.name, s.nik, s.unit_id, u.unit as unit_name
+            FROM staff s
+            LEFT JOIN units u ON u.id = s.unit_id
+            WHERE {$whereSql}
+            ORDER BY u.id ASC, s.name ASC
+        ";
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('getSupervisionObservers')) {
+    function getSupervisionObservers(PDO $pdo, ?int $unitId = null): array {
+        $where = [
+            'u.deleted_at IS NULL',
+            "u.role != 'siswa'",
+            'u.student_id IS NULL',
+            "u.name NOT IN ('absen', 'arif', 'Absen Barcode Siswa')",
+            "u.username NOT IN ('000', '0000')"
+        ];
+        $params = [];
+
+        if ($unitId !== null && $unitId > 0) {
+            $where[] = '(
+                u.role IN ("super_admin", "admin")
+                OR s.unit_id = ?
+                OR u.id IN (SELECT user_id FROM user_roles WHERE role_id IN (SELECT id FROM roles WHERE role_key = "observer"))
+            )';
+            $params[] = $unitId;
+        } else {
+            $where[] = '(
+                u.role IN ("super_admin", "admin", "kepala_sekolah")
+                OR s.unit_id IN (1, 2, 3, 7)
+                OR u.id IN (SELECT user_id FROM user_roles WHERE role_id IN (SELECT id FROM roles WHERE role_key = "observer"))
+            )';
+        }
+
+        $whereSql = implode(' AND ', $where);
+        $sql = "
+            SELECT DISTINCT u.id, u.name, u.username, u.role, un.unit as unit_name
+            FROM users u
+            LEFT JOIN staff s ON (s.user_id = u.id OR s.nik = u.username)
+            LEFT JOIN units un ON un.id = s.unit_id
+            WHERE {$whereSql}
+            ORDER BY un.id ASC, u.name ASC
+        ";
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('getSupervisionPrincipals')) {
+    function getSupervisionPrincipals(PDO $pdo, ?int $unitId = null): array {
+        $where = [
+            'u.deleted_at IS NULL',
+            "u.role IN ('kepala_sekolah', 'admin', 'super_admin')",
+            "u.name NOT IN ('absen', 'arif', 'Absen Barcode Siswa')"
+        ];
+        $params = [];
+        if ($unitId !== null && $unitId > 0) {
+            $where[] = '(u.role = "super_admin" OR s.unit_id = ? OR s.unit_id IS NULL)';
+            $params[] = $unitId;
+        }
+        $whereSql = implode(' AND ', $where);
+        $sql = "
+            SELECT DISTINCT u.id, u.name, u.role, un.unit as unit_name
+            FROM users u
+            LEFT JOIN staff s ON (s.user_id = u.id OR s.nik = u.username)
+            LEFT JOIN units un ON un.id = s.unit_id
+            WHERE {$whereSql}
+            ORDER BY FIELD(u.role, 'kepala_sekolah', 'admin', 'super_admin'), u.name ASC
+        ";
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('formatIndoDate')) {
+    function formatIndoDate(?string $dateStr): string {
+        if (empty($dateStr)) return '-';
+        $timestamp = strtotime($dateStr);
+        if (!$timestamp) return $dateStr;
+        $bulan = [
+            1 => 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+            'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+        ];
+        return date('j', $timestamp) . ' ' . $bulan[(int)date('n', $timestamp)] . ' ' . date('Y', $timestamp);
+    }
+}
+
+if (!function_exists('getSupervisionCumulativeData')) {
+    function getSupervisionCumulativeData(PDO $pdo, int $teacherId): ?array {
+        // 1. Teacher Info
+        $stmtT = $pdo->prepare("
+            SELECT s.id, s.name, s.nik, s.unit_id, u.unit as unit_name
+            FROM staff s
+            LEFT JOIN units u ON u.id = s.unit_id
+            WHERE s.id = ?
+        ");
+        $stmtT->execute([$teacherId]);
+        $teacher = $stmtT->fetch(PDO::FETCH_ASSOC);
+        if (!$teacher) return null;
+
+        // 2. Latest Peer Supervision (type_id = 1)
+        $stmtPeer = $pdo->prepare("
+            SELECT ss.*, u.name as observer_name
+            FROM supervision_sessions ss
+            JOIN users u ON u.id = ss.observer_id
+            WHERE ss.teacher_id = ? AND ss.type_id = 1 AND ss.status = 'completed'
+            ORDER BY ss.observation_date DESC, ss.id DESC LIMIT 1
+        ");
+        $stmtPeer->execute([$teacherId]);
+        $peer = $stmtPeer->fetch(PDO::FETCH_ASSOC);
+
+        // 3. Latest Principal Supervision (type_id = 2)
+        $stmtKepsek = $pdo->prepare("
+            SELECT ss.*, u.name as observer_name
+            FROM supervision_sessions ss
+            JOIN users u ON u.id = ss.observer_id
+            WHERE ss.teacher_id = ? AND ss.type_id = 2 AND ss.status = 'completed'
+            ORDER BY ss.observation_date DESC, ss.id DESC LIMIT 1
+        ");
+        $stmtKepsek->execute([$teacherId]);
+        $kepsek = $stmtKepsek->fetch(PDO::FETCH_ASSOC);
+
+        // 4. Calculate 7 Components
+        $categories = $pdo->query("SELECT * FROM supervision_categories ORDER BY type_id ASC, sort_order ASC")->fetchAll(PDO::FETCH_ASSOC);
+        $components = [];
+        foreach ($categories as $cat) {
+            $cId = (int)$cat['id'];
+            $tId = (int)$cat['type_id'];
+            $sessId = ($tId === 1) ? ($peer['id'] ?? 0) : ($kepsek['id'] ?? 0);
+            
+            $userScore = 0.0;
+            $maxScore = ($tId === 1) ? ($cId == 1 ? 40.0 : ($cId == 2 ? 32.0 : 16.0)) : ($cId == 4 ? 20.0 : ($cId == 5 ? 40.0 : ($cId == 6 ? 20.0 : 16.0)));
+            
+            if ($sessId > 0) {
+                $stmt = $pdo->prepare("
+                    SELECT SUM(ssc.score * sri.weight) as u_score,
+                           SUM(sri.max_score * sri.weight) as m_score
+                    FROM supervision_scores ssc
+                    JOIN supervision_rubric_items sri ON sri.id = ssc.item_id
+                    WHERE ssc.session_id = ? AND sri.category_id = ?
+                ");
+                $stmt->execute([$sessId, $cId]);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($row && $row['u_score'] !== null) {
+                    $userScore = (float)$row['u_score'];
+                    $maxScore = (float)$row['m_score'];
+                }
+            }
+            
+            $pct = ($maxScore > 0) ? round(($userScore / $maxScore) * 100, 1) : 0.0;
+            
+            $cleanName = preg_replace('/^[0-9]+\.\s*/', '', $cat['category_name']);
+            if ($tId == 2 && strpos($cleanName, 'Perencanaan') !== false) $cleanName = 'Perencanaan Ajar (Kepsek)';
+            if ($tId == 2 && strpos($cleanName, 'Pelaksanaan') !== false) $cleanName = 'Pelaksanaan Kelas (Kepsek)';
+            if ($tId == 2 && strpos($cleanName, 'Asesmen') !== false) $cleanName = 'Asesmen Hasil Belajar';
+            if ($tId == 2 && strpos($cleanName, 'Komitmen') !== false) $cleanName = 'Pengembangan Diri Guru';
+            if ($tId == 1 && strpos($cleanName, 'Keterlibatan') !== false) $cleanName = 'Keterlibatan Siswa';
+            
+            $color = '#2563EB';
+            if ($cleanName === 'Keterlibatan Siswa') $color = '#4F46E5';
+            if ($cleanName === 'Perencanaan Ajar (Kepsek)') $color = '#9333EA';
+            if ($cleanName === 'Pelaksanaan Kelas (Kepsek)') $color = '#0D9488';
+            if ($cleanName === 'Asesmen Hasil Belajar') $color = '#EA580C';
+            if ($cleanName === 'Pengembangan Diri Guru') $color = '#E11D48';
+
+            $components[] = [
+                'id' => $cId,
+                'type_id' => $tId,
+                'name' => $cleanName,
+                'score' => $userScore,
+                'max_score' => $maxScore,
+                'percentage' => $pct,
+                'color' => $color
+            ];
+        }
+
+        $peerScore = $peer ? (float)$peer['total_score'] : null;
+        $peerMax = $peer ? (float)$peer['max_possible_score'] : 88.0;
+        $peerPct = $peer ? (float)$peer['percentage_score'] : null;
+        $peerPred = $peer ? $peer['predicate_name'] : 'Belum Ada';
+
+        $kepsekScore = $kepsek ? (float)$kepsek['total_score'] : null;
+        $kepsekMax = $kepsek ? (float)$kepsek['max_possible_score'] : 96.0;
+        $kepsekPct = $kepsek ? (float)$kepsek['percentage_score'] : null;
+        $kepsekPred = $kepsek ? $kepsek['predicate_name'] : 'Belum Ada';
+
+        $totalScore = ($peerScore ?? 0.0) + ($kepsekScore ?? 0.0);
+        $totalMax = ($peer ? $peerMax : 88.0) + ($kepsek ? $kepsekMax : 96.0);
+        
+        if ($peer && $kepsek) {
+            $avgPct = round(($peerPct + $kepsekPct) / 2, 1);
+        } elseif ($peer) {
+            $avgPct = round($peerPct, 1);
+        } elseif ($kepsek) {
+            $avgPct = round($kepsekPct, 1);
+        } else {
+            $avgPct = 0.0;
+        }
+
+        $stmtP = $pdo->prepare('SELECT predicate_name FROM supervision_predicates WHERE min_percentage <= ? ORDER BY min_percentage DESC LIMIT 1');
+        $stmtP->execute([$avgPct]);
+        $avgPred = $stmtP->fetchColumn() ?: 'Need Improvement';
+
+        $subjectName = $peer['subject_name'] ?? ($kepsek['subject_name'] ?? '-');
+        $className = $peer['class_name'] ?? ($kepsek['class_name'] ?? '-');
+        $obsDate = $peer['observation_date'] ?? ($kepsek['observation_date'] ?? date('Y-m-d'));
+
+        $notesGood = [];
+        if (!empty($peer['notes_good_practice'])) $notesGood[] = '[Sejawat] ' . trim($peer['notes_good_practice']);
+        if (!empty($kepsek['notes_good_practice'])) $notesGood[] = '[Kepsek] ' . trim($kepsek['notes_good_practice']);
+
+        $notesGrowth = [];
+        if (!empty($peer['notes_growth_plan'])) $notesGrowth[] = '[Sejawat] ' . trim($peer['notes_growth_plan']);
+        if (!empty($kepsek['notes_growth_plan'])) $notesGrowth[] = '[Kepsek] ' . trim($kepsek['notes_growth_plan']);
+
+        $notesRecom = [];
+        if (!empty($peer['notes_teacher_reflection'])) $notesRecom[] = '[Rekomendasi Sejawat] ' . trim($peer['notes_teacher_reflection']);
+        if (!empty($kepsek['notes_teacher_reflection'])) $notesRecom[] = '[Rekomendasi Kepsek] ' . trim($kepsek['notes_teacher_reflection']);
+
+        return [
+            'teacher' => $teacher,
+            'peer' => $peer ? [
+                'id' => $peer['id'],
+                'score' => $peerScore,
+                'max_score' => $peerMax,
+                'percentage' => $peerPct,
+                'predicate' => $peerPred,
+                'observer_name' => $peer['observer_name'] ?? '-',
+                'date' => $peer['observation_date']
+            ] : null,
+            'kepsek' => $kepsek ? [
+                'id' => $kepsek['id'],
+                'score' => $kepsekScore,
+                'max_score' => $kepsekMax,
+                'percentage' => $kepsekPct,
+                'predicate' => $kepsekPred,
+                'observer_name' => $kepsek['observer_name'] ?? 'Awang Darmawan, SS',
+                'date' => $kepsek['observation_date']
+            ] : null,
+            'cumulative' => [
+                'total_score' => $totalScore,
+                'max_score' => $totalMax,
+                'avg_percentage' => $avgPct,
+                'predicate' => $avgPred,
+                'subject_name' => $subjectName,
+                'class_name' => $className,
+                'observation_date' => $obsDate,
+                'academic_year' => '2026/2027 â€¢ Semester Ganjil',
+                'principal_name' => $kepsek['signed_principal_name'] ?? ($kepsek['observer_name'] ?? 'Awang Darmawan, SS'),
+                'peer_observer_name' => $peer['signed_observer_name'] ?? ($peer['observer_name'] ?? '-'),
+                'teacher_name' => $teacher['name']
+            ],
+            'components' => $components,
+            'notes' => [
+                'good' => $notesGood,
+                'growth' => $notesGrowth,
+                'recommendations' => $notesRecom
+            ]
+        ];
     }
 }
 
@@ -1562,4 +1961,206 @@ if (!function_exists('getMentorAllAccountIds')) {
 
         return array_values(array_unique(array_map('intval', $ids)));
     }
-}
+}
+
+// =========================================================================
+// SISTEM NOTIFIKASI TERINTEGRASI (PLAN EDISI 14)
+// =========================================================================
+
+if (!function_exists('createNotification')) {
+    /**
+     * Membuat notifikasi baru untuk user tertentu secara aman.
+     * Mendukung 2 signature urutan parameter:
+     * 1. createNotification($pdo, $userId, $category, $title, $message, $linkUrl)
+     * 2. createNotification($pdo, $userId, $title, $message, $category, $linkUrl)
+     */
+    function createNotification(PDO $pdo, int $userId, string $arg3, string $arg4, ?string $arg5 = null, ?string $linkUrl = null): bool
+    {
+        if ($userId <= 0) {
+            return false;
+        }
+
+        $validCategories = ['supervisi', 'mentoring', 'presensi', 'sistem'];
+        if (in_array($arg3, $validCategories, true)) {
+            $category = $arg3;
+            $title = $arg4;
+            $message = (string)($arg5 ?? '');
+        } else {
+            $title = $arg3;
+            $message = $arg4;
+            $category = in_array((string)$arg5, $validCategories, true) ? (string)$arg5 : 'sistem';
+        }
+
+        if (empty($title)) {
+            return false;
+        }
+
+        try {
+            $stmt = $pdo->prepare("
+                INSERT INTO notifications (user_id, title, message, category, link_url, is_read, created_at)
+                VALUES (?, ?, ?, ?, ?, 0, NOW())
+            ");
+            return $stmt->execute([$userId, trim($title), trim($message), $category, $linkUrl ? trim($linkUrl) : null]);
+        } catch (Exception $e) {
+            error_log('Error createNotification: ' . $e->getMessage());
+            return false;
+        }
+    }
+}
+
+if (!function_exists('getUnreadNotificationCount')) {
+    function getUnreadNotificationCount(PDO $pdo, int $userId): int
+    {
+        if ($userId <= 0) return 0;
+        try {
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+            $stmt->execute([$userId]);
+            return (int)$stmt->fetchColumn();
+        } catch (Exception $e) {
+            return 0;
+        }
+    }
+}
+
+if (!function_exists('getRecentNotifications')) {
+    function getRecentNotifications(PDO $pdo, int $userId, int $limit = 5): array
+    {
+        if ($userId <= 0) return [];
+        $limit = max(1, min(50, (int)$limit));
+        try {
+            $stmt = $pdo->prepare("
+                SELECT id, title, message, category, link_url, is_read, created_at
+                FROM notifications
+                WHERE user_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT {$limit}
+            ");
+            $stmt->execute([$userId]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('markNotificationAsRead')) {
+    function markNotificationAsRead(PDO $pdo, int $notifId, int $userId): bool
+    {
+        if ($notifId <= 0 || $userId <= 0) return false;
+        try {
+            $stmt = $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?");
+            return $stmt->execute([$notifId, $userId]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('markAllNotificationsAsRead')) {
+    function markAllNotificationsAsRead(PDO $pdo, int $userId): bool
+    {
+        if ($userId <= 0) return false;
+        try {
+            $stmt = $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0");
+            return $stmt->execute([$userId]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('formatTimeAgo')) {
+    function formatTimeAgo($datetime): string
+    {
+        if (empty($datetime)) return '-';
+        $time = is_numeric($datetime) ? (int)$datetime : strtotime($datetime);
+        $diff = time() - $time;
+        if ($diff < 60) return 'Baru saja';
+        if ($diff < 3600) return floor($diff / 60) . ' menit lalu';
+        if ($diff < 86400) return floor($diff / 3600) . ' jam lalu';
+        if ($diff < 604800) return floor($diff / 86400) . ' hari lalu';
+        return date('d M Y', $time);
+    }
+}
+
+if (!function_exists('notifyLateStudentAttendance')) {
+    /**
+     * Kirim notifikasi otomatis kepada guru/wali kelas/kepsek pemantau ketika siswa hadir terlambat.
+     */
+    function notifyLateStudentAttendance(PDO $pdo, int $studentId, string $timeIn, string $status = 'terlambat'): void
+    {
+        if ($studentId <= 0 || $status !== 'terlambat') {
+            return;
+        }
+
+        try {
+            // Dapatkan informasi siswa, kelas, dan unit
+            $stmt = $pdo->prepare("
+                SELECT s.name AS student_name, cg.id AS class_group_id, cg.name AS class_name, g.id AS grade_id, g.unit_id
+                FROM students s
+                JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
+                JOIN class_groups cg ON cg.id = se.class_group_id
+                JOIN grades g ON g.id = cg.grade_id
+                WHERE s.id = ?
+                LIMIT 1
+            ");
+            $stmt->execute([$studentId]);
+            $student = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$student) {
+                return;
+            }
+
+            $studentName = $student['student_name'];
+            $className = $student['class_name'];
+            $classId = (int)$student['class_group_id'];
+            $gradeId = (int)$student['grade_id'];
+            $unitId = (int)$student['unit_id'];
+            $jam = date('H:i', strtotime($timeIn));
+            $today = date('Y-m-d');
+
+            // Cari user guru / pemantau / wali kelas / kepala sekolah yang punya izin ke kelas, tingkat, atau unit ini
+            $stmtUsers = $pdo->prepare("
+                SELECT DISTINCT u.id
+                FROM users u
+                LEFT JOIN admin_class_permissions acp ON acp.user_id = u.id AND acp.class_group_id = ?
+                LEFT JOIN admin_grade_permissions agp ON agp.user_id = u.id AND agp.grade_id = ?
+                LEFT JOIN admin_unit_permissions aup ON aup.user_id = u.id AND aup.unit_id = ?
+                LEFT JOIN staff st ON st.user_id = u.id AND st.unit_id = ?
+                WHERE (acp.class_group_id IS NOT NULL 
+                       OR agp.grade_id IS NOT NULL 
+                       OR aup.unit_id IS NOT NULL 
+                       OR (st.unit_id IS NOT NULL AND u.role IN ('kepala_sekolah', 'admin')))
+                  AND u.role IN ('guru', 'wali_kelas', 'kepala_sekolah', 'admin', 'staff')
+            ");
+            $stmtUsers->execute([$classId, $gradeId, $unitId, $unitId]);
+            $recipients = $stmtUsers->fetchAll(PDO::FETCH_COLUMN);
+
+            if (empty($recipients)) {
+                return;
+            }
+
+            $title = "Siswa Terlambat: {$studentName}";
+            $message = "Siswa {$studentName} ({$className}) tercatat terlambat hadir pada pukul {$jam}.";
+            $linkUrl = "attendance/students.php?class_group_id={$classId}&date={$today}";
+
+            // Check duplicate notif today for this student & user to avoid spam
+            $checkStmt = $pdo->prepare("
+                SELECT id FROM notifications 
+                WHERE user_id = ? AND category = 'presensi' 
+                  AND title = ? AND DATE(created_at) = ? 
+                LIMIT 1
+            ");
+
+            foreach ($recipients as $uid) {
+                $uid = (int)$uid;
+                $checkStmt->execute([$uid, $title, $today]);
+                if (!$checkStmt->fetchColumn()) {
+                    createNotification($pdo, $uid, 'presensi', $title, $message, $linkUrl);
+                }
+            }
+        } catch (Throwable $e) {
+            error_log("notifyLateStudentAttendance error: " . $e->getMessage());
+        }
+    }
+}

@@ -21,28 +21,24 @@ $selectedDay = trim($_GET['day_code'] ?? '');
 $selectedGrade = trim($_GET['grade_id'] ?? '');
 $selectedClass = trim($_GET['class_group_id'] ?? '');
 
-$ksUnitId = null;
-$ksUnitName = '';
-if ($currentRole === 'kepala_sekolah') {
-    $stmtKs = $pdo->prepare("
-        SELECT aup.unit_id, u.unit 
-        FROM admin_unit_permissions aup 
-        JOIN units u ON u.id = aup.unit_id 
-        WHERE aup.user_id = ? LIMIT 1
-    ");
-    $stmtKs->execute([$userId]);
-    $ksRow = $stmtKs->fetch(PDO::FETCH_ASSOC);
-    if ($ksRow) {
-        $ksUnitId = (int)$ksRow['unit_id'];
-        $ksUnitName = $ksRow['unit'];
-    }
-}
+$allowedUnits = getUserAllowedUnits($pdo, $userId, $currentRole);
+$allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $currentRole);
 
-// Ambil daftar unit
-$allUnits = $pdo->query("SELECT id, unit FROM units ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+// Ambil daftar unit yang boleh ditampilkan
+$allUnits = ($currentRole === 'super_admin') ? $pdo->query("SELECT id, unit FROM units ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC) : $allowedUnits;
 
 // Effective unit filter
-$filterUnitId = ($currentRole === 'kepala_sekolah') ? $ksUnitId : (!empty($selectedUnit) ? (int)$selectedUnit : null);
+$filterUnitId = null;
+if ($currentRole !== 'super_admin') {
+    if (count($allowedUnitIds) === 1) {
+        $filterUnitId = $allowedUnitIds[0];
+    } elseif (!empty($allowedUnitIds)) {
+        $reqUnit = !empty($selectedUnit) ? (int)$selectedUnit : 0;
+        $filterUnitId = in_array($reqUnit, $allowedUnitIds, true) ? $reqUnit : $allowedUnitIds[0];
+    }
+} else {
+    $filterUnitId = !empty($selectedUnit) ? (int)$selectedUnit : null;
+}
 
 // Ambil data Grades dan Classes untuk filter tab siswa
 $filterGrades = [];
@@ -199,17 +195,25 @@ require '../../includes/header.php';
         <form method="GET" action="index.php" style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
             <input type="hidden" name="tab" value="<?= e($activeTab) ?>">
 
-            <?php if ($currentRole !== 'kepala_sekolah'): ?>
+            <?php if ($currentRole === 'super_admin' || count($allowedUnits) > 1): ?>
                 <div style="display:flex; align-items:center; gap:6px;">
                     <label style="font-size:12px; color:#475569; font-weight:600;">Unit:</label>
                     <select name="unit_id" onchange="this.form.submit()" class="form-control" style="font-size:12.5px; padding:5px 10px; width:auto; border-radius:6px;">
-                        <option value="">-- Semua Unit --</option>
+                        <?php if ($currentRole === 'super_admin'): ?>
+                            <option value="">-- Semua Unit --</option>
+                        <?php endif; ?>
                         <?php foreach ($allUnits as $u): ?>
-                            <option value="<?= $u['id'] ?>" <?= $selectedUnit == $u['id'] ? 'selected' : '' ?>>
+                            <option value="<?= $u['id'] ?>" <?= ($filterUnitId == $u['id'] || $selectedUnit == $u['id']) ? 'selected' : '' ?>>
                                 <?= e($u['unit']) ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
+                </div>
+            <?php elseif (count($allowedUnits) === 1): ?>
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <span class="badge" style="background:#e0f2fe; color:#0369a1; padding:6px 12px; font-weight:700; border-radius:6px; font-size:12px;">
+                        <i class="fa-solid fa-school"></i> Unit: <?= e($allowedUnits[0]['unit']) ?>
+                    </span>
                 </div>
             <?php endif; ?>
 

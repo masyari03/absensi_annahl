@@ -13,19 +13,32 @@ $userId = currentUserId();
 
 $initialType = in_array($_GET['tab'] ?? '', ['student', 'staff']) ? $_GET['tab'] : 'student';
 
-$ksUnitId = 0;
-if ($currentRole === 'kepala_sekolah') {
-    $stmtKs = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? LIMIT 1");
-    $stmtKs->execute([$userId]);
-    $ksUnitId = (int)$stmtKs->fetchColumn();
-}
+$allowedUnits = getUserAllowedUnits($pdo, $userId, $currentRole);
+$allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $currentRole);
+
+$hasSingleUnit = ($currentRole !== 'super_admin' && count($allowedUnits) === 1);
+$defaultUnitId = $hasSingleUnit ? (int)$allowedUnits[0]['id'] : 0;
+$defaultUnitName = $hasSingleUnit ? $allowedUnits[0]['unit'] : '';
 
 $years = $pdo->query("SELECT * FROM academic_years ORDER BY start_date DESC")->fetchAll();
-$units = $pdo->query("SELECT * FROM units ORDER BY id ASC")->fetchAll();
+$units = ($currentRole === 'super_admin') ? $pdo->query("SELECT * FROM units ORDER BY id ASC")->fetchAll() : $allowedUnits;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $targetType = in_array($_POST['target_type'] ?? '', ['student', 'staff']) ? $_POST['target_type'] : 'student';
-    $unitId = $currentRole === 'super_admin' ? (int)$_POST['unit_id'] : $ksUnitId;
+    if ($currentRole === 'super_admin') {
+        $unitId = (int)($_POST['unit_id'] ?? 0);
+    } elseif ($hasSingleUnit) {
+        $unitId = $defaultUnitId;
+    } else {
+        $postedUnit = (int)($_POST['unit_id'] ?? 0);
+        $unitId = in_array($postedUnit, $allowedUnitIds, true) ? $postedUnit : 0;
+    }
+
+    if ($unitId <= 0) {
+        flash('error', 'Mohon pilih unit sekolah yang valid.');
+        redirect('create.php?tab=' . urlencode($targetType));
+        exit;
+    }
     $activityDate = $_POST['activity_date'];
     $isHoliday = $_POST['is_holiday'] ?? 'no';
     $name = trim($_POST['name'] ?? '');
@@ -110,15 +123,23 @@ require '../../includes/header.php';
                             <option value="<?= $u['id'] ?>"><?= e($u['unit']) ?></option>
                         <?php endforeach; ?>
                     </select>
+                <?php elseif (count($allowedUnits) > 1): ?>
+                    <select name="unit_id" required>
+                        <option value="">-- Pilih Unit Wewenang Anda --</option>
+                        <?php foreach($allowedUnits as $u): ?>
+                            <option value="<?= $u['id'] ?>"><?= e($u['unit']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small style="color:#0284c7; font-weight:600;"><i class="fa-solid fa-circle-check"></i> Menampilkan unit yang berada dalam wewenang akun Anda.</small>
+                <?php elseif ($hasSingleUnit): ?>
+                    <input type="text" value="<?= e($defaultUnitName) ?>" disabled style="background:#f1f5f9; cursor:not-allowed; font-weight:700;">
+                    <input type="hidden" name="unit_id" value="<?= (int)$defaultUnitId ?>">
+                    <small style="color:#0284c7; font-weight:600;"><i class="fa-solid fa-circle-check"></i> Otomatis ditambahkan ke unit <?= e($defaultUnitName) ?> wewenang Anda.</small>
                 <?php else: ?>
-                    <?php 
-                        $unitNameStr = '-';
-                        foreach ($units as $u) {
-                            if($u['id'] == $ksUnitId) { $unitNameStr = $u['unit']; break; }
-                        }
-                    ?>
-                    <input type="text" value="<?= e($unitNameStr) ?>" disabled style="background:#f1f5f9; cursor:not-allowed;">
-                    <small style="color:#0284c7;">Otomatis ditambahkan ke unit wewenang Anda.</small>
+                    <div style="padding:10px 14px; background:#fef2f2; border:1px solid #fecaca; border-radius:6px; color:#b91c1c; font-weight:600;">
+                        <i class="fa-solid fa-triangle-exclamation"></i> Akun Anda belum memiliki unit sekolah yang terdaftar. Hubungi Administrator.
+                    </div>
+                    <input type="hidden" name="unit_id" value="0">
                 <?php endif; ?>
             </div>
 
