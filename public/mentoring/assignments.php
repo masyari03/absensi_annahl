@@ -9,6 +9,12 @@ requireLogin();
 
 requireMenuAccess('mentoring_assignments');
 
+$currentRole = currentRole();
+if (!in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true)) {
+    flash('error', 'Akses terbatas: Kelola Kelompok Mentoring hanya dapat diakses oleh Kepala Sekolah atau Pengelola Sistem.');
+    redirect('index.php');
+}
+
 $pageTitle = 'Pengaturan Kelompok Mentee & Mentor';
 
 // ==========================================

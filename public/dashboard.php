@@ -30,7 +30,12 @@ $chartLate = [];
 
 $tableTarget = $chartType === 'student' ? 'student_attendances' : 'staff_attendances';
 
-// Menyusun Dynamic Join dan Where berdasarkan Role
+// Ambil unit wewenang user (Plan Edisi 14)
+$allowedUnits = getUserAllowedUnits($pdo, $userId, $role);
+$allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $role);
+$isSuperAdmin = ($role === 'super_admin');
+
+// Menyusun Dynamic Join dan Where berdasarkan Role & Wewenang Unit
 $joinSql = "";
 $whereSql = "WHERE YEAR(sa.attendance_date) = :year";
 $queryParams = [':year' => $filterYear];
@@ -40,29 +45,43 @@ if ($filterMode === 'month') {
     $queryParams[':month'] = $filterMonth;
 }
 
-if ($role === 'kepala_sekolah') {
+if (!$isSuperAdmin) {
     if ($chartType === 'student') {
         $joinSql = "INNER JOIN student_enrollments se ON se.id = sa.enrollment_id
                     INNER JOIN class_groups cg ON cg.id = se.class_group_id
                     INNER JOIN grades g ON g.id = cg.grade_id";
-        $whereSql .= " AND g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = :ks_id)";
-        $queryParams[':ks_id'] = $userId;
+        
+        if (!empty($allowedUnitIds)) {
+            // Berlaku untuk staff / guru & kepala_sekolah yang memiliki unit wewenang
+            $placeholders = [];
+            foreach ($allowedUnitIds as $i => $uId) {
+                $pKey = ":unit_param_{$i}";
+                $placeholders[] = $pKey;
+                $queryParams[$pKey] = $uId;
+            }
+            $whereSql .= " AND g.unit_id IN (" . implode(',', $placeholders) . ")";
+        } elseif ($role === 'admin') {
+            $whereSql .= " AND (g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = :adm_id1) 
+                           OR cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = :adm_id2))";
+            $queryParams[':adm_id1'] = $userId;
+            $queryParams[':adm_id2'] = $userId;
+        } else {
+            $whereSql .= " AND 1 = 0";
+        }
     } else {
-        $joinSql = "INNER JOIN staff st ON st.id = sa.staff_id";
-        $whereSql .= " AND st.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = :ks_id)";
-        $queryParams[':ks_id'] = $userId;
-    }
-} elseif ($role === 'admin') {
-    if ($chartType === 'student') {
-        $joinSql = "INNER JOIN student_enrollments se ON se.id = sa.enrollment_id
-                    INNER JOIN class_groups cg ON cg.id = se.class_group_id
-                    INNER JOIN grades g ON g.id = cg.grade_id";
-        $whereSql .= " AND (g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = :adm_id1) 
-                       OR cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = :adm_id2))";
-        $queryParams[':adm_id1'] = $userId;
-        $queryParams[':adm_id2'] = $userId;
-    } else {
-        $whereSql .= " AND 1 = 0"; // Admin tidak dapat melihat chart staff
+        // Staff chart
+        if (in_array($role, ['kepala_sekolah', 'super_admin'], true) && !empty($allowedUnitIds)) {
+            $joinSql = "INNER JOIN staff st ON st.id = sa.staff_id";
+            $placeholders = [];
+            foreach ($allowedUnitIds as $i => $uId) {
+                $pKey = ":st_unit_{$i}";
+                $placeholders[] = $pKey;
+                $queryParams[$pKey] = $uId;
+            }
+            $whereSql .= " AND st.unit_id IN (" . implode(',', $placeholders) . ")";
+        } else {
+            $whereSql .= " AND 1 = 0"; // Guru biasa tidak melihat chart staff
+        }
     }
 }
 
@@ -110,37 +129,109 @@ $jsLate = json_encode(array_values($chartLate));
 
 /*
 |--------------------------------------------------------------------------
-| Counter Atas
+| Counter Atas (Berbasis Wewenang Unit & Kelas)
 |--------------------------------------------------------------------------
 */
-if ($role === 'super_admin') {
-    $totalStudents = $pdo->query("SELECT COUNT(*) FROM students WHERE deleted_at IS NULL")->fetchColumn();
-    $totalStaff = $pdo->query("SELECT COUNT(*) FROM staff WHERE deleted_at IS NULL")->fetchColumn();
-    $todayTotal = $pdo->query("SELECT COUNT(*) FROM student_attendances WHERE attendance_date = CURDATE()")->fetchColumn();
-    $todayLate = $pdo->query("SELECT COUNT(*) FROM student_attendances WHERE attendance_date = CURDATE() AND status = 'terlambat'")->fetchColumn();
-} elseif ($role === 'kepala_sekolah') {
-    $stmt1 = $pdo->prepare("SELECT COUNT(DISTINCT s.id) FROM students s JOIN student_enrollments se ON se.student_id = s.id JOIN class_groups cg ON cg.id = se.class_group_id JOIN grades g ON g.id = cg.grade_id JOIN academic_years ay ON ay.id = se.academic_year_id WHERE s.deleted_at IS NULL AND ay.status = 'active' AND g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)");
-    $stmt1->execute([$userId]); $totalStudents = $stmt1->fetchColumn();
-    
-    $stmt2 = $pdo->prepare("SELECT COUNT(*) FROM staff WHERE deleted_at IS NULL AND unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)");
-    $stmt2->execute([$userId]); $totalStaff = $stmt2->fetchColumn();
-    
-    $stmt3 = $pdo->prepare("SELECT COUNT(*) FROM student_attendances sa JOIN student_enrollments se ON se.id = sa.enrollment_id JOIN class_groups cg ON cg.id = se.class_group_id JOIN grades g ON g.id = cg.grade_id WHERE sa.attendance_date = CURDATE() AND g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)");
-    $stmt3->execute([$userId]); $todayTotal = $stmt3->fetchColumn();
-    
-    $stmt4 = $pdo->prepare("SELECT COUNT(*) FROM student_attendances sa JOIN student_enrollments se ON se.id = sa.enrollment_id JOIN class_groups cg ON cg.id = se.class_group_id JOIN grades g ON g.id = cg.grade_id WHERE sa.attendance_date = CURDATE() AND sa.status = 'terlambat' AND g.unit_id IN (SELECT unit_id FROM admin_unit_permissions WHERE user_id = ?)");
-    $stmt4->execute([$userId]); $todayLate = $stmt4->fetchColumn();
-} else { // admin
-    $stmt1 = $pdo->prepare("SELECT COUNT(DISTINCT s.id) FROM students s JOIN student_enrollments se ON se.student_id = s.id JOIN class_groups cg ON cg.id = se.class_group_id JOIN grades g ON g.id = cg.grade_id JOIN academic_years ay ON ay.id = se.academic_year_id WHERE s.deleted_at IS NULL AND ay.status = 'active' AND (g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?) OR cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?))");
-    $stmt1->execute([$userId, $userId]); $totalStudents = $stmt1->fetchColumn();
-    
-    $totalStaff = 0;
+$totalStudents = 0;
+$totalStaff = 0;
+$todayTotal = 0;
+$todayLate = 0;
 
-    $stmt2 = $pdo->prepare("SELECT COUNT(*) FROM student_attendances sa JOIN student_enrollments se ON se.id = sa.enrollment_id JOIN class_groups cg ON cg.id = se.class_group_id JOIN grades g ON g.id = cg.grade_id WHERE sa.attendance_date = CURDATE() AND (g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?) OR cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?))");
-    $stmt2->execute([$userId, $userId]); $todayTotal = $stmt2->fetchColumn();
+if ($isSuperAdmin) {
+    $totalStudents = (int)$pdo->query("SELECT COUNT(*) FROM students WHERE deleted_at IS NULL")->fetchColumn();
+    $totalStaff = (int)$pdo->query("SELECT COUNT(*) FROM staff WHERE deleted_at IS NULL")->fetchColumn();
+    $todayTotal = (int)$pdo->query("SELECT COUNT(*) FROM student_attendances WHERE attendance_date = CURDATE()")->fetchColumn();
+    $todayLate = (int)$pdo->query("SELECT COUNT(*) FROM student_attendances WHERE attendance_date = CURDATE() AND status = 'terlambat'")->fetchColumn();
+} elseif (!empty($allowedUnitIds)) {
+    // Scoping Unit untuk Staff / Guru & Kepala Sekolah
+    $inQ = implode(',', array_fill(0, count($allowedUnitIds), '?'));
+    
+    // Total Siswa aktif di unit wewenang
+    $stmt1 = $pdo->prepare("
+        SELECT COUNT(DISTINCT s.id) 
+        FROM students s 
+        JOIN student_enrollments se ON se.student_id = s.id 
+        JOIN class_groups cg ON cg.id = se.class_group_id 
+        JOIN grades g ON g.id = cg.grade_id 
+        JOIN academic_years ay ON ay.id = se.academic_year_id 
+        WHERE s.deleted_at IS NULL AND ay.status = 'active' AND g.unit_id IN ($inQ)
+    ");
+    $stmt1->execute($allowedUnitIds);
+    $totalStudents = (int)$stmt1->fetchColumn();
 
-    $stmt3 = $pdo->prepare("SELECT COUNT(*) FROM student_attendances sa JOIN student_enrollments se ON se.id = sa.enrollment_id JOIN class_groups cg ON cg.id = se.class_group_id JOIN grades g ON g.id = cg.grade_id WHERE sa.attendance_date = CURDATE() AND sa.status = 'terlambat' AND (g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?) OR cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?))");
-    $stmt3->execute([$userId, $userId]); $todayLate = $stmt3->fetchColumn();
+    // Total Staf di unit (jika kepsek)
+    if ($role === 'kepala_sekolah') {
+        $stmt2 = $pdo->prepare("SELECT COUNT(*) FROM staff WHERE deleted_at IS NULL AND unit_id IN ($inQ)");
+        $stmt2->execute($allowedUnitIds);
+        $totalStaff = (int)$stmt2->fetchColumn();
+    } else {
+        $totalStaff = 0;
+    }
+
+    // Presensi Siswa Hari Ini di unit wewenang
+    $stmt3 = $pdo->prepare("
+        SELECT COUNT(*) 
+        FROM student_attendances sa 
+        JOIN student_enrollments se ON se.id = sa.enrollment_id 
+        JOIN class_groups cg ON cg.id = se.class_group_id 
+        JOIN grades g ON g.id = cg.grade_id 
+        WHERE sa.attendance_date = CURDATE() AND g.unit_id IN ($inQ)
+    ");
+    $stmt3->execute($allowedUnitIds);
+    $todayTotal = (int)$stmt3->fetchColumn();
+
+    // Siswa Telat Hari Ini di unit wewenang
+    $stmt4 = $pdo->prepare("
+        SELECT COUNT(*) 
+        FROM student_attendances sa 
+        JOIN student_enrollments se ON se.id = sa.enrollment_id 
+        JOIN class_groups cg ON cg.id = se.class_group_id 
+        JOIN grades g ON g.id = cg.grade_id 
+        WHERE sa.attendance_date = CURDATE() AND sa.status = 'terlambat' AND g.unit_id IN ($inQ)
+    ");
+    $stmt4->execute($allowedUnitIds);
+    $todayLate = (int)$stmt4->fetchColumn();
+} else {
+    // Admin dengan izin grade/class
+    $stmt1 = $pdo->prepare("
+        SELECT COUNT(DISTINCT s.id) 
+        FROM students s 
+        JOIN student_enrollments se ON se.student_id = s.id 
+        JOIN class_groups cg ON cg.id = se.class_group_id 
+        JOIN grades g ON g.id = cg.grade_id 
+        JOIN academic_years ay ON ay.id = se.academic_year_id 
+        WHERE s.deleted_at IS NULL AND ay.status = 'active' 
+          AND (g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?) 
+               OR cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?))
+    ");
+    $stmt1->execute([$userId, $userId]);
+    $totalStudents = (int)$stmt1->fetchColumn();
+
+    $stmt3 = $pdo->prepare("
+        SELECT COUNT(*) 
+        FROM student_attendances sa 
+        JOIN student_enrollments se ON se.id = sa.enrollment_id 
+        JOIN class_groups cg ON cg.id = se.class_group_id 
+        JOIN grades g ON g.id = cg.grade_id 
+        WHERE sa.attendance_date = CURDATE() 
+          AND (g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?) 
+               OR cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?))
+    ");
+    $stmt3->execute([$userId, $userId]);
+    $todayTotal = (int)$stmt3->fetchColumn();
+
+    $stmt4 = $pdo->prepare("
+        SELECT COUNT(*) 
+        FROM student_attendances sa 
+        JOIN student_enrollments se ON se.id = sa.enrollment_id 
+        JOIN class_groups cg ON cg.id = se.class_group_id 
+        JOIN grades g ON g.id = cg.grade_id 
+        WHERE sa.attendance_date = CURDATE() AND sa.status = 'terlambat' 
+          AND (g.id IN (SELECT grade_id FROM admin_grade_permissions WHERE user_id = ?) 
+               OR cg.id IN (SELECT class_group_id FROM admin_class_permissions WHERE user_id = ?))
+    ");
+    $stmt4->execute([$userId, $userId]);
+    $todayLate = (int)$stmt4->fetchColumn();
 }
 
 require '../includes/header.php';

@@ -103,6 +103,13 @@ if (isset($pdo) && $currentUserId > 0) {
         });
     }
 
+    // 3. Menu 'mentoring_assignments' (Kelola Kelompok Mentoring) HANYA BISA DIAKSES OLEH KEPALA SEKOLAH, ADMIN & SUPER ADMIN (GURU TIDAK BISA AKSES)
+    if (!in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true)) {
+        $rawMenus = array_filter($rawMenus, function($m) {
+            return ($m['menu_key'] ?? '') !== 'mentoring_assignments';
+        });
+    }
+
     // Realtime session synchronization agar hak akses langsung sinkron tanpa logout
     $_SESSION['menu_keys'] = array_filter(array_column($rawMenus, 'menu_key'));
 }

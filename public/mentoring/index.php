@@ -15,7 +15,7 @@ requireMenuAccess('mentoring_dashboard');
 $pageTitle = 'Dashboard Mentoring Siswa (MIP)';
 $currentRole = currentRole();
 $userId = currentUserId();
-$isPrivileged = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah']) || hasMenuAccess('mentoring_assignments') || hasMenuAccess('mentoring_report');
+$isPrivileged = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true);
 
 // Flash message
 // AJAX: Tarik data pemantauan adab santri pada pekan tertentu untuk Live Preview di Modal Jurnal
@@ -484,12 +484,6 @@ require __DIR__ . '/../../includes/header.php';
             <?php if (hasMenuAccess('mentoring_report')): ?>
                 <a href="report.php" class="btn" style="padding: 8px 14px; font-size: 13px; font-weight: 700; background: #0f172a; color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 6px;">
                     <i class="fa-solid fa-print"></i> Laporan & Cetak Raport
-                </a>
-            <?php endif; ?>
-
-            <?php if (hasMenuAccess('mentoring_assignments')): ?>
-                <a href="assignments.php" class="btn" style="padding: 8px 14px; font-size: 13px; font-weight: 700; background: #0284c7; color: white; border-radius: 8px; text-decoration: none; display: flex; align-items: center; gap: 6px;">
-                    <i class="fa-solid fa-users-rectangle"></i> Kelola Kelompok Mentoring
                 </a>
             <?php endif; ?>
 

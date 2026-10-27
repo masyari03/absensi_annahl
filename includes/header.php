@@ -39,6 +39,19 @@ if ($currentUserId > 0 && isset($pdo)) {
     .dropdown-menu a { display: block; padding: 12px 15px; color: #374151; text-decoration: none; font-size: 14px; transition: 0.2s; }
     .dropdown-menu a:hover { background: #f0f9ff; color: #0284c7; }
     
+    /* CSS Notifikasi Bell (Plan Edisi 14) */
+    .header-actions { display: flex; align-items: center; gap: 12px; }
+    .notification-wrapper { position: relative; }
+    .notification-bell-btn { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #475569; position: relative; transition: all 0.2s ease; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+    .notification-bell-btn:hover { background: #f8fafc; color: #0284c7; border-color: #0284c7; box-shadow: 0 4px 6px -1px rgba(2,132,199,0.1); }
+    .notification-badge { position: absolute; top: -5px; right: -5px; background: #ef4444; color: #ffffff; font-size: 11px; font-weight: 800; height: 18px; min-width: 18px; padding: 0 5px; border-radius: 9px; display: flex; align-items: center; justify-content: center; border: 2px solid #ffffff; box-shadow: 0 2px 4px rgba(239,68,68,0.4); }
+    .notification-dropdown { display: none; position: absolute; top: calc(100% + 10px); right: 0; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 12px 28px -4px rgba(15,23,42,0.15); width: 340px; max-width: 90vw; z-index: 1100; overflow: hidden; animation: fadeInDropdown 0.2s ease; }
+    @keyframes fadeInDropdown { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+    .notif-item { display: flex; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #f1f5f9; text-decoration: none; color: inherit; transition: background 0.15s; }
+    .notif-item:hover { background: #f8fafc; }
+    .notif-item.unread { background: #f0f9ff; }
+    .notif-item.unread:hover { background: #e0f2fe; }
+    
     .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
     .modal-box { background: #fff; padding: 25px; border-radius: 12px; width: 100%; max-width: 400px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); transform: translateY(0); transition: transform 0.3s ease; }
 
@@ -241,26 +254,64 @@ if ($currentUserId > 0 && isset($pdo)) {
         </div>
     </div>
 
-    <div class="profile-container" onclick="toggleDropdown(event)">
-        <div class="avatar" style="overflow: hidden; display: flex; justify-content: center; align-items: center; padding: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-            <?php if (!empty($userPhoto)): ?>
-                <img src="<?= UPLOAD_URL ?>/admins/<?= e($userPhoto) ?>" 
-                     alt="Profil" 
-                     style="width: 100%; height: 100%; object-fit: cover;"
-                     onerror="this.onerror=null; this.src='<?= BASE_URL ?>/photo.php?type=admin&file=<?= urlencode($userPhoto) ?>&name=<?= urlencode($_SESSION['name'] ?? 'U') ?>';">
-            <?php else: ?>
-                <?= strtoupper(substr($_SESSION['name'] ?? 'U', 0, 1)) ?>
-            <?php endif; ?>
+    <div class="header-actions" style="display: flex; align-items: center; gap: 12px;">
+        <!-- NOTIFIKASI BELL DROPDOWN -->
+        <?php 
+        $unreadNotifCount = 0;
+        if ($currentUserId > 0 && isset($pdo) && function_exists('getUnreadNotificationCount')) {
+            $unreadNotifCount = getUnreadNotificationCount($pdo, (int)$currentUserId);
+        }
+        ?>
+        <div class="notification-wrapper" style="position: relative;">
+            <button type="button" class="notification-bell-btn" id="notifBellBtn" onclick="toggleNotifDropdown(event)" title="Notifikasi">
+                <i class="fa-solid fa-bell" style="font-size: 18px;"></i>
+                <span id="notifBadge" class="notification-badge" style="<?= $unreadNotifCount > 0 ? '' : 'display:none;' ?>">
+                    <?= $unreadNotifCount > 99 ? '99+' : $unreadNotifCount ?>
+                </span>
+            </button>
+
+            <!-- DROPDOWN NOTIFIKASI -->
+            <div class="notification-dropdown" id="notifDropdown">
+                <div style="padding: 12px 16px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: #f8fafc;">
+                    <strong style="color: #0f172a; font-size: 14px;">Pemberitahuan</strong>
+                    <button type="button" onclick="markAllNotificationsReadAjax(event)" style="background: none; border: none; color: #0284c7; font-size: 12px; font-weight: 700; cursor: pointer; padding: 0;">
+                        Tandai semua dibaca
+                    </button>
+                </div>
+                <div id="notifDropdownList" style="max-height: 320px; overflow-y: auto;">
+                    <div style="padding: 24px; text-align: center; color: #94a3b8; font-size: 13px;">
+                        <i class="fa-solid fa-spinner fa-spin" style="margin-right: 6px;"></i> Memuat notifikasi...
+                    </div>
+                </div>
+                <div style="padding: 10px 16px; border-top: 1px solid #e2e8f0; text-align: center; background: #f8fafc;">
+                    <a href="<?= BASE_URL ?>/notifications/index.php" style="color: #0284c7; text-decoration: none; font-size: 13px; font-weight: 700;">
+                        Lihat Semua Notifikasi <i class="fa-solid fa-arrow-right" style="font-size: 11px;"></i>
+                    </a>
+                </div>
+            </div>
         </div>
-        <div class="profile-text">
-            <strong style="color: #1e293b;"><?= e($_SESSION['name'] ?? '') ?></strong>
-            <small style="color: #64748b;"><?= e(ucwords(str_replace('_', ' ', $_SESSION['role'] ?? '')) ) ?></small>
-        </div>
-        
-        <!-- DROPDOWN MENU -->
-        <div class="dropdown-menu" id="profileMenu">
-            <a href="#" onclick="openModal('photoModal'); return false;">📷 Ubah Foto Profil</a>
-            <a href="#" onclick="openModal('accountModal'); return false;">🔐 Ubah Akun (User & Pass)</a>
+
+        <div class="profile-container" onclick="toggleDropdown(event)">
+            <div class="avatar" style="overflow: hidden; display: flex; justify-content: center; align-items: center; padding: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <?php if (!empty($userPhoto)): ?>
+                    <img src="<?= UPLOAD_URL ?>/admins/<?= e($userPhoto) ?>" 
+                         alt="Profil" 
+                         style="width: 100%; height: 100%; object-fit: cover;"
+                         onerror="this.onerror=null; this.src='<?= BASE_URL ?>/photo.php?type=admin&file=<?= urlencode($userPhoto) ?>&name=<?= urlencode($_SESSION['name'] ?? 'U') ?>';">
+                <?php else: ?>
+                    <?= strtoupper(substr($_SESSION['name'] ?? 'U', 0, 1)) ?>
+                <?php endif; ?>
+            </div>
+            <div class="profile-text">
+                <strong style="color: #1e293b;"><?= e($_SESSION['name'] ?? '') ?></strong>
+                <small style="color: #64748b;"><?= e(ucwords(str_replace('_', ' ', $_SESSION['role'] ?? '')) ) ?></small>
+            </div>
+            
+            <!-- DROPDOWN MENU -->
+            <div class="dropdown-menu" id="profileMenu">
+                <a href="#" onclick="openModal('photoModal'); return false;">📷 Ubah Foto Profil</a>
+                <a href="#" onclick="openModal('accountModal'); return false;">🔐 Ubah Akun (User & Pass)</a>
+            </div>
         </div>
     </div>
 </header>
@@ -307,17 +358,105 @@ if ($currentUserId > 0 && isset($pdo)) {
 // --- LOGIKA DROPDOWN & MODAL ---
 function toggleDropdown(e) {
     let menu = document.getElementById('profileMenu');
+    const nd = document.getElementById('notifDropdown');
+    if (nd) nd.style.display = 'none';
     menu.style.display = (menu.style.display === 'block') ? 'none' : 'block';
     e.stopPropagation();
 }
 
+function toggleNotifDropdown(e) {
+    if (e) e.stopPropagation();
+    const dd = document.getElementById('notifDropdown');
+    const pm = document.getElementById('profileMenu');
+    if (pm) pm.style.display = 'none';
+    if (!dd) return;
+    const isShow = (dd.style.display === 'block');
+    dd.style.display = isShow ? 'none' : 'block';
+    if (!isShow) {
+        loadNotificationsAjax();
+    }
+}
+
+function loadNotificationsAjax() {
+    const list = document.getElementById('notifDropdownList');
+    if (!list) return;
+    fetch('<?= BASE_URL ?>/api/notifications.php?action=get_latest')
+        .then(res => res.json())
+        .then(data => {
+            if (!data.success) return;
+            const badge = document.getElementById('notifBadge');
+            if (badge) {
+                if (data.unread_count > 0) {
+                    badge.innerText = data.unread_count > 99 ? '99+' : data.unread_count;
+                    badge.style.display = 'flex';
+                } else {
+                    badge.style.display = 'none';
+                }
+            }
+            if (!data.notifications || data.notifications.length === 0) {
+                list.innerHTML = '<div style="padding:24px; text-align:center; color:#94a3b8; font-size:13px;"><i class="fa-regular fa-bell-slash" style="font-size:22px; display:block; margin-bottom:8px;"></i>Tidak ada notifikasi baru</div>';
+                return;
+            }
+            let html = '';
+            data.notifications.forEach(n => {
+                const isUnread = (parseInt(n.is_read) === 0);
+                const targetLink = n.link_url && n.link_url.trim() !== '' ? n.link_url : '<?= BASE_URL ?>/notifications/index.php';
+                html += `
+                    <a href="${targetLink}" class="notif-item ${isUnread ? 'unread' : ''}" onclick="markNotificationReadAjax(${n.id})">
+                        <div style="width:34px; height:34px; border-radius:8px; background:#f1f5f9; color:${n.color}; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:14px; margin-top:2px;">
+                            <i class="fa-solid ${n.icon}"></i>
+                        </div>
+                        <div style="flex:1; min-width:0;">
+                            <div style="font-size:13px; font-weight:${isUnread ? '700' : '600'}; color:#0f172a; margin-bottom:2px; display:flex; justify-content:space-between; align-items:center;">
+                                <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(n.title)}</span>
+                                ${isUnread ? '<span style="width:6px; height:6px; border-radius:50%; background:#ef4444; flex-shrink:0;"></span>' : ''}
+                            </div>
+                            <div style="font-size:12px; color:#475569; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;">${escapeHtml(n.message)}</div>
+                            <div style="font-size:11px; color:#94a3b8; margin-top:4px;">${n.time_ago}</div>
+                        </div>
+                    </a>
+                `;
+            });
+            list.innerHTML = html;
+        })
+        .catch(() => {});
+}
+
+function markNotificationReadAjax(id) {
+    if (!id) return;
+    fetch('<?= BASE_URL ?>/api/notifications.php?action=mark_read&id=' + id, { method: 'POST' }).catch(() => {});
+}
+
+function markAllNotificationsReadAjax(e) {
+    if (e) e.stopPropagation();
+    fetch('<?= BASE_URL ?>/api/notifications.php?action=mark_all_read', { method: 'POST' })
+        .then(() => {
+            const badge = document.getElementById('notifBadge');
+            if (badge) badge.style.display = 'none';
+            loadNotificationsAjax();
+        })
+        .catch(() => {});
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 document.addEventListener('click', function() {
-    document.getElementById('profileMenu').style.display = 'none';
+    const pm = document.getElementById('profileMenu');
+    if (pm) pm.style.display = 'none';
+    const nd = document.getElementById('notifDropdown');
+    if (nd) nd.style.display = 'none';
 });
+
+setInterval(loadNotificationsAjax, 45000);
 
 function openModal(modalId) {
     document.getElementById(modalId).style.display = 'flex';
     document.getElementById('profileMenu').style.display = 'none';
+    const nd = document.getElementById('notifDropdown');
+    if (nd) nd.style.display = 'none';
 }
 
 function closeModal(modalId) {

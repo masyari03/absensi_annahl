@@ -15,7 +15,7 @@ requireMenuAccess('mentoring_adab');
 $pageTitle = 'Pemantauan Pembiasaan Adab & Refleksi Santri';
 $currentRole = currentRole();
 $userId = currentUserId();
-$isPrivileged = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah']) || hasMenuAccess('mentoring_assignments') || hasMenuAccess('mentoring_report');
+$isPrivileged = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true);
 
 // FILTER PARAMETERS
 $filterClass  = trim($_GET['class'] ?? '');

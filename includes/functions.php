@@ -53,7 +53,7 @@ if (!function_exists('setFlash')) {
 }
 
 // =========================================================================
-// ACCESS CONTROL — DATABASE-DRIVEN ACL DENGAN GRANULAR CRUD & MULTI-ROLE
+// ACCESS CONTROL â€” DATABASE-DRIVEN ACL DENGAN GRANULAR CRUD & MULTI-ROLE
 // =========================================================================
 
 /**
@@ -364,7 +364,7 @@ if (!function_exists('canExecuteQuickAttendance')) {
 }
 
 // =========================================================================
-// SUPERVISI PEMBELAJARAN (KURMAA) — SCOPING UNIT & ELIGIBLE USERS/STAFF
+// SUPERVISI PEMBELAJARAN (KURMAA) â€” SCOPING UNIT & ELIGIBLE USERS/STAFF
 // =========================================================================
 
 if (!function_exists('getUserUnitInfo')) {
@@ -474,6 +474,37 @@ if (!function_exists('getSupervisionObservers')) {
             LEFT JOIN units un ON un.id = s.unit_id
             WHERE {$whereSql}
             ORDER BY un.id ASC, u.name ASC
+        ";
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('getSupervisionPrincipals')) {
+    function getSupervisionPrincipals(PDO $pdo, ?int $unitId = null): array {
+        $where = [
+            'u.deleted_at IS NULL',
+            "u.role IN ('kepala_sekolah', 'admin', 'super_admin')",
+            "u.name NOT IN ('absen', 'arif', 'Absen Barcode Siswa')"
+        ];
+        $params = [];
+        if ($unitId !== null && $unitId > 0) {
+            $where[] = '(u.role = "super_admin" OR s.unit_id = ? OR s.unit_id IS NULL)';
+            $params[] = $unitId;
+        }
+        $whereSql = implode(' AND ', $where);
+        $sql = "
+            SELECT DISTINCT u.id, u.name, u.role, un.unit as unit_name
+            FROM users u
+            LEFT JOIN staff s ON (s.user_id = u.id OR s.nik = u.username)
+            LEFT JOIN units un ON un.id = s.unit_id
+            WHERE {$whereSql}
+            ORDER BY FIELD(u.role, 'kepala_sekolah', 'admin', 'super_admin'), u.name ASC
         ";
         try {
             $stmt = $pdo->prepare($sql);
@@ -658,7 +689,7 @@ if (!function_exists('getSupervisionCumulativeData')) {
                 'subject_name' => $subjectName,
                 'class_name' => $className,
                 'observation_date' => $obsDate,
-                'academic_year' => '2026/2027 • Semester Ganjil',
+                'academic_year' => '2026/2027 â€¢ Semester Ganjil',
                 'principal_name' => $kepsek['signed_principal_name'] ?? ($kepsek['observer_name'] ?? 'Awang Darmawan, SS'),
                 'peer_observer_name' => $peer['signed_observer_name'] ?? ($peer['observer_name'] ?? '-'),
                 'teacher_name' => $teacher['name']
@@ -1929,5 +1960,207 @@ if (!function_exists('getMentorAllAccountIds')) {
         }
 
         return array_values(array_unique(array_map('intval', $ids)));
+    }
+}
+
+// =========================================================================
+// SISTEM NOTIFIKASI TERINTEGRASI (PLAN EDISI 14)
+// =========================================================================
+
+if (!function_exists('createNotification')) {
+    /**
+     * Membuat notifikasi baru untuk user tertentu secara aman.
+     * Mendukung 2 signature urutan parameter:
+     * 1. createNotification($pdo, $userId, $category, $title, $message, $linkUrl)
+     * 2. createNotification($pdo, $userId, $title, $message, $category, $linkUrl)
+     */
+    function createNotification(PDO $pdo, int $userId, string $arg3, string $arg4, ?string $arg5 = null, ?string $linkUrl = null): bool
+    {
+        if ($userId <= 0) {
+            return false;
+        }
+
+        $validCategories = ['supervisi', 'mentoring', 'presensi', 'sistem'];
+        if (in_array($arg3, $validCategories, true)) {
+            $category = $arg3;
+            $title = $arg4;
+            $message = (string)($arg5 ?? '');
+        } else {
+            $title = $arg3;
+            $message = $arg4;
+            $category = in_array((string)$arg5, $validCategories, true) ? (string)$arg5 : 'sistem';
+        }
+
+        if (empty($title)) {
+            return false;
+        }
+
+        try {
+            $stmt = $pdo->prepare("
+                INSERT INTO notifications (user_id, title, message, category, link_url, is_read, created_at)
+                VALUES (?, ?, ?, ?, ?, 0, NOW())
+            ");
+            return $stmt->execute([$userId, trim($title), trim($message), $category, $linkUrl ? trim($linkUrl) : null]);
+        } catch (Exception $e) {
+            error_log('Error createNotification: ' . $e->getMessage());
+            return false;
+        }
+    }
+}
+
+if (!function_exists('getUnreadNotificationCount')) {
+    function getUnreadNotificationCount(PDO $pdo, int $userId): int
+    {
+        if ($userId <= 0) return 0;
+        try {
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+            $stmt->execute([$userId]);
+            return (int)$stmt->fetchColumn();
+        } catch (Exception $e) {
+            return 0;
+        }
+    }
+}
+
+if (!function_exists('getRecentNotifications')) {
+    function getRecentNotifications(PDO $pdo, int $userId, int $limit = 5): array
+    {
+        if ($userId <= 0) return [];
+        $limit = max(1, min(50, (int)$limit));
+        try {
+            $stmt = $pdo->prepare("
+                SELECT id, title, message, category, link_url, is_read, created_at
+                FROM notifications
+                WHERE user_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT {$limit}
+            ");
+            $stmt->execute([$userId]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('markNotificationAsRead')) {
+    function markNotificationAsRead(PDO $pdo, int $notifId, int $userId): bool
+    {
+        if ($notifId <= 0 || $userId <= 0) return false;
+        try {
+            $stmt = $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?");
+            return $stmt->execute([$notifId, $userId]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('markAllNotificationsAsRead')) {
+    function markAllNotificationsAsRead(PDO $pdo, int $userId): bool
+    {
+        if ($userId <= 0) return false;
+        try {
+            $stmt = $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0");
+            return $stmt->execute([$userId]);
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('formatTimeAgo')) {
+    function formatTimeAgo($datetime): string
+    {
+        if (empty($datetime)) return '-';
+        $time = is_numeric($datetime) ? (int)$datetime : strtotime($datetime);
+        $diff = time() - $time;
+        if ($diff < 60) return 'Baru saja';
+        if ($diff < 3600) return floor($diff / 60) . ' menit lalu';
+        if ($diff < 86400) return floor($diff / 3600) . ' jam lalu';
+        if ($diff < 604800) return floor($diff / 86400) . ' hari lalu';
+        return date('d M Y', $time);
+    }
+}
+
+if (!function_exists('notifyLateStudentAttendance')) {
+    /**
+     * Kirim notifikasi otomatis kepada guru/wali kelas/kepsek pemantau ketika siswa hadir terlambat.
+     */
+    function notifyLateStudentAttendance(PDO $pdo, int $studentId, string $timeIn, string $status = 'terlambat'): void
+    {
+        if ($studentId <= 0 || $status !== 'terlambat') {
+            return;
+        }
+
+        try {
+            // Dapatkan informasi siswa, kelas, dan unit
+            $stmt = $pdo->prepare("
+                SELECT s.name AS student_name, cg.id AS class_group_id, cg.name AS class_name, g.id AS grade_id, g.unit_id
+                FROM students s
+                JOIN student_enrollments se ON se.student_id = s.id AND se.status = 'active'
+                JOIN class_groups cg ON cg.id = se.class_group_id
+                JOIN grades g ON g.id = cg.grade_id
+                WHERE s.id = ?
+                LIMIT 1
+            ");
+            $stmt->execute([$studentId]);
+            $student = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$student) {
+                return;
+            }
+
+            $studentName = $student['student_name'];
+            $className = $student['class_name'];
+            $classId = (int)$student['class_group_id'];
+            $gradeId = (int)$student['grade_id'];
+            $unitId = (int)$student['unit_id'];
+            $jam = date('H:i', strtotime($timeIn));
+            $today = date('Y-m-d');
+
+            // Cari user guru / pemantau / wali kelas / kepala sekolah yang punya izin ke kelas, tingkat, atau unit ini
+            $stmtUsers = $pdo->prepare("
+                SELECT DISTINCT u.id
+                FROM users u
+                LEFT JOIN admin_class_permissions acp ON acp.user_id = u.id AND acp.class_group_id = ?
+                LEFT JOIN admin_grade_permissions agp ON agp.user_id = u.id AND agp.grade_id = ?
+                LEFT JOIN admin_unit_permissions aup ON aup.user_id = u.id AND aup.unit_id = ?
+                LEFT JOIN staff st ON st.user_id = u.id AND st.unit_id = ?
+                WHERE (acp.class_group_id IS NOT NULL 
+                       OR agp.grade_id IS NOT NULL 
+                       OR aup.unit_id IS NOT NULL 
+                       OR (st.unit_id IS NOT NULL AND u.role IN ('kepala_sekolah', 'admin')))
+                  AND u.role IN ('guru', 'wali_kelas', 'kepala_sekolah', 'admin', 'staff')
+            ");
+            $stmtUsers->execute([$classId, $gradeId, $unitId, $unitId]);
+            $recipients = $stmtUsers->fetchAll(PDO::FETCH_COLUMN);
+
+            if (empty($recipients)) {
+                return;
+            }
+
+            $title = "Siswa Terlambat: {$studentName}";
+            $message = "Siswa {$studentName} ({$className}) tercatat terlambat hadir pada pukul {$jam}.";
+            $linkUrl = "attendance/students.php?class_group_id={$classId}&date={$today}";
+
+            // Check duplicate notif today for this student & user to avoid spam
+            $checkStmt = $pdo->prepare("
+                SELECT id FROM notifications 
+                WHERE user_id = ? AND category = 'presensi' 
+                  AND title = ? AND DATE(created_at) = ? 
+                LIMIT 1
+            ");
+
+            foreach ($recipients as $uid) {
+                $uid = (int)$uid;
+                $checkStmt->execute([$uid, $title, $today]);
+                if (!$checkStmt->fetchColumn()) {
+                    createNotification($pdo, $uid, 'presensi', $title, $message, $linkUrl);
+                }
+            }
+        } catch (Throwable $e) {
+            error_log("notifyLateStudentAttendance error: " . $e->getMessage());
+        }
     }
 }

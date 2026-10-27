@@ -6,11 +6,34 @@ require_once __DIR__ . '/../../config/security.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
 requireLogin();
-requireMenuAccess('supervisi_kepsek');
+
+$currentUserId = (int)currentUserId();
+$currentRole = (string)currentRole();
+
+// Cek akses khusus untuk penerima mandat Kepala Sekolah (delegated_user_id)
+$checkSchedId = (int)($_GET['schedule_id'] ?? ($_POST['schedule_id'] ?? 0));
+$checkSessId = (int)($_GET['session_id'] ?? ($_POST['session_id'] ?? 0));
+$isDelegatedUser = false;
+
+if ($checkSchedId > 0) {
+    $stmtDel = $pdo->prepare("SELECT 1 FROM supervision_schedules WHERE id = ? AND delegated_user_id = ?");
+    $stmtDel->execute([$checkSchedId, $currentUserId]);
+    if ($stmtDel->fetchColumn()) $isDelegatedUser = true;
+} elseif ($checkSessId > 0) {
+    $stmtDel = $pdo->prepare("
+        SELECT 1 FROM supervision_sessions ss
+        JOIN supervision_schedules sc ON sc.id = ss.schedule_id
+        WHERE ss.id = ? AND (sc.delegated_user_id = ? OR ss.observer_id = ?)
+    ");
+    $stmtDel->execute([$checkSessId, $currentUserId, $currentUserId]);
+    if ($stmtDel->fetchColumn()) $isDelegatedUser = true;
+}
+
+if (!$isDelegatedUser) {
+    requireMenuAccess('supervisi_kepsek');
+}
 
 $pageTitle = 'Supervisi Pembelajaran Kepala Sekolah';
-$currentUserId = currentUserId();
-$currentRole = currentRole();
 
 // Ambil type_id = 2 (principal)
 $typeId = 2;
@@ -32,8 +55,8 @@ if ($sessionId > 0) {
         flash('error', 'Dokumen supervisi tidak ditemukan.');
         redirect('reports.php');
     }
-    // Proteksi otorisasi observer
-    if (!in_array($currentRole, ['super_admin', 'admin'], true) && $editSession['observer_id'] != $currentUserId) {
+    // Proteksi otorisasi observer (termasuk penerima mandat)
+    if (!in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true) && $editSession['observer_id'] != $currentUserId && !$isDelegatedUser) {
         flash('error', 'Anda tidak memiliki hak akses untuk mengubah dokumen supervisi ini.');
         redirect('reports.php');
     }
@@ -59,12 +82,58 @@ if ($scheduleId > 0 && !$editSession) {
     $prefillSchedule = $stmtSched->fetch(PDO::FETCH_ASSOC);
 }
 
+// 3. Evaluasi Kunci Jam (Time-Lock) & Izin Edit (Edit-Lock)
+$isTimeLocked = false;
+$timeLockMsg = '';
+$isEditLocked = false;
+$editLockMsg = '';
+
+$checkScheduleId = $scheduleId ?: (int)($_POST['schedule_id'] ?? 0);
+$schedData = null;
+if ($checkScheduleId > 0) {
+    $stmtScCheck = $pdo->prepare("SELECT * FROM supervision_schedules WHERE id = ?");
+    $stmtScCheck->execute([$checkScheduleId]);
+    $schedData = $stmtScCheck->fetch(PDO::FETCH_ASSOC);
+}
+
+if ($schedData) {
+    $schedDate = $schedData['scheduled_date'];
+    $timeStart = $schedData['time_start'] ?: '00:00:00';
+    $bypassTime = (int)$schedData['bypass_time_lock'];
+
+    $schedTs = strtotime("{$schedDate} {$timeStart}");
+    if (time() < $schedTs && $bypassTime === 0) {
+        $isTimeLocked = true;
+        $timeLockMsg = "Jadwal supervisi belum dimulai. Waktu pelaksanaan terdaftar pada " . formatIndoDate($schedDate) . " pukul " . substr($timeStart, 0, 5) . ". Penilaian dikunci sampai jam pelaksanaan dimulai, atau sampai Kepala Sekolah membuka kunci jam supervisi.";
+    }
+}
+
+if ($editSession && $editSession['status'] === 'completed') {
+    $isPrivilegedUser = in_array($currentRole, ['super_admin', 'kepala_sekolah', 'admin'], true);
+    $hasAllowEdit = ($schedData && (int)$schedData['allow_edit'] === 1);
+    if (!$isPrivilegedUser && !$hasAllowEdit) {
+        $isEditLocked = true;
+        $editLockMsg = "Dokumen supervisi ini telah diselesaikan dan terkunci secara permanen. Pengubahan data hanya dapat dilakukan jika Kepala Sekolah mengaktifkan 'Izin Edit' pada jadwal supervisi terkait.";
+    }
+}
+$isFormLocked = ($isTimeLocked || $isEditLocked);
+
 // =========================================================================
 // ACTION: SIMPAN FORMULIR SUPERVISI KEPALA SEKOLAH (DRAF ATAU FINALISASI)
 // =========================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_principal_supervision') {
     $sessId = (int)($_POST['session_id'] ?? 0);
     $schedId = !empty($_POST['schedule_id']) ? (int)$_POST['schedule_id'] : null;
+
+    if ($isTimeLocked) {
+        flash('error', $timeLockMsg);
+        redirect('principal.php' . ($sessId ? "?session_id={$sessId}" : ($schedId ? "?schedule_id={$schedId}" : '')));
+    }
+    if ($isEditLocked) {
+        flash('error', $editLockMsg);
+        redirect('principal.php' . ($sessId ? "?session_id={$sessId}" : ($schedId ? "?schedule_id={$schedId}" : '')));
+    }
+
     $submitAction = $_POST['submit_action'] ?? 'save_completed';
     $isDraft = ($submitAction === 'save_draft');
     $sessionStatus = $isDraft ? 'draft' : 'completed';
@@ -164,6 +233,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $stmtOName->execute([$observerId]);
     $signedObserverName = $stmtOName->fetchColumn() ?: 'Kepala Sekolah';
 
+    // Cek mandat & nama kepala sekolah resmi
+    $isDelegatedSession = 0;
+    $actualPrincipalName = 'Kepala Sekolah';
+    $principalUserId = 0;
+    if ($schedData) {
+        if (!empty($schedData['delegated_user_id']) && (int)$schedData['delegated_user_id'] === $currentUserId) {
+            $isDelegatedSession = 1;
+        }
+        if (!empty($schedData['principal_id'])) {
+            $principalUserId = (int)$schedData['principal_id'];
+            $stmtP = $pdo->prepare("SELECT name FROM users WHERE id = ?");
+            $stmtP->execute([$principalUserId]);
+            $pName = $stmtP->fetchColumn();
+            if ($pName) $actualPrincipalName = $pName;
+        }
+    }
+
+    $signedPrincipalStr = ($isDelegatedSession === 1) 
+        ? ($actualPrincipalName . ' (Mandat: ' . $signedObserverName . ')') 
+        : $actualPrincipalName;
+
     // SIMPAN KE DATABASE DENGAN TRANSAKSI
     $pdo->beginTransaction();
     try {
@@ -171,19 +261,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             // UPDATE
             $stmtUpd = $pdo->prepare("
                 UPDATE supervision_sessions SET
-                    schedule_id = ?, status = ?, teacher_id = ?, observer_id = ?,
+                    schedule_id = ?, status = ?, is_delegated = ?, teacher_id = ?, observer_id = ?,
                     subject_name = ?, class_name = ?, observation_date = ?, room_location = ?,
                     total_score = ?, max_possible_score = ?, percentage_score = ?,
                     predicate_name = ?, notes_good_practice = ?, notes_growth_plan = ?,
-                    notes_teacher_reflection = ?, signed_teacher_name = ?, signed_observer_name = ?
+                    notes_teacher_reflection = ?, signed_teacher_name = ?, signed_observer_name = ?,
+                    signed_principal_name = ?
                 WHERE id = ?
             ");
             $stmtUpd->execute([
-                $schedId, $sessionStatus, $teacherId, $observerId,
+                $schedId, $sessionStatus, $isDelegatedSession, $teacherId, $observerId,
                 $subjectName, $className, $obsDate, $roomLocation,
                 $totalScore, $maxPossibleScore, $percentageScore,
                 $predicateName, $notesGood, $notesGrowth,
                 $notesReflection, $signedTeacherName, $signedObserverName,
+                $signedPrincipalStr,
                 $sessId
             ]);
             $sessionId = $sessId;
@@ -193,22 +285,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             // INSERT
             $stmtInsert = $pdo->prepare("
                 INSERT INTO supervision_sessions (
-                    schedule_id, status, type_id, teacher_id, observer_id, subject_name, class_name,
+                    schedule_id, status, is_delegated, type_id, teacher_id, observer_id, subject_name, class_name,
                     observation_date, room_location, total_score, max_possible_score, percentage_score,
                     predicate_name, notes_good_practice, notes_growth_plan, notes_teacher_reflection,
                     signed_teacher_name, signed_observer_name, signed_principal_name
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?,
-                    ?, ?, 'Awang Darmawan, SS'
+                    ?, ?, ?
                 )
             ");
             $stmtInsert->execute([
-                $schedId, $sessionStatus, $typeId, $teacherId, $observerId, $subjectName, $className,
+                $schedId, $sessionStatus, $isDelegatedSession, $typeId, $teacherId, $observerId, $subjectName, $className,
                 $obsDate, $roomLocation, $totalScore, $maxPossibleScore, $percentageScore,
                 $predicateName, $notesGood, $notesGrowth, $notesReflection,
-                $signedTeacherName, $signedObserverName
+                $signedTeacherName, $signedObserverName, $signedPrincipalStr
             ]);
             $sessionId = (int)$pdo->lastInsertId();
         }
@@ -229,6 +321,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             flash('success', "Draf supervisi Kepala Sekolah untuk {$signedTeacherName} berhasil disimpan sementara. Anda dapat melanjutkan penilaian kapan saja.");
             redirect("principal.php?session_id={$sessionId}");
         } else {
+            // Kirim notifikasi hasil supervisi selesai
+            try {
+                // 1. Notif ke guru yang dinilai
+                $stmtTUser = $pdo->prepare("SELECT user_id, name FROM staff WHERE id = ?");
+                $stmtTUser->execute([$teacherId]);
+                $tStaffRow = $stmtTUser->fetch(PDO::FETCH_ASSOC);
+                if ($tStaffRow && !empty($tStaffRow['user_id'])) {
+                    createNotification(
+                        $pdo, 
+                        (int)$tStaffRow['user_id'], 
+                        'supervisi', 
+                        'Supervisi Kepala Sekolah Selesai', 
+                        "Dokumen supervisi Kepala Sekolah untuk mata pelajaran {$subjectName} telah selesai dinilai dengan predikat {$predicateName} ({$percentageScore}%).", 
+                        "supervisi/reports.php"
+                    );
+                }
+
+                // 2. Jika penilaian dilakukan oleh guru penerima mandat, notif Kepala Sekolah
+                if ($isDelegatedSession === 1 && $principalUserId > 0) {
+                    createNotification(
+                        $pdo,
+                        $principalUserId,
+                        'supervisi',
+                        'Laporan Mandat Supervisi Selesai',
+                        "Guru penerima mandat ({$signedObserverName}) telah menyelesaikan penilaian supervisi Kepala Sekolah untuk {$signedTeacherName} (Mapel: {$subjectName}) dengan predikat {$predicateName} ({$percentageScore}%).",
+                        "supervisi/reports.php"
+                    );
+                }
+            } catch (Throwable $e) {
+                error_log("Principal supervision completion notification error: " . $e->getMessage());
+            }
+
             flash('success', "Dokumen Supervisi Kepala Sekolah untuk {$signedTeacherName} berhasil difinalisasi & disimpan resmi dengan predikat: {$predicateName} ({$percentageScore}%).");
             redirect('reports.php');
         }
@@ -350,15 +474,39 @@ require_once __DIR__ . '/../../includes/header.php';
                 </span>
             </div>
             <div style="display: flex; gap: 8px; align-items: center;">
-                <button type="button" class="btn btn-warning" onclick="submitAsDraft()" style="background: #f59e0b; border-color: #f59e0b; color: white; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; padding: 9px 15px; border-radius: 8px;" title="Simpan penilaian sementara dan lanjutkan nanti">
+                <button type="button" class="btn btn-warning" onclick="submitAsDraft()" <?= $isFormLocked ? 'disabled style="background: #94a3b8; border-color: #94a3b8; color: white; opacity: 0.6; cursor: not-allowed; padding: 9px 15px; border-radius: 8px;"' : 'style="background: #f59e0b; border-color: #f59e0b; color: white; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; padding: 9px 15px; border-radius: 8px;"' ?> title="<?= $isFormLocked ? 'Form terkunci' : 'Simpan penilaian sementara dan lanjutkan nanti' ?>">
                     <i class="fa-solid fa-file-pen"></i> Simpan Draf
                 </button>
-                <button type="button" class="btn btn-primary" onclick="submitAsCompleted()" style="background: #9333ea; border-color: #9333ea; display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: 8px; font-weight: 700;" title="Finalisasi dokumen supervisi">
+                <button type="button" class="btn btn-primary" onclick="submitAsCompleted()" <?= $isFormLocked ? 'disabled style="background: #94a3b8; border-color: #94a3b8; opacity: 0.6; cursor: not-allowed; padding: 9px 16px; border-radius: 8px;"' : 'style="background: #9333ea; border-color: #9333ea; display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border-radius: 8px; font-weight: 700;"' ?> title="<?= $isFormLocked ? 'Form terkunci' : 'Finalisasi dokumen supervisi' ?>">
                     <i class="fa-solid fa-check-double"></i> Selesaikan Penilaian
                 </button>
             </div>
         </div>
     </div>
+
+    <?php if ($isTimeLocked): ?>
+        <!-- BANNER KUNCI JAM (TIME-LOCK) -->
+        <div style="background: #fffbeb; border: 1.5px solid #fde68a; border-left: 5px solid #f59e0b; padding: 16px 20px; border-radius: 10px; margin-bottom: 24px; color: #92400e; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <div style="font-weight: 800; font-size: 14.5px; display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-clock-rotate-left" style="font-size: 18px;"></i> Jadwal Supervisi Belum Dimulai (Form Terkunci)
+            </div>
+            <p style="margin: 6px 0 0; font-size: 13px; line-height: 1.5;">
+                <?= htmlspecialchars($timeLockMsg) ?>
+            </p>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($isEditLocked): ?>
+        <!-- BANNER IZIN EDIT TERKUNCI (EDIT-LOCK) -->
+        <div style="background: #f8fafc; border: 1.5px solid #e2e8f0; border-left: 5px solid #64748b; padding: 16px 20px; border-radius: 10px; margin-bottom: 24px; color: #334155; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <div style="font-weight: 800; font-size: 14.5px; display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-lock" style="font-size: 18px;"></i> Dokumen Supervisi Telah Selesai &amp; Terkunci Permanen
+            </div>
+            <p style="margin: 6px 0 0; font-size: 13px; line-height: 1.5;">
+                <?= htmlspecialchars($editLockMsg) ?>
+            </p>
+        </div>
+    <?php endif; ?>
 
     <?php if ($editSession): ?>
         <!-- BANNER MODE RESUME / DRAF -->
@@ -604,11 +752,11 @@ require_once __DIR__ . '/../../includes/header.php';
 
         <!-- TOMBOL SIMPAN AKHIR -->
         <div style="display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-bottom: 40px; flex-wrap: wrap;">
-            <button type="submit" name="submit_action" value="save_draft" onclick="setSubmitType(true)" class="btn btn-warning" style="padding: 12px 24px; font-size: 14.5px; font-weight: 800; background: #f59e0b; border-color: #f59e0b; color: white; border-radius: 8px;">
+            <button type="submit" name="submit_action" value="save_draft" onclick="setSubmitType(true)" class="btn btn-warning" <?= $isFormLocked ? 'disabled style="padding: 12px 24px; font-size: 14.5px; font-weight: 800; background: #94a3b8; border-color: #94a3b8; color: white; border-radius: 8px; opacity: 0.6; cursor: not-allowed;"' : 'style="padding: 12px 24px; font-size: 14.5px; font-weight: 800; background: #f59e0b; border-color: #f59e0b; color: white; border-radius: 8px;"' ?>>
                 <i class="fa-solid fa-file-pen"></i> Simpan Draf (Lanjutkan Nanti)
             </button>
-            <button type="submit" name="submit_action" value="save_completed" onclick="setSubmitType(false)" class="btn btn-primary" style="background: #9333ea; border-color: #9333ea; padding: 12px 28px; font-size: 15px; font-weight: 800; box-shadow: 0 4px 14px rgba(147, 51, 234, 0.4); border-radius: 8px;">
-                <i class="fa-solid fa-check-double"></i> Selesaikan & Simpan Resmi
+            <button type="submit" name="submit_action" value="save_completed" onclick="setSubmitType(false)" class="btn btn-primary" <?= $isFormLocked ? 'disabled style="padding: 12px 28px; font-size: 15px; font-weight: 800; background: #94a3b8; border-color: #94a3b8; opacity: 0.6; cursor: not-allowed; border-radius: 8px;"' : 'style="background: #9333ea; border-color: #9333ea; padding: 12px 28px; font-size: 15px; font-weight: 800; box-shadow: 0 4px 14px rgba(147, 51, 234, 0.4); border-radius: 8px;"' ?>>
+                <i class="fa-solid fa-check-double"></i> Selesaikan &amp; Simpan Resmi
             </button>
         </div>
     </form>

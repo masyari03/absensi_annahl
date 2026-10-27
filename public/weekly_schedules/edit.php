@@ -22,31 +22,16 @@ if (!$schedule) {
     exit;
 }
 
-// BENTENG KEAMANAN KEPALA SEKOLAH
-$ksUnitId = 0;
-$ksUnitName = '';
-if ($currentRole === 'kepala_sekolah') {
-    $stmtKs = $pdo->prepare("
-        SELECT aup.unit_id, u.unit 
-        FROM admin_unit_permissions aup
-        JOIN units u ON u.id = aup.unit_id
-        WHERE aup.user_id = ? LIMIT 1
-    ");
-    $stmtKs->execute([$userId]);
-    $ksRow = $stmtKs->fetch(PDO::FETCH_ASSOC);
-    if ($ksRow) {
-        $ksUnitId = (int)$ksRow['unit_id'];
-        $ksUnitName = $ksRow['unit'];
-    }
-
-    if ((int)$schedule['unit_id'] !== $ksUnitId) {
-        flash('error', 'Akses ditolak. Anda tidak berhak mengubah jadwal unit lain.');
-        redirect('index.php');
-        exit;
-    }
+// BENTENG KEAMANAN AKSES UNIT
+$allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $currentRole);
+if (!empty($allowedUnitIds) && !in_array((int)$schedule['unit_id'], $allowedUnitIds, true)) {
+    flash('error', 'Akses ditolak. Anda tidak berhak mengubah jadwal unit lain.');
+    redirect('index.php');
+    exit;
 }
 
-$units = $pdo->query("SELECT * FROM units ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+$allowedUnits = getUserAllowedUnits($pdo, $userId, $currentRole);
+$units = ($currentRole === 'super_admin') ? $pdo->query("SELECT * FROM units ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC) : $allowedUnits;
 
 // Pre-fetch grades dan class groups
 $gradesStmt = $pdo->query("SELECT g.id, g.grade, g.unit_id, u.unit as unit_name FROM grades g JOIN units u ON u.id = g.unit_id ORDER BY u.id, g.sort_order ASC");
@@ -274,8 +259,18 @@ require '../../includes/header.php';
                         <?php endforeach; ?>
                     </select>
                 <?php else: ?>
-                    <input type="text" value="<?= e($ksUnitName ?: 'Unit Anda') ?>" disabled style="background:#f1f5f9; cursor:not-allowed; font-weight:700;">
-                    <input type="hidden" name="unit_id" id="selectUnit" value="<?= (int)$ksUnitId ?>">
+                    <?php
+                        $currUnitName = 'Unit Anda';
+                        foreach ($units as $u) {
+                            if ($u['id'] == $schedule['unit_id']) {
+                                $currUnitName = $u['unit'];
+                                break;
+                            }
+                        }
+                    ?>
+                    <input type="text" value="<?= e($currUnitName) ?>" disabled style="background:#f1f5f9; cursor:not-allowed; font-weight:700;">
+                    <input type="hidden" name="unit_id" id="selectUnit" value="<?= (int)$schedule['unit_id'] ?>">
+                    <small style="color:#0284c7; font-weight:600;"><i class="fa-solid fa-circle-check"></i> Jadwal unit <?= e($currUnitName) ?>.</small>
                 <?php endif; ?>
             </div>
 

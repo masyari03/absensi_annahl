@@ -11,24 +11,15 @@ $currentRole = currentRole();
 $pageTitle = 'Tambah Jadwal Pekanan & Eskul';
 $userId = currentUserId();
 
-$ksUnitId = 0;
-$ksUnitName = '';
-if ($currentRole === 'kepala_sekolah') {
-    $stmtKs = $pdo->prepare("
-        SELECT aup.unit_id, u.unit 
-        FROM admin_unit_permissions aup
-        JOIN units u ON u.id = aup.unit_id
-        WHERE aup.user_id = ? LIMIT 1
-    ");
-    $stmtKs->execute([$userId]);
-    $ksRow = $stmtKs->fetch(PDO::FETCH_ASSOC);
-    if ($ksRow) {
-        $ksUnitId = (int)$ksRow['unit_id'];
-        $ksUnitName = $ksRow['unit'];
-    }
-}
+$allowedUnits = getUserAllowedUnits($pdo, $userId, $currentRole);
+$allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $currentRole);
 
-$units = $pdo->query("SELECT * FROM units ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+// Deteksi unit default jika user memiliki tepat 1 unit wewenang
+$hasSingleUnit = ($currentRole !== 'super_admin' && count($allowedUnits) === 1);
+$defaultUnitId = $hasSingleUnit ? (int)$allowedUnits[0]['id'] : 0;
+$defaultUnitName = $hasSingleUnit ? $allowedUnits[0]['unit'] : '';
+
+$units = ($currentRole === 'super_admin') ? $pdo->query("SELECT * FROM units ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC) : $allowedUnits;
 
 // Pre-fetch grades dan class groups untuk dropdown dinamis
 $gradesStmt = $pdo->query("SELECT g.id, g.grade, g.unit_id, u.unit as unit_name FROM grades g JOIN units u ON u.id = g.unit_id ORDER BY u.id, g.sort_order ASC");
@@ -44,7 +35,14 @@ if (!in_array($initialType, ['student', 'staff', 'eskul'])) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $mode = in_array($_POST['schedule_mode'] ?? '', ['student', 'staff', 'eskul']) ? $_POST['schedule_mode'] : 'student';
-    $unitId = ($currentRole === 'super_admin') ? (int)($_POST['unit_id'] ?? 0) : $ksUnitId;
+    if ($currentRole === 'super_admin') {
+        $unitId = (int)($_POST['unit_id'] ?? 0);
+    } elseif ($hasSingleUnit) {
+        $unitId = $defaultUnitId;
+    } else {
+        $postedUnit = (int)($_POST['unit_id'] ?? 0);
+        $unitId = in_array($postedUnit, $allowedUnitIds, true) ? $postedUnit : 0;
+    }
     
     $dayCodes = $_POST['day_codes'] ?? [];
     $days = [1=>'Senin', 2=>'Selasa', 3=>'Rabu', 4=>'Kamis', 5=>'Jumat', 6=>'Sabtu', 7=>'Minggu'];
@@ -267,10 +265,23 @@ require '../../includes/header.php';
                             <option value="<?= $u['id'] ?>"><?= e($u['unit']) ?></option>
                         <?php endforeach; ?>
                     </select>
+                <?php elseif (count($allowedUnits) > 1): ?>
+                    <select name="unit_id" id="selectUnit" required onchange="onUnitChange()" style="font-weight: 600;">
+                        <option value="">-- Pilih Unit Wewenang Anda --</option>
+                        <?php foreach ($allowedUnits as $u): ?>
+                            <option value="<?= $u['id'] ?>"><?= e($u['unit']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <small style="color:#0284c7; font-weight:600;"><i class="fa-solid fa-circle-check"></i> Menampilkan unit yang berada dalam wewenang akun Anda.</small>
+                <?php elseif ($hasSingleUnit): ?>
+                    <input type="text" value="<?= e($defaultUnitName) ?>" disabled style="background:#f1f5f9; cursor:not-allowed; font-weight: 700;">
+                    <input type="hidden" name="unit_id" id="selectUnit" value="<?= (int)$defaultUnitId ?>">
+                    <small style="color:#0284c7; font-weight:600;"><i class="fa-solid fa-circle-check"></i> Khusus ditambahkan ke Unit <?= e($defaultUnitName) ?> Anda.</small>
                 <?php else: ?>
-                    <input type="text" value="<?= e($ksUnitName ?: 'Unit Anda') ?>" disabled style="background:#f1f5f9; cursor:not-allowed; font-weight: 700;">
-                    <input type="hidden" name="unit_id" id="selectUnit" value="<?= (int)$ksUnitId ?>">
-                    <small style="color:#0284c7; font-weight:600;"><i class="fa-solid fa-circle-check"></i> Khusus ditambahkan ke Unit Anda.</small>
+                    <div style="padding:10px 14px; background:#fef2f2; border:1px solid #fecaca; border-radius:6px; color:#b91c1c; font-weight:600;">
+                        <i class="fa-solid fa-triangle-exclamation"></i> Akun Anda belum memiliki unit sekolah yang terdaftar. Hubungi Administrator.
+                    </div>
+                    <input type="hidden" name="unit_id" id="selectUnit" value="0">
                 <?php endif; ?>
             </div>
 

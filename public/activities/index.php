@@ -16,19 +16,29 @@ $activeTab = in_array($_GET['tab'] ?? '', ['student', 'staff']) ? $_GET['tab'] :
 $whereSql = ["1 = 1"];
 $params = [];
 
-$ksUnitId = null;
-if ($currentRole === 'kepala_sekolah') {
-    $stmtKs = $pdo->prepare("SELECT unit_id FROM admin_unit_permissions WHERE user_id = ? LIMIT 1");
-    $stmtKs->execute([$userId]);
-    $ksUnitId = (int)$stmtKs->fetchColumn();
+$allowedUnits = getUserAllowedUnits($pdo, $userId, $currentRole);
+$allowedUnitIds = getUserAllowedUnitIds($pdo, $userId, $currentRole);
 
-    if ($ksUnitId) {
+$filterUnitId = null;
+if ($currentRole !== 'super_admin') {
+    if (count($allowedUnitIds) === 1) {
+        $filterUnitId = $allowedUnitIds[0];
         $whereSql[] = "a.unit_id = ?";
-        $params[] = $ksUnitId;
+        $params[] = $filterUnitId;
+    } elseif (!empty($allowedUnitIds)) {
+        $reqUnit = (int)($_GET['unit_id'] ?? 0);
+        if ($reqUnit > 0 && in_array($reqUnit, $allowedUnitIds, true)) {
+            $filterUnitId = $reqUnit;
+            $whereSql[] = "a.unit_id = ?";
+            $params[] = $filterUnitId;
+        } else {
+            $placeholders = implode(',', array_fill(0, count($allowedUnitIds), '?'));
+            $whereSql[] = "a.unit_id IN ($placeholders)";
+            $params = array_merge($params, $allowedUnitIds);
+        }
     } else {
-        $whereSql[] = "1 = 0"; 
+        $whereSql[] = "1 = 0";
     }
-    $filterUnitId = $ksUnitId;
 } else {
     $filterUnitId = (int)($_GET['unit_id'] ?? 0);
     if ($filterUnitId > 0) {
@@ -56,7 +66,7 @@ $stmt = $pdo->prepare("
 $stmt->execute($params);
 $activities = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$units = $pdo->query("SELECT id, unit FROM units ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+$units = ($currentRole === 'super_admin') ? $pdo->query("SELECT id, unit FROM units ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC) : $allowedUnits;
 
 require '../../includes/header.php';
 ?>
@@ -88,21 +98,29 @@ require '../../includes/header.php';
         </a>
     </div>
 
-    <!-- FILTER BAR KHUSUS SUPER ADMIN -->
-    <?php if ($currentRole === 'super_admin'): ?>
+    <!-- FILTER BAR UNIT -->
+    <?php if ($currentRole === 'super_admin' || count($allowedUnits) > 1): ?>
         <form method="GET" style="display:flex; gap:10px; align-items:center; margin-bottom:18px; background:#f8fafc; padding:12px; border-radius:8px; border:1px solid #e2e8f0; flex-wrap:wrap;">
             <input type="hidden" name="tab" value="<?= e($activeTab) ?>">
             <label style="font-size:13px; font-weight:700; color:#475569;">Filter Unit Sekolah:</label>
             <select name="unit_id" onchange="this.form.submit()" style="padding:6px 12px; border-radius:6px; border:1px solid #cbd5e1; font-size:13px;">
-                <option value="">-- Semua Unit --</option>
+                <?php if ($currentRole === 'super_admin'): ?>
+                    <option value="">-- Semua Unit --</option>
+                <?php endif; ?>
                 <?php foreach ($units as $u): ?>
                     <option value="<?= $u['id'] ?>" <?= $filterUnitId === (int)$u['id'] ? 'selected' : '' ?>><?= e($u['unit']) ?></option>
                 <?php endforeach; ?>
             </select>
-            <?php if ($filterUnitId > 0): ?>
+            <?php if ($filterUnitId > 0 && ($currentRole === 'super_admin' || count($allowedUnits) > 1)): ?>
                 <a href="index.php?tab=<?= e($activeTab) ?>" class="btn btn-sm btn-light" style="padding:6px 12px; font-size:12px;">Reset Filter</a>
             <?php endif; ?>
         </form>
+    <?php elseif (count($allowedUnits) === 1): ?>
+        <div style="margin-bottom:18px;">
+            <span class="badge" style="background:#e0f2fe; color:#0369a1; padding:6px 12px; font-weight:700; border-radius:6px; font-size:12px;">
+                <i class="fa-solid fa-school"></i> Unit: <?= e($allowedUnits[0]['unit']) ?>
+            </span>
+        </div>
     <?php endif; ?>
 
     <div class="table-wrapper">

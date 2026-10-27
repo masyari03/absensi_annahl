@@ -287,6 +287,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             ]);
         }
 
+        // Kirim notifikasi ke Guru Mentor pembina kelompok santri ini (Plan Edisi 14)
+        if (function_exists('createNotification')) {
+            try {
+                $stmtMentor = $pdo->prepare("
+                    SELECT ma.mentor_user_id, s.name as student_name
+                    FROM mentoring_assignments ma
+                    JOIN students s ON s.id = ma.student_id
+                    WHERE ma.student_id = ? AND ma.is_active = 1
+                    LIMIT 1
+                ");
+                $stmtMentor->execute([$studentId]);
+                $mentorRow = $stmtMentor->fetch(PDO::FETCH_ASSOC);
+                if ($mentorRow && !empty($mentorRow['mentor_user_id'])) {
+                    $mentorUserId = (int)$mentorRow['mentor_user_id'];
+                    $stName = $mentorRow['student_name'] ?? 'Santri';
+                    $notifTitle = "Jurnal Adab Diisi: {$stName}";
+                    $notifMsg = "Santri binaan Anda, {$stName}, telah mengisi catatan adab & refleksi untuk {$selectedWeek} ({$selectedDay}).";
+                    $notifUrl = BASE_URL . "/mentoring/adab_monitoring.php?search=" . urlencode($stName);
+                    createNotification($pdo, $mentorUserId, $notifTitle, $notifMsg, 'mentoring', $notifUrl);
+                }
+            } catch (Exception $ne) {
+                // Null safety
+            }
+        }
+
         flash('success', 'Alhamdulillah! Catatan pembiasaan adab dan refleksi Anda berhasil disimpan.');
         redirect("adab.php?month=" . $selectedMonth . "&week=" . urlencode($selectedWeek) . "&day=" . urlencode($selectedDay));
     } catch (Exception $e) {

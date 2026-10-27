@@ -416,36 +416,72 @@ if (!function_exists('requireMenuAccess')) {
     }
 }
 
+if (!function_exists('getUserAllowedUnits')) {
+    /**
+     * Mengambil daftar array unit [ ['id' => 1, 'unit' => 'SD'], ... ] yang diizinkan untuk user.
+     * Jika super_admin: mengembalikan semua unit di tabel units.
+     * Jika non-super_admin: mengembalikan unit dari admin_unit_permissions digabung dengan staff.unit_id.
+     *
+     * @param PDO $pdo
+     * @param int|null $userId
+     * @param string|null $userRole
+     * @return array
+     */
+    function getUserAllowedUnits(PDO $pdo, ?int $userId = null, ?string $userRole = null): array
+    {
+        $role = $userRole !== null ? $userRole : (function_exists('currentRole') ? currentRole() : ($_SESSION['role'] ?? ''));
+        if ($role === 'super_admin') {
+            try {
+                return $pdo->query("SELECT id, unit FROM units ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Exception $e) {
+                return [];
+            }
+        }
+
+        $uid = $userId !== null ? $userId : (int)(function_exists('currentUserId') ? currentUserId() : ($_SESSION['user_id'] ?? 0));
+        if ($uid <= 0) {
+            return [];
+        }
+
+        try {
+            $stmt = $pdo->prepare("
+                SELECT DISTINCT u.id, u.unit 
+                FROM units u
+                WHERE u.id IN (
+                    SELECT aup.unit_id FROM admin_unit_permissions aup WHERE aup.user_id = ?
+                    UNION
+                    SELECT s.unit_id FROM staff s WHERE s.user_id = ? AND s.deleted_at IS NULL
+                )
+                ORDER BY u.id ASC
+            ");
+            $stmt->execute([$uid, $uid]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
 if (!function_exists('getUserAllowedUnitIds')) {
     /**
      * Mengambil ID Unit yang boleh diakses oleh user saat ini.
      * Jika Super Admin, mengembalikan array kosong [] (artinya bebas akses semua unit).
+     * Jika non-super_admin, mengembalikan array ID unit numerik, misal [3].
      *
      * @param PDO $pdo
      * @param int|null $userId
+     * @param string|null $userRole
      * @return array
      */
-    function getUserAllowedUnitIds(PDO $pdo, ?int $userId = null): array
+    function getUserAllowedUnitIds(PDO $pdo, ?int $userId = null, ?string $userRole = null): array
     {
-        $role = currentRole();
+        $role = $userRole !== null ? $userRole : (function_exists('currentRole') ? currentRole() : ($_SESSION['role'] ?? ''));
         if ($role === 'super_admin') {
             return [];
         }
-        $uid = $userId !== null ? $userId : (int)currentUserId();
-        if ($uid <= 0) {
-            return [0];
-        }
-
-        try {
-            // Cek apakah tabel users memiliki unit_id
-            $stmt = $pdo->prepare("SELECT unit_id FROM users WHERE id = ? LIMIT 1");
-            $stmt->execute([$uid]);
-            $unitId = $stmt->fetchColumn();
-            if ($unitId) {
-                return [(int)$unitId];
-            }
-        } catch (Exception $e) {}
-
-        return [];
+        $units = getUserAllowedUnits($pdo, $userId, $role);
+        return array_map(function($u) {
+            return (int)$u['id'];
+        }, $units);
     }
 }
