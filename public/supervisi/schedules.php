@@ -13,6 +13,12 @@ $currentUserId = (int)currentUserId();
 $currentRole = (string)currentRole();
 $canManageSupervision = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true);
 
+$userUnit = getUserUnitInfo($pdo, $currentUserId);
+$userUnitId = $userUnit['unit_id'] ?? null;
+$userUnitName = $userUnit['unit_name'] ?? null;
+$isSuperAdmin = ($currentRole === 'super_admin');
+$canCreateSchedule = canUserCreateSupervisionSchedule($pdo, $currentUserId, $currentRole, $userUnitId);
+
 // =========================================================================
 // ACTION: POST HANDLERS (TAMBAH / EDIT / HAPUS JADWAL & TOGGLE KONTROL KEPSEK)
 // =========================================================================
@@ -21,9 +27,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // 1. TAMBAH JADWAL
     if ($action === 'add_schedule') {
-        $typeId = (int)($_POST['type_id'] ?? 1);
+        if (!$canCreateSchedule) {
+            flash('error', 'Akses ditolak: Anda tidak memiliki izin dari Kepala Sekolah untuk membuat jadwal supervisi.');
+            redirect('schedules.php');
+        }
+
+        $typeId = 1; // Seluruh jadwal terpadu (Supervisi Terpadu: Sejawat & Kepsek)
         $teacherId = (int)($_POST['teacher_id'] ?? 0);
-        $canChooseObserver = $canManageSupervision;
+        $canChooseObserver = $canManageSupervision || $canCreateSchedule;
         $observerId = $canChooseObserver ? (int)($_POST['observer_id'] ?? $currentUserId) : $currentUserId;
         $principalId = !empty($_POST['principal_id']) ? (int)$_POST['principal_id'] : null;
         $isDelegated = !empty($_POST['is_delegated']) ? 1 : 0;
@@ -36,6 +47,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $timeEnd = !empty($_POST['time_end']) ? trim($_POST['time_end']) : null;
         $roomLocation = trim($_POST['room_location'] ?? '');
         $addObservers = isset($_POST['additional_observers']) && is_array($_POST['additional_observers']) ? array_map('intval', $_POST['additional_observers']) : [];
+
+        // Validasi Unit Observer jika bukan Super Admin
+        if (!$isSuperAdmin) {
+            if (!isObserverSameUnit($pdo, $teacherId, $observerId)) {
+                flash('error', 'Akses ditolak: Observer Utama harus berasal dari unit yang sama dengan guru. Penugasan lintas unit wajib melalui izin Super Admin.');
+                redirect('schedules.php');
+            }
+            foreach ($addObservers as $addObsId) {
+                if ($addObsId > 0 && !isObserverSameUnit($pdo, $teacherId, $addObsId)) {
+                    flash('error', 'Akses ditolak: Observer Tambahan harus berasal dari unit yang sama dengan guru. Penugasan lintas unit wajib melalui izin Super Admin.');
+                    redirect('schedules.php');
+                }
+            }
+        }
 
         if ($teacherId > 0 && $observerId > 0 && !empty($subjectName) && !empty($schedDate)) {
             $stmt = $pdo->prepare("
@@ -108,7 +133,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // 2. EDIT JADWAL
     if ($action === 'edit_schedule') {
         $schedId = (int)($_POST['schedule_id'] ?? 0);
-        $typeId = (int)($_POST['type_id'] ?? 1);
+        if (!$canManageSupervision && !$canCreateSchedule) {
+            flash('error', 'Akses ditolak: Anda tidak memiliki wewenang untuk mengubah jadwal supervisi.');
+            redirect('schedules.php');
+        }
+
+        $typeId = 1; // Seluruh jadwal terpadu
         $teacherId = (int)($_POST['teacher_id'] ?? 0);
         $observerId = (int)($_POST['observer_id'] ?? 0);
         $principalId = !empty($_POST['principal_id']) ? (int)$_POST['principal_id'] : null;
@@ -123,6 +153,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $roomLocation = trim($_POST['room_location'] ?? '');
         $status = trim($_POST['status'] ?? 'scheduled');
         $addObservers = isset($_POST['additional_observers']) && is_array($_POST['additional_observers']) ? array_map('intval', $_POST['additional_observers']) : [];
+
+        // Validasi Unit Observer jika bukan Super Admin
+        if (!$isSuperAdmin) {
+            if (!isObserverSameUnit($pdo, $teacherId, $observerId)) {
+                flash('error', 'Akses ditolak: Observer Utama harus berasal dari unit yang sama dengan guru. Penugasan lintas unit wajib melalui izin Super Admin.');
+                redirect('schedules.php');
+            }
+            foreach ($addObservers as $addObsId) {
+                if ($addObsId > 0 && !isObserverSameUnit($pdo, $teacherId, $addObsId)) {
+                    flash('error', 'Akses ditolak: Observer Tambahan harus berasal dari unit yang sama dengan guru. Penugasan lintas unit wajib melalui izin Super Admin.');
+                    redirect('schedules.php');
+                }
+            }
+        }
 
         if ($schedId > 0 && $teacherId > 0 && $observerId > 0) {
             $stmt = $pdo->prepare("
@@ -205,30 +249,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect('schedules.php');
     }
+
+    // 6. KELOLA IZIN GURU TAMBAH JADWAL (KHUSUS KEPSEK / ADMIN / SUPER ADMIN)
+    if ($action === 'save_creator_permissions') {
+        if (!$canManageSupervision) {
+            flash('error', 'Akses ditolak: Hanya Kepala Sekolah atau Admin yang dapat mengelola izin ini.');
+            redirect('schedules.php');
+        }
+
+        $targetUnitId = !empty($_POST['target_unit_id']) ? (int)$_POST['target_unit_id'] : (int)$userUnitId;
+        $allowedUserIds = isset($_POST['creator_user_ids']) && is_array($_POST['creator_user_ids']) ? array_map('intval', $_POST['creator_user_ids']) : [];
+
+        if ($targetUnitId > 0 || $isSuperAdmin) {
+            $unitTeacherSql = "SELECT user_id FROM staff WHERE user_id IS NOT NULL";
+            $unitTeacherParams = [];
+            if ($targetUnitId > 0) {
+                $unitTeacherSql .= " AND unit_id = ?";
+                $unitTeacherParams[] = $targetUnitId;
+            }
+            $stmtTeachers = $pdo->prepare($unitTeacherSql);
+            $stmtTeachers->execute($unitTeacherParams);
+            $unitUserIds = $stmtTeachers->fetchAll(PDO::FETCH_COLUMN);
+
+            if (!empty($unitUserIds)) {
+                $inQ = implode(',', array_fill(0, count($unitUserIds), '?'));
+                $pdo->prepare("DELETE FROM supervision_schedule_creator_permissions WHERE user_id IN ($inQ)")->execute($unitUserIds);
+            }
+
+            $stmtIns = $pdo->prepare("INSERT INTO supervision_schedule_creator_permissions (user_id, unit_id, granted_by) VALUES (?, ?, ?)");
+            foreach ($allowedUserIds as $uId) {
+                if ($uId > 0 && (empty($unitUserIds) || in_array($uId, $unitUserIds))) {
+                    try {
+                        $stmtIns->execute([$uId, $targetUnitId ?: null, $currentUserId]);
+                    } catch (Exception $e) {}
+                }
+            }
+        }
+
+        flash('success', 'Wewenang guru untuk membuat jadwal supervisi berhasil diperbarui.');
+        redirect('schedules.php');
+    }
 }
 
 // =========================================================================
 // QUERY DATA TAMPILAN & SCOPING UNIT
 // =========================================================================
-$userUnit = getUserUnitInfo($pdo, $currentUserId);
-$userUnitId = $userUnit['unit_id'] ?? null;
-$userUnitName = $userUnit['unit_name'] ?? null;
-
-$isSuperAdmin = ($currentRole === 'super_admin');
-$canChooseObserver = $canManageSupervision;
+$canChooseObserver = $canManageSupervision || $canCreateSchedule;
 
 $search = trim($_GET['search'] ?? '');
-$filterType = (int)($_GET['type_id'] ?? 0);
 $filterUnit = (int)($_GET['unit_id'] ?? 0);
 
 $query = "
     SELECT ss.*, 
-           st.name as type_name, st.type_key,
            s.name as teacher_name, s.nik as teacher_nik, s.unit_id as teacher_unit_id,
            u.name as observer_name,
            up.name as principal_name,
            ud.name as delegated_name,
-           sess.id as session_id, sess.status as session_status,
+           sess_peer.id as peer_session_id, sess_peer.status as peer_session_status,
+           sess_princ.id as principal_session_id, sess_princ.status as principal_session_status,
            (
                SELECT GROUP_CONCAT(uo.name SEPARATOR ', ')
                FROM supervision_schedule_observers sso
@@ -236,12 +314,12 @@ $query = "
                WHERE sso.schedule_id = ss.id AND sso.is_primary = 0
            ) as additional_observers
     FROM supervision_schedules ss
-    JOIN supervision_types st ON st.id = ss.type_id
     JOIN staff s ON s.id = ss.teacher_id
     JOIN users u ON u.id = ss.observer_id
     LEFT JOIN users up ON up.id = ss.principal_id
     LEFT JOIN users ud ON ud.id = ss.delegated_user_id
-    LEFT JOIN supervision_sessions sess ON sess.schedule_id = ss.id
+    LEFT JOIN supervision_sessions sess_peer ON sess_peer.schedule_id = ss.id AND sess_peer.type_id = 1
+    LEFT JOIN supervision_sessions sess_princ ON sess_princ.schedule_id = ss.id AND sess_princ.type_id = 2
     WHERE 1=1
 ";
 $params = [];
@@ -263,11 +341,6 @@ if (!$isSuperAdmin && $userUnitId > 0) {
 } elseif ($isSuperAdmin && $filterUnit > 0) {
     $query .= " AND s.unit_id = ?";
     $params[] = $filterUnit;
-}
-
-if ($filterType > 0) {
-    $query .= " AND ss.type_id = ?";
-    $params[] = $filterType;
 }
 
 if (!empty($search)) {
@@ -298,6 +371,27 @@ $unitsList = $pdo->query("SELECT id, unit FROM units WHERE id IN (1, 2, 3, 7) OR
 $teachers = getSupervisionTeachers($pdo, $userUnitId);
 $observers = getSupervisionObservers($pdo, $userUnitId);
 $principals = getSupervisionPrincipals($pdo, $userUnitId);
+
+// Data untuk Pengaturan Izin Tambah Jadwal Guru
+$activeCreatorUserIds = $pdo->query("SELECT user_id FROM supervision_schedule_creator_permissions")->fetchAll(PDO::FETCH_COLUMN);
+$unitStaffForPermissions = [];
+if ($canManageSupervision) {
+    $permStaffSql = "
+        SELECT s.id, s.name, s.user_id, s.nik, un.unit as unit_name
+        FROM staff s
+        JOIN users u ON u.id = s.user_id
+        LEFT JOIN units un ON un.id = s.unit_id
+    ";
+    $permStaffParams = [];
+    if (!$isSuperAdmin && $userUnitId > 0) {
+        $permStaffSql .= " WHERE s.unit_id = ?";
+        $permStaffParams[] = $userUnitId;
+    }
+    $permStaffSql .= " ORDER BY s.name ASC";
+    $stmtPerm = $pdo->prepare($permStaffSql);
+    $stmtPerm->execute($permStaffParams);
+    $unitStaffForPermissions = $stmtPerm->fetchAll(PDO::FETCH_ASSOC);
+}
 
 $mapelList = [
     "Pendidikan Agama Islam / Al-Qur'an",
@@ -333,10 +427,18 @@ require_once __DIR__ . '/../../includes/header.php';
             </p>
         </div>
 
-        <div style="display: flex; gap: 10px; align-items: center;">
-            <button type="button" class="btn btn-primary" onclick="openAddScheduleModal()" style="display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);">
-                <i class="fa-solid fa-plus"></i> Tambah Jadwal Baru
-            </button>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <?php if ($canManageSupervision): ?>
+                <button type="button" class="btn btn-outline-primary" onclick="openCreatorPermissionsModal()" style="display: inline-flex; align-items: center; gap: 8px; border: 1.5px solid #4f46e5; color: #4f46e5; font-weight: 700; border-radius: 8px; padding: 9px 15px; background: #eef2ff;">
+                    <i class="fa-solid fa-user-shield"></i> Izin Tambah Jadwal Guru
+                </button>
+            <?php endif; ?>
+
+            <?php if ($canCreateSchedule): ?>
+                <button type="button" class="btn btn-primary" onclick="openAddScheduleModal()" style="display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);">
+                    <i class="fa-solid fa-plus"></i> Tambah Jadwal Baru
+                </button>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -346,17 +448,6 @@ require_once __DIR__ . '/../../includes/header.php';
             <div style="flex: 1; min-width: 280px; position: relative;">
                 <i class="fa-solid fa-magnifying-glass" style="position: absolute; left: 12px; top: 11px; color: #94a3b8; font-size: 13px;"></i>
                 <input type="text" name="search" value="<?= htmlspecialchars($search) ?>" placeholder="Cari jadwal berdasar guru, observer, mapel, kelas, atau ruang..." class="form-control" style="padding-left: 36px;">
-            </div>
-
-            <div style="width: 220px;">
-                <select name="type_id" class="form-control" onchange="this.form.submit()">
-                    <option value="0">-- Semua Jenis Supervisi --</option>
-                    <?php foreach ($types as $t): ?>
-                        <option value="<?= $t['id'] ?>" <?= ($filterType == $t['id']) ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($t['name']) ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
             </div>
 
             <?php if ($isSuperAdmin): ?>
@@ -375,7 +466,7 @@ require_once __DIR__ . '/../../includes/header.php';
             <button type="submit" class="btn btn-secondary">
                 <i class="fa-solid fa-filter"></i> Filter
             </button>
-            <?php if (!empty($search) || $filterType > 0): ?>
+            <?php if (!empty($search) || $filterUnit > 0): ?>
                 <a href="schedules.php" class="btn btn-secondary" title="Reset Filter">
                     <i class="fa-solid fa-rotate-left"></i>
                 </a>
@@ -402,25 +493,28 @@ require_once __DIR__ . '/../../includes/header.php';
                             <th style="padding: 14px 16px;">Tim Observer</th>
                             <th style="padding: 14px 16px;">Penilai Kepsek</th>
                             <th style="padding: 14px 16px;">Mata Pelajaran</th>
-                            <th style="padding: 14px 16px; width: 230px; text-align: right;">Aksi &amp; Kontrol</th>
+                            <th style="padding: 14px 16px; width: 260px; text-align: right;">Aksi &amp; Penilaian</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php $no = 1; foreach ($schedules as $sc): 
-                            $isCompleted = ($sc['status'] === 'completed' || (!empty($sc['session_id']) && $sc['session_status'] === 'completed'));
-                            $isDraft = (!empty($sc['session_id']) && $sc['session_status'] === 'draft');
+                            $sc['additional_observer_ids'] = $schedAdditionalMap[$sc['id']] ?? [];
+                            $isPeerCompleted = ($sc['peer_session_status'] === 'completed');
+                            $isPeerDraft = ($sc['peer_session_status'] === 'draft');
+                            $isPrincipalCompleted = ($sc['principal_session_status'] === 'completed');
+                            $isPrincipalDraft = ($sc['principal_session_status'] === 'draft');
+                            $isAnyCompleted = ($isPeerCompleted || $isPrincipalCompleted || $sc['status'] === 'completed');
+
                             $timeStr = '-';
                             if (!empty($sc['time_start'])) {
                                 $timeStr = substr($sc['time_start'], 0, 5) . (!empty($sc['time_end']) ? ' - ' . substr($sc['time_end'], 0, 5) : '');
                             }
-                            $isPeer = ($sc['type_key'] === 'peer');
-                            $evalUrl = $isPeer ? "peer.php?schedule_id={$sc['id']}" : "principal.php?schedule_id={$sc['id']}";
 
                             $schedDateTime = strtotime($sc['scheduled_date'] . ' ' . ($sc['time_start'] ?: '00:00:00'));
                             $isTimeLocked = (time() < $schedDateTime && (int)$sc['bypass_time_lock'] === 0);
 
-                            // Tambahkan array additional_observer_ids ke data row untuk JS
-                            $sc['additional_observer_ids'] = $schedAdditionalMap[$sc['id']] ?? [];
+                            $canAssessPeer = ($canManageSupervision || $sc['observer_id'] == $currentUserId || in_array($currentUserId, $sc['additional_observer_ids']));
+                            $canAssessPrincipal = ($canManageSupervision || $sc['principal_id'] == $currentUserId || $sc['delegated_user_id'] == $currentUserId || $currentRole === 'kepala_sekolah');
                         ?>
                             <tr style="border-bottom: 1px solid #f1f5f9; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='white'">
                                 <td style="padding: 14px 16px; text-align: center; color: #94a3b8; font-weight: 700;">
@@ -428,9 +522,10 @@ require_once __DIR__ . '/../../includes/header.php';
                                 </td>
                                 <td style="padding: 14px 16px; font-weight: 600; color: #1e293b;">
                                     <?= formatIndoDate($sc['scheduled_date']) ?>
-                                    <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
-                                        <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: <?= $isPeer ? '#4f46e5' : '#9333ea' ?>; margin-right: 4px;"></span>
-                                        <?= htmlspecialchars($sc['type_name']) ?>
+                                    <div style="margin-top: 3px;">
+                                        <span class="badge" style="background: #eef2ff; color: #4338ca; font-weight: 700; padding: 2px 7px; border-radius: 4px; font-size: 10.5px;">
+                                            <i class="fa-solid fa-graduation-cap"></i> Supervisi Terpadu
+                                        </span>
                                     </div>
                                 </td>
                                 <td style="padding: 14px 14px; color: #475569; font-weight: 600; font-size: 12px;">
@@ -484,21 +579,38 @@ require_once __DIR__ . '/../../includes/header.php';
                                 </td>
                                 <td style="padding: 14px 16px; text-align: right;">
                                     <div style="display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end;">
-                                        <?php if ($isDraft): ?>
-                                            <!-- DRAF SUDAH ADA -->
-                                            <?php $resumeUrl = $isPeer ? "peer.php?session_id={$sc['session_id']}" : "principal.php?session_id={$sc['session_id']}"; ?>
-                                            <a href="<?= $resumeUrl ?>" class="btn btn-sm" style="background: #f59e0b; color: white; font-weight: 700; padding: 5px 10px; border-radius: 6px; font-size: 11.5px; text-decoration: none;" title="Lanjutkan Pengisian Draf">
-                                                <i class="fa-solid fa-clock-rotate-left"></i> Draf
-                                            </a>
-                                        <?php elseif ($isCompleted): ?>
-                                            <span style="background: #dcfce7; color: #15803d; font-size: 11px; font-weight: 700; padding: 5px 8px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;">
-                                                <i class="fa-solid fa-check-circle"></i> Selesai
+                                        <!-- JALUR 1: PENILAIAN SEJAWAT -->
+                                        <?php if ($isPeerCompleted): ?>
+                                            <span style="background: #dcfce7; color: #15803d; font-size: 10.5px; font-weight: 700; padding: 4px 7px; border-radius: 6px; display: inline-flex; align-items: center; gap: 3px;" title="Supervisi Sejawat Selesai">
+                                                <i class="fa-solid fa-check"></i> Sejawat
                                             </span>
-                                        <?php else: ?>
-                                            <!-- BELUM DIMULAI -->
-                                            <a href="<?= $evalUrl ?>" class="btn btn-sm btn-success" style="background: #10b981; border-color: #10b981; color: white; font-weight: 700; padding: 5px 10px; border-radius: 6px; font-size: 11.5px; text-decoration: none;" title="Mulai Nilai Supervisi">
-                                                <i class="fa-solid fa-play"></i> Nilai
+                                        <?php elseif ($isPeerDraft): ?>
+                                            <a href="peer.php?session_id=<?= $sc['peer_session_id'] ?>" class="btn btn-sm" style="background: #fef3c7; color: #b45309; border: 1px solid #fde68a; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Lanjutkan Pengisian Draf Sejawat">
+                                                <i class="fa-solid fa-clock-rotate-left"></i> Draf Sejawat
                                             </a>
+                                        <?php else: ?>
+                                            <?php if ($canAssessPeer): ?>
+                                                <a href="peer.php?schedule_id=<?= $sc['id'] ?>" class="btn btn-sm" style="background: #4f46e5; border-color: #4f46e5; color: white; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Mulai Nilai Sejawat">
+                                                    <i class="fa-solid fa-clipboard-check"></i> Nilai Sejawat
+                                                </a>
+                                            <?php endif; ?>
+                                        <?php endif; ?>
+
+                                        <!-- JALUR 2: PENILAIAN KEPSEK / MANDAT -->
+                                        <?php if ($isPrincipalCompleted): ?>
+                                            <span style="background: #f3e8ff; color: #7e22ce; font-size: 10.5px; font-weight: 700; padding: 4px 7px; border-radius: 6px; display: inline-flex; align-items: center; gap: 3px;" title="Supervisi Kepsek Selesai">
+                                                <i class="fa-solid fa-check-double"></i> Kepsek
+                                            </span>
+                                        <?php elseif ($isPrincipalDraft): ?>
+                                            <a href="principal.php?session_id=<?= $sc['principal_session_id'] ?>" class="btn btn-sm" style="background: #fed7aa; color: #c2410c; border: 1px solid #fdba74; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Lanjutkan Pengisian Draf Kepsek">
+                                                <i class="fa-solid fa-clock-rotate-left"></i> Draf Kepsek
+                                            </a>
+                                        <?php else: ?>
+                                            <?php if ($canAssessPrincipal): ?>
+                                                <a href="principal.php?schedule_id=<?= $sc['id'] ?>" class="btn btn-sm" style="background: #7c3aed; border-color: #7c3aed; color: white; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Mulai Nilai Kepala Sekolah">
+                                                    <i class="fa-solid fa-award"></i> Nilai Kepsek
+                                                </a>
+                                            <?php endif; ?>
                                         <?php endif; ?>
 
                                         <!-- KONTROL KEPSEK / ADMIN -->
@@ -507,17 +619,17 @@ require_once __DIR__ . '/../../includes/header.php';
                                             <form method="POST" style="display: inline;" onsubmit="return confirm('Ubah status kunci jam supervisi ini?');">
                                                 <input type="hidden" name="action" value="toggle_time_lock">
                                                 <input type="hidden" name="schedule_id" value="<?= $sc['id'] ?>">
-                                                <button type="submit" class="btn btn-sm <?= $sc['bypass_time_lock'] ? 'btn-success' : 'btn-secondary' ?>" style="padding: 5px 8px; font-size: 11px;" title="<?= $sc['bypass_time_lock'] ? 'Bypass jam aktif. Klik untuk mengunci kembali.' : 'Kunci jam aktif. Klik untuk membuka jam sekarang.' ?>">
+                                                <button type="submit" class="btn btn-sm <?= $sc['bypass_time_lock'] ? 'btn-success' : 'btn-secondary' ?>" style="padding: 4px 7px; font-size: 11px;" title="<?= $sc['bypass_time_lock'] ? 'Bypass jam aktif. Klik untuk mengunci kembali.' : 'Kunci jam aktif. Klik untuk membuka jam sekarang.' ?>">
                                                     <i class="fa-solid <?= $sc['bypass_time_lock'] ? 'fa-unlock' : 'fa-lock' ?>"></i>
                                                 </button>
                                             </form>
 
                                             <!-- Toggle Allow Edit (jika sudah completed) -->
-                                            <?php if ($isCompleted): ?>
+                                            <?php if ($isAnyCompleted): ?>
                                                 <form method="POST" style="display: inline;" onsubmit="return confirm('Ubah izin edit dokumen penilaian ini?');">
                                                     <input type="hidden" name="action" value="toggle_allow_edit">
                                                     <input type="hidden" name="schedule_id" value="<?= $sc['id'] ?>">
-                                                    <button type="submit" class="btn btn-sm <?= $sc['allow_edit'] ? 'btn-warning' : 'btn-secondary' ?>" style="padding: 5px 8px; font-size: 11px; <?= $sc['allow_edit'] ? 'background: #0284c7; color: white;' : '' ?>" title="<?= $sc['allow_edit'] ? 'Izin edit aktif. Klik untuk mengunci.' : 'Dokumen terkunci. Klik untuk membuka izin edit bagi observer.' ?>">
+                                                    <button type="submit" class="btn btn-sm <?= $sc['allow_edit'] ? 'btn-warning' : 'btn-secondary' ?>" style="padding: 4px 7px; font-size: 11px; <?= $sc['allow_edit'] ? 'background: #0284c7; color: white;' : '' ?>" title="<?= $sc['allow_edit'] ? 'Izin edit aktif. Klik untuk mengunci.' : 'Dokumen terkunci. Klik untuk membuka izin edit bagi observer.' ?>">
                                                         <i class="fa-solid <?= $sc['allow_edit'] ? 'fa-pen-to-square' : 'fa-lock' ?>"></i> Edit
                                                     </button>
                                                 </form>
@@ -525,7 +637,7 @@ require_once __DIR__ . '/../../includes/header.php';
                                         <?php endif; ?>
 
                                         <!-- Tombol Edit Jadwal -->
-                                        <button type="button" class="btn btn-sm btn-secondary" style="padding: 5px 8px; font-size: 11px;" onclick='openEditScheduleModal(<?= json_encode($sc, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>)' title="Edit Jadwal">
+                                        <button type="button" class="btn btn-sm btn-secondary" style="padding: 4px 7px; font-size: 11px;" onclick='openEditScheduleModal(<?= json_encode($sc, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>)' title="Edit Jadwal">
                                             <i class="fa-solid fa-pen"></i>
                                         </button>
 
@@ -534,7 +646,7 @@ require_once __DIR__ . '/../../includes/header.php';
                                             <form method="POST" style="display: inline;" onsubmit="return confirm('Apakah Anda yakin ingin menghapus jadwal supervisi ini?');">
                                                 <input type="hidden" name="action" value="delete_schedule">
                                                 <input type="hidden" name="schedule_id" value="<?= $sc['id'] ?>">
-                                                <button type="submit" class="btn btn-sm btn-danger" style="padding: 5px 8px; font-size: 11px;" title="Hapus Jadwal">
+                                                <button type="submit" class="btn btn-sm btn-danger" style="padding: 4px 7px; font-size: 11px;" title="Hapus Jadwal">
                                                     <i class="fa-solid fa-trash"></i>
                                                 </button>
                                             </form>
@@ -566,13 +678,12 @@ require_once __DIR__ . '/../../includes/header.php';
             <input type="hidden" name="schedule_id" id="schedIdInput" value="">
 
             <div class="custom-modal-body" style="padding: 20px;">
-                <div style="margin-bottom: 14px;">
-                    <label style="display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #334155;">Jenis Supervisi *</label>
-                    <select name="type_id" id="schedTypeSelect" class="form-control" required>
-                        <?php foreach ($types as $t): ?>
-                            <option value="<?= $t['id'] ?>"><?= htmlspecialchars($t['name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                <input type="hidden" name="type_id" id="schedTypeSelect" value="1">
+                <div style="margin-bottom: 14px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px 14px; display: flex; align-items: center; gap: 10px;">
+                    <i class="fa-solid fa-graduation-cap" style="font-size: 20px; color: #2563eb;"></i>
+                    <div style="font-size: 12.5px; color: #1e40af;">
+                        <strong>Supervisi Terpadu:</strong> Setiap jadwal supervisi secara otomatis menyertakan penilaian <strong>Teman Sejawat</strong> dan evaluasi <strong>Kepala Sekolah</strong> secara terintegrasi.
+                    </div>
                 </div>
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
@@ -586,7 +697,7 @@ require_once __DIR__ . '/../../includes/header.php';
                             <?php endif; ?>
                         </label>
                         <input type="text" id="teacherSearchFilter" placeholder="Cari nama guru..." class="form-control" style="margin-bottom: 6px; font-size: 13px;" onkeyup="filterTeacherOptions(this.value)">
-                        <select name="teacher_id" id="schedTeacherSelect" class="form-control" required>
+                        <select name="teacher_id" id="schedTeacherSelect" class="form-control" required onchange="handleTeacherSelectChange(this)">
                             <option value="">-- Pilih Guru --</option>
                             <?php if ($isSuperAdmin && empty($userUnitId)): ?>
                                 <?php 
@@ -598,13 +709,13 @@ require_once __DIR__ . '/../../includes/header.php';
                                 foreach ($groupedTeachers as $uLabel => $tList): ?>
                                     <optgroup label="Unit <?= htmlspecialchars($uLabel) ?>">
                                         <?php foreach ($tList as $tc): ?>
-                                            <option value="<?= $tc['id'] ?>"><?= htmlspecialchars($tc['name']) ?></option>
+                                            <option value="<?= $tc['id'] ?>" data-unit="<?= (int)$tc['unit_id'] ?>"><?= htmlspecialchars($tc['name']) ?></option>
                                         <?php endforeach; ?>
                                     </optgroup>
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <?php foreach ($teachers as $tc): ?>
-                                    <option value="<?= $tc['id'] ?>"><?= htmlspecialchars($tc['name']) ?></option>
+                                    <option value="<?= $tc['id'] ?>" data-unit="<?= (int)$tc['unit_id'] ?>"><?= htmlspecialchars($tc['name']) ?></option>
                                 <?php endforeach; ?>
                             <?php endif; ?>
                         </select>
@@ -616,7 +727,9 @@ require_once __DIR__ . '/../../includes/header.php';
                             <select name="observer_id" id="schedObserverSelect" class="form-control" required onchange="syncPrimaryObserver(this.value)">
                                 <option value="">-- Pilih Observer Utama --</option>
                                 <?php foreach ($observers as $ob): ?>
-                                    <option value="<?= $ob['id'] ?>"><?= htmlspecialchars($ob['name']) ?> (<?= htmlspecialchars($ob['role']) ?><?= !empty($ob['unit_name']) ? ' - ' . $ob['unit_name'] : '' ?>)</option>
+                                    <option value="<?= $ob['id'] ?>" data-unit="<?= (int)($ob['unit_id'] ?? 0) ?>" data-role="<?= htmlspecialchars($ob['role']) ?>">
+                                        <?= htmlspecialchars($ob['name']) ?> (<?= htmlspecialchars($ob['role']) ?><?= !empty($ob['unit_name']) ? ' - ' . $ob['unit_name'] : '' ?>)
+                                    </option>
                                 <?php endforeach; ?>
                             </select>
                         <?php else: ?>
@@ -629,11 +742,29 @@ require_once __DIR__ . '/../../includes/header.php';
                     </div>
                 </div>
 
+                <!-- ATURAN & FILTER UNIT OBSERVER -->
+                <?php if ($isSuperAdmin): ?>
+                    <div style="margin-bottom: 12px; background: #fefce8; border: 1px solid #fef08a; border-radius: 8px; padding: 10px 14px;">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: #854d0e; cursor: pointer; margin: 0;">
+                            <input type="checkbox" name="allow_cross_unit" id="chkCrossUnitOverride" value="1" onchange="toggleCrossUnitOverride(this.checked)">
+                            <span><i class="fa-solid fa-shield-halved"></i> Izinkan Observer Lintas Unit (Wewenang Khusus Super Admin)</span>
+                        </label>
+                        <div style="font-size: 11px; color: #a16207; margin-top: 3px; margin-left: 24px;">
+                            Secara default observer disaring khusus rekan satu unit dengan guru. Centang ini untuk menugaskan observer dari unit lain.
+                        </div>
+                    </div>
+                <?php else: ?>
+                    <div style="margin-bottom: 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 8px 12px; font-size: 11.5px; color: #166534;">
+                        <i class="fa-solid fa-shield-check" style="color: #16a34a; margin-right: 4px;"></i>
+                        <strong>Aturan Unit:</strong> Observer utama maupun tambahan disaring khusus rekan satu unit (TK/SD/SMP/SMA). Observer lintas unit memerlukan izin/wewenang Super Admin.
+                    </div>
+                <?php endif; ?>
+
                 <!-- MULTI-OBSERVER TAMBAHAN -->
                 <div style="margin-bottom: 14px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                         <label style="font-size: 13px; font-weight: 700; color: #334155; margin: 0;">
-                            Observer Tambahan (Opsional - Multi-Observer &gt; 1 Guru)
+                            Observer Tambahan (Opsional - Rekan Satu Unit)
                         </label>
                         <span id="selectedAddObsCount" class="badge" style="background: #e2e8f0; color: #475569; font-size: 11px; padding: 2px 8px; border-radius: 6px;">
                             0 dipilih
@@ -645,14 +776,14 @@ require_once __DIR__ . '/../../includes/header.php';
                     <div style="max-height: 150px; overflow-y: auto; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 12px; background: #f8fafc;">
                         <div id="gridAddObs" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                             <?php foreach ($observers as $ob): ?>
-                                <label class="add-obs-item" data-name="<?= htmlspecialchars(strtolower($ob['name'])) ?>" style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; cursor: pointer;">
+                                <label class="add-obs-item" data-name="<?= htmlspecialchars(strtolower($ob['name'])) ?>" data-unit="<?= (int)($ob['unit_id'] ?? 0) ?>" data-role="<?= htmlspecialchars($ob['role']) ?>" style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; cursor: pointer;">
                                     <input type="checkbox" name="additional_observers[]" class="chk-add-obs" value="<?= $ob['id'] ?>" onchange="updateSelectedAddObsCount()">
                                     <span><?= htmlspecialchars($ob['name']) ?></span>
                                 </label>
                             <?php endforeach; ?>
                         </div>
                     </div>
-                    <small style="color: #64748b; font-size: 11px;">Centang guru lain yang ikut mengobservasi kelas bersama observer utama.</small>
+                    <small style="color: #64748b; font-size: 11px;">Centang rekan guru yang ikut mengobservasi kelas bersama observer utama.</small>
                 </div>
 
                 <!-- PENYERTAAN KEPALA SEKOLAH & MANDAT / TITIP NILAI -->
@@ -745,7 +876,70 @@ require_once __DIR__ . '/../../includes/header.php';
             </div>
         </form>
     </div>
+    </div>
 </div>
+
+<!-- ========================================================================= -->
+<!-- MODAL: KELOLA IZIN GURU TAMBAH JADWAL (KHUSUS KEPALA SEKOLAH / ADMIN)     -->
+<!-- ========================================================================= -->
+<?php if ($canManageSupervision): ?>
+<div id="modalCreatorPermissions" class="custom-modal-overlay">
+    <div class="custom-modal-box" style="max-width: 600px;">
+        <div class="custom-modal-header">
+            <h3 style="margin: 0; font-size: 17px; color: #0f172a; display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-user-shield" style="color: #4f46e5;"></i>
+                Izin Akses Tambah Jadwal Guru
+            </h3>
+            <button type="button" class="btn-close-sidebar" style="position: static;" onclick="closeModal('modalCreatorPermissions')">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+        <form method="POST">
+            <input type="hidden" name="action" value="save_creator_permissions">
+            <input type="hidden" name="target_unit_id" value="<?= (int)$userUnitId ?>">
+
+            <div class="custom-modal-body" style="padding: 20px;">
+                <p style="margin: 0 0 14px; font-size: 13px; color: #475569; line-height: 1.5;">
+                    Secara default guru reguler tidak dapat menambahkan jadwal supervisi sendiri. Centang guru di bawah ini yang Anda beri izin khusus untuk membuat dan menjadwalkan supervisi pada unit <?= $userUnitName ? '<strong>Unit ' . htmlspecialchars($userUnitName) . '</strong>' : 'ini' ?>.
+                </p>
+
+                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                    <input type="text" id="searchPermStaff" placeholder="🔍 Cari nama guru..." class="form-control" style="font-size: 12.5px; padding: 7px 10px;" oninput="filterPermStaff(this.value)">
+                    <button type="button" class="btn btn-sm btn-secondary" onclick="toggleAllPermStaff(true)" style="white-space: nowrap; font-size: 11.5px;">Pilih Semua</button>
+                    <button type="button" class="btn btn-sm btn-secondary" onclick="toggleAllPermStaff(false)" style="white-space: nowrap; font-size: 11.5px;">Batal Semua</button>
+                </div>
+
+                <div style="max-height: 280px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 14px; background: #f8fafc;">
+                    <?php if (empty($unitStaffForPermissions)): ?>
+                        <div style="text-align: center; color: #94a3b8; padding: 20px;">Tidak ada data guru untuk unit ini.</div>
+                    <?php else: ?>
+                        <div id="permStaffList" style="display: flex; flex-direction: column; gap: 8px;">
+                            <?php foreach ($unitStaffForPermissions as $st): 
+                                $isChecked = in_array((int)$st['user_id'], $activeCreatorUserIds);
+                            ?>
+                                <label class="perm-staff-item" data-name="<?= htmlspecialchars(strtolower($st['name'])) ?>" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 6px; background: white; border: 1px solid #e2e8f0; cursor: pointer; transition: background 0.15s;">
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <input type="checkbox" name="creator_user_ids[]" class="chk-perm-staff" value="<?= $st['user_id'] ?>" <?= $isChecked ? 'checked' : '' ?>>
+                                        <span style="font-weight: 600; font-size: 13px; color: #1e293b;"><?= htmlspecialchars($st['name']) ?></span>
+                                    </div>
+                                    <span style="font-size: 11px; color: #64748b; background: #f1f5f9; padding: 2px 6px; border-radius: 4px;">
+                                        <?= htmlspecialchars($st['unit_name'] ?: 'Unit') ?>
+                                    </span>
+                                </label>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div class="custom-modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('modalCreatorPermissions')">Batal</button>
+                <button type="submit" class="btn btn-primary" style="background: #4f46e5; border-color: #4f46e5;">Simpan Izin Akses</button>
+            </div>
+        </form>
+    </div>
+</div>
+<?php endif; ?>
 
 <script>
 function toggleDelegatedBox(checked) {
@@ -757,7 +951,12 @@ function filterAdditionalObservers(keyword) {
     const term = keyword.toLowerCase().trim();
     document.querySelectorAll('.add-obs-item').forEach(el => {
         const name = el.getAttribute('data-name') || '';
-        el.style.display = (term === '' || name.includes(term)) ? 'flex' : 'none';
+        const isHiddenByUnit = el.getAttribute('data-hidden-by-unit') === '1';
+        if (isHiddenByUnit) {
+            el.style.display = 'none';
+        } else {
+            el.style.display = (term === '' || name.includes(term)) ? 'flex' : 'none';
+        }
     });
 }
 
@@ -793,11 +992,99 @@ function syncPrimaryObserver(primaryId) {
     updateSelectedAddObsCount();
 }
 
+function applyUnitFilterToObservers(teacherUnitId, allowCrossUnit) {
+    teacherUnitId = parseInt(teacherUnitId) || 0;
+    const isSuperAdmin = <?= $isSuperAdmin ? 'true' : 'false' ?>;
+
+    // Filter Primary Observer dropdown
+    const obsSelect = document.getElementById('schedObserverSelect');
+    if (obsSelect) {
+        const currentVal = parseInt(obsSelect.value) || 0;
+        let currentOptionStillValid = false;
+
+        for (let i = 0; i < obsSelect.options.length; i++) {
+            const opt = obsSelect.options[i];
+            if (opt.value === "") continue;
+
+            const optUnit = parseInt(opt.getAttribute('data-unit')) || 0;
+            const optRole = opt.getAttribute('data-role') || '';
+            const isRoleAdmin = (optRole === 'super_admin' || optRole === 'admin');
+
+            let shouldShow = true;
+            if (!allowCrossUnit && teacherUnitId > 0) {
+                // Hanya rekan satu unit ATAU admin sistem
+                shouldShow = (optUnit === teacherUnitId || isRoleAdmin);
+            }
+
+            if (shouldShow) {
+                opt.style.display = "";
+                if (parseInt(opt.value) === currentVal) currentOptionStillValid = true;
+            } else {
+                opt.style.display = "none";
+            }
+        }
+
+        if (!currentOptionStillValid && currentVal > 0) {
+            obsSelect.value = "";
+        }
+    }
+
+    // Filter Additional Observers Checkboxes
+    document.querySelectorAll('.add-obs-item').forEach(el => {
+        const itemUnit = parseInt(el.getAttribute('data-unit')) || 0;
+        const itemRole = el.getAttribute('data-role') || '';
+        const isRoleAdmin = (itemRole === 'super_admin' || itemRole === 'admin');
+        const chk = el.querySelector('.chk-add-obs');
+
+        let shouldShow = true;
+        if (!allowCrossUnit && teacherUnitId > 0) {
+            shouldShow = (itemUnit === teacherUnitId || isRoleAdmin);
+        }
+
+        if (shouldShow) {
+            el.setAttribute('data-hidden-by-unit', '0');
+            el.style.display = "flex";
+        } else {
+            el.setAttribute('data-hidden-by-unit', '1');
+            el.style.display = "none";
+            if (chk && chk.checked) {
+                chk.checked = false;
+            }
+        }
+    });
+
+    updateSelectedAddObsCount();
+}
+
+function handleTeacherSelectChange(selectEl) {
+    const selectedOpt = selectEl.options[selectEl.selectedIndex];
+    const unitId = selectedOpt ? (parseInt(selectedOpt.getAttribute('data-unit')) || 0) : 0;
+    const crossChk = document.getElementById('chkCrossUnitOverride');
+    const allowCross = crossChk ? crossChk.checked : false;
+
+    applyUnitFilterToObservers(unitId, allowCross);
+}
+
+function toggleCrossUnitOverride(checked) {
+    const teacherSelect = document.getElementById('schedTeacherSelect');
+    const selectedOpt = teacherSelect ? teacherSelect.options[teacherSelect.selectedIndex] : null;
+    const unitId = selectedOpt ? (parseInt(selectedOpt.getAttribute('data-unit')) || 0) : 0;
+
+    applyUnitFilterToObservers(unitId, checked);
+}
+
 function openAddScheduleModal() {
     document.getElementById('modalScheduleTitle').innerText = 'Tambah Jadwal Supervisi Baru';
     document.getElementById('schedActionInput').value = 'add_schedule';
     document.getElementById('schedIdInput').value = '';
-    document.getElementById('schedTeacherSelect').value = '';
+    
+    const tSelect = document.getElementById('schedTeacherSelect');
+    if (tSelect) tSelect.value = '';
+
+    const crossChk = document.getElementById('chkCrossUnitOverride');
+    if (crossChk) crossChk.checked = false;
+
+    applyUnitFilterToObservers(0, false);
 
     const searchObs = document.getElementById('searchAddObsInput');
     if (searchObs) searchObs.value = '';
@@ -835,8 +1122,12 @@ function openEditScheduleModal(sc) {
     document.getElementById('modalScheduleTitle').innerText = 'Edit Jadwal Supervisi';
     document.getElementById('schedActionInput').value = 'edit_schedule';
     document.getElementById('schedIdInput').value = sc.id;
-    document.getElementById('schedTypeSelect').value = sc.type_id;
     document.getElementById('schedTeacherSelect').value = sc.teacher_id;
+
+    const crossChk = document.getElementById('chkCrossUnitOverride');
+    if (crossChk) crossChk.checked = false;
+
+    handleTeacherSelectChange(document.getElementById('schedTeacherSelect'));
 
     const searchObs = document.getElementById('searchAddObsInput');
     if (searchObs) searchObs.value = '';
@@ -877,6 +1168,28 @@ function openEditScheduleModal(sc) {
     document.getElementById('schedStatusSelect').value = sc.status;
     document.getElementById('schedStatusContainer').style.display = 'block';
     document.getElementById('modalSchedule').style.display = 'flex';
+}
+
+function openCreatorPermissionsModal() {
+    const modal = document.getElementById('modalCreatorPermissions');
+    if (modal) modal.style.display = 'flex';
+}
+
+function filterPermStaff(kw) {
+    const term = kw.toLowerCase().trim();
+    document.querySelectorAll('.perm-staff-item').forEach(el => {
+        const name = el.getAttribute('data-name') || '';
+        el.style.display = (term === '' || name.includes(term)) ? 'flex' : 'none';
+    });
+}
+
+function toggleAllPermStaff(state) {
+    document.querySelectorAll('.chk-perm-staff').forEach(chk => {
+        const item = chk.closest('.perm-staff-item');
+        if (item && item.style.display !== 'none') {
+            chk.checked = state;
+        }
+    });
 }
 
 function closeModal(id) {

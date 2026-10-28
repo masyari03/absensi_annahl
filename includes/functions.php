@@ -517,6 +517,78 @@ if (!function_exists('getSupervisionPrincipals')) {
     }
 }
 
+if (!function_exists('canUserCreateSupervisionSchedule')) {
+    function canUserCreateSupervisionSchedule(PDO $pdo, int $userId, string $role, ?int $unitId = null): bool {
+        if (in_array($role, ['super_admin', 'admin', 'kepala_sekolah'], true)) {
+            return true;
+        }
+        try {
+            $stmt = $pdo->prepare("SELECT 1 FROM supervision_schedule_creator_permissions WHERE user_id = ? LIMIT 1");
+            $stmt->execute([$userId]);
+            return (bool)$stmt->fetchColumn();
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('getSupervisionScheduleCreators')) {
+    function getSupervisionScheduleCreators(PDO $pdo, ?int $unitId = null): array {
+        try {
+            $sql = "
+                SELECT sscp.*, u.name as teacher_name, u.username as teacher_username,
+                       ug.name as granted_by_name, un.unit as unit_name
+                FROM supervision_schedule_creator_permissions sscp
+                JOIN users u ON u.id = sscp.user_id
+                LEFT JOIN users ug ON ug.id = sscp.granted_by
+                LEFT JOIN staff s ON (s.user_id = u.id OR s.nik = u.username)
+                LEFT JOIN units un ON un.id = COALESCE(sscp.unit_id, s.unit_id)
+            ";
+            $params = [];
+            if ($unitId !== null && $unitId > 0) {
+                $sql .= " WHERE (sscp.unit_id = ? OR s.unit_id = ?)";
+                $params = [$unitId, $unitId];
+            }
+            $sql .= " ORDER BY u.name ASC";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('isObserverSameUnit')) {
+    function isObserverSameUnit(PDO $pdo, int $teacherStaffId, int $observerUserId): bool {
+        try {
+            $stmtT = $pdo->prepare("SELECT unit_id FROM staff WHERE id = ? LIMIT 1");
+            $stmtT->execute([$teacherStaffId]);
+            $tUnit = $stmtT->fetchColumn();
+            if ($tUnit === false || $tUnit === null) return true;
+
+            $stmtO = $pdo->prepare("
+                SELECT s.unit_id, u.role 
+                FROM users u
+                LEFT JOIN staff s ON (s.user_id = u.id OR s.nik = u.username)
+                WHERE u.id = ? LIMIT 1
+            ");
+            $stmtO->execute([$observerUserId]);
+            $obs = $stmtO->fetch(PDO::FETCH_ASSOC);
+            if (!$obs) return false;
+
+            if ($obs['role'] === 'super_admin') return true;
+
+            $oUnit = $obs['unit_id'];
+            if ($oUnit === null) return true;
+
+            return ((int)$tUnit === (int)$oUnit);
+        } catch (Exception $e) {
+            return true;
+        }
+    }
+}
+
 if (!function_exists('formatIndoDate')) {
     function formatIndoDate(?string $dateStr): string {
         if (empty($dateStr)) return '-';

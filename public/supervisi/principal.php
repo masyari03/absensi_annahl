@@ -47,6 +47,12 @@ $scheduleId = (int)($_GET['schedule_id'] ?? 0);
 $editSession = null;
 $savedScores = [];
 
+// WAJIB TERIKAT JADWAL: Penilaian tanpa jadwal dilarang
+if ($sessionId <= 0 && $scheduleId <= 0 && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    flash('warning', 'Penilaian supervisi Kepala Sekolah wajib dimulai dari Jadwal Supervisi yang telah terdaftar. Silakan pilih jadwal Anda di bawah ini.');
+    redirect('schedules.php');
+}
+
 if ($sessionId > 0) {
     $stmtSess = $pdo->prepare("SELECT * FROM supervision_sessions WHERE id = ? AND type_id = ? LIMIT 1");
     $stmtSess->execute([$sessionId, $typeId]);
@@ -68,18 +74,38 @@ if ($sessionId > 0) {
     $savedScores = $stmtScores->fetchAll(PDO::FETCH_KEY_PAIR);
 }
 
-// 2. Cek jika ada schedule_id yang diteruskan dari halaman Jadwal
+// 2. Ambil metadata schedule_id yang diteruskan atau terhubung dengan sesi
 $prefillSchedule = null;
-if ($scheduleId > 0 && !$editSession) {
+if ($scheduleId > 0) {
     $stmtSched = $pdo->prepare("
-        SELECT ss.*, s.name as teacher_name, u.name as observer_name
+        SELECT ss.*, s.name as teacher_name, u.name as observer_name,
+               up.name as principal_name, ud.name as delegated_name
         FROM supervision_schedules ss
         LEFT JOIN staff s ON s.id = ss.teacher_id
         LEFT JOIN users u ON u.id = ss.observer_id
+        LEFT JOIN users up ON up.id = ss.principal_id
+        LEFT JOIN users ud ON ud.id = ss.delegated_user_id
         WHERE ss.id = ? LIMIT 1
     ");
     $stmtSched->execute([$scheduleId]);
     $prefillSchedule = $stmtSched->fetch(PDO::FETCH_ASSOC);
+
+    if (!$prefillSchedule && !$editSession) {
+        flash('error', 'Jadwal supervisi tidak ditemukan.');
+        redirect('schedules.php');
+    }
+
+    // Otorisasi Penilai Kepsek: super_admin, admin, kepala_sekolah, ditunjuk sebagai principal_id atau delegated_user_id
+    if ($prefillSchedule && !$editSession) {
+        $isSuperUser = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true);
+        $isAssignedPrincipal = ((int)$prefillSchedule['principal_id'] === $currentUserId);
+        $isAssignedDelegated = ((int)$prefillSchedule['delegated_user_id'] === $currentUserId);
+
+        if (!$isSuperUser && !$isAssignedPrincipal && !$isAssignedDelegated) {
+            flash('error', 'Akses ditolak: Anda tidak memiliki wewenang atau mandat untuk mengisi penilaian Kepala Sekolah pada jadwal supervisi ini.');
+            redirect('schedules.php');
+        }
+    }
 }
 
 // 3. Evaluasi Kunci Jam (Time-Lock) & Izin Edit (Edit-Lock)
@@ -124,6 +150,11 @@ $isFormLocked = ($isTimeLocked || $isEditLocked);
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_principal_supervision') {
     $sessId = (int)($_POST['session_id'] ?? 0);
     $schedId = !empty($_POST['schedule_id']) ? (int)$_POST['schedule_id'] : null;
+
+    if (empty($schedId) && empty($sessId)) {
+        flash('error', 'Penilaian supervisi Kepala Sekolah wajib terikat dengan jadwal supervisi yang sah.');
+        redirect('schedules.php');
+    }
 
     if ($isTimeLocked) {
         flash('error', $timeLockMsg);
@@ -536,6 +567,29 @@ require_once __DIR__ . '/../../includes/header.php';
             <input type="hidden" name="schedule_id" value="<?= $scheduleId ?>">
         <?php endif; ?>
 
+        <?php if ($prefillSchedule): ?>
+            <!-- BANNER TERIKAT JADWAL RESMI -->
+            <div style="margin-bottom: 20px; background: #faf5ff; border: 1.5px solid #d8b4fe; border-radius: 10px; padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <div style="width: 42px; height: 42px; border-radius: 8px; background: #7c3aed; color: white; display: flex; align-items: center; justify-content: center; font-size: 20px;">
+                        <i class="fa-solid fa-award"></i>
+                    </div>
+                    <div>
+                        <div style="font-weight: 800; color: #581c87; font-size: 14.5px;">Supervisi Pembelajaran Kepala Sekolah</div>
+                        <div style="font-size: 12.5px; color: #6b21a8; margin-top: 2px;">
+                            Pelaksanaan: <strong><?= formatIndoDate($prefillSchedule['scheduled_date']) ?></strong> &bull; Waktu: <strong><?= !empty($prefillSchedule['time_start']) ? substr($prefillSchedule['time_start'], 0, 5) . (!empty($prefillSchedule['time_end']) ? ' - ' . substr($prefillSchedule['time_end'], 0, 5) : '') : '-' ?></strong> &bull; Ruang: <strong><?= htmlspecialchars($prefillSchedule['room_location'] ?: '-') ?></strong>
+                            <?php if (!empty($prefillSchedule['delegated_name'])): ?>
+                                &bull; <span style="color: #b45309; font-weight: 700;"><i class="fa-solid fa-hand-holding-hand"></i> Mandat: <?= htmlspecialchars($prefillSchedule['delegated_name']) ?></span>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+                <a href="schedules.php" class="btn btn-sm" style="background: white; border: 1.5px solid #7c3aed; color: #7c3aed; font-weight: 700; border-radius: 6px; padding: 6px 14px; font-size: 12px; text-decoration: none;">
+                    <i class="fa-solid fa-arrow-left"></i> Kembali ke Jadwal
+                </a>
+            </div>
+        <?php endif; ?>
+
         <!-- KARTU DATA OBSERVASI -->
         <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 22px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 24px;">
             <h3 style="margin: 0 0 16px; font-size: 16px; font-weight: 800; color: #0f172a; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px;">
@@ -553,36 +607,44 @@ require_once __DIR__ . '/../../includes/header.php';
                             </span>
                         <?php endif; ?>
                     </label>
-                    <select name="teacher_id" id="teacherSelect" class="form-control" required style="font-size: 13.5px; font-weight: 600;">
-                        <option value="">-- Pilih Nama Guru --</option>
-                        <?php if ($isSuperAdmin && empty($userUnitId)): ?>
-                            <?php 
-                            $groupedTeachers = [];
-                            foreach ($teachers as $tc) {
-                                $uName = $tc['unit_name'] ?: 'Lainnya';
-                                $groupedTeachers[$uName][] = $tc;
-                            }
-                            foreach ($groupedTeachers as $uLabel => $tList): ?>
-                                <optgroup label="Unit <?= htmlspecialchars($uLabel) ?>">
-                                    <?php foreach ($tList as $tc): 
-                                        $isSelected = ($editSession && $editSession['teacher_id'] == $tc['id']) || ($prefillSchedule && $prefillSchedule['teacher_id'] == $tc['id']);
-                                    ?>
-                                        <option value="<?= $tc['id'] ?>" <?= $isSelected ? 'selected' : '' ?>>
-                                            <?= htmlspecialchars($tc['name']) ?> <?= !empty($tc['nik']) ? '(' . $tc['nik'] . ')' : '' ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </optgroup>
-                            <?php endforeach; ?>
-                        <?php else: ?>
-                            <?php foreach ($teachers as $tc): 
-                                $isSelected = ($editSession && $editSession['teacher_id'] == $tc['id']) || ($prefillSchedule && $prefillSchedule['teacher_id'] == $tc['id']);
-                            ?>
-                                <option value="<?= $tc['id'] ?>" <?= $isSelected ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($tc['name']) ?> <?= !empty($tc['nik']) ? '(' . $tc['nik'] . ')' : '' ?>
-                                </option>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </select>
+                    <?php if ($prefillSchedule): ?>
+                        <input type="hidden" name="teacher_id" value="<?= (int)($prefillSchedule['teacher_id'] ?? $editSession['teacher_id']) ?>">
+                        <div class="form-control" style="background: #f8fafc; font-weight: 700; color: #0f172a; display: flex; align-items: center; justify-content: space-between; border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 10px 14px;">
+                            <span><i class="fa-solid fa-chalkboard-user" style="color: #7c3aed; margin-right: 8px;"></i> <?= htmlspecialchars($prefillSchedule['teacher_name'] ?? $editSession['signed_teacher_name'] ?? 'Guru Terdaftar') ?></span>
+                            <span class="badge" style="background: #fae8ff; color: #7e22ce; font-size: 11px; padding: 3px 8px; border-radius: 4px;">Terkunci Sesuai Jadwal</span>
+                        </div>
+                    <?php else: ?>
+                        <select name="teacher_id" id="teacherSelect" class="form-control" required style="font-size: 13.5px; font-weight: 600;">
+                            <option value="">-- Pilih Nama Guru --</option>
+                            <?php if ($isSuperAdmin && empty($userUnitId)): ?>
+                                <?php 
+                                $groupedTeachers = [];
+                                foreach ($teachers as $tc) {
+                                    $uName = $tc['unit_name'] ?: 'Lainnya';
+                                    $groupedTeachers[$uName][] = $tc;
+                                }
+                                foreach ($groupedTeachers as $uLabel => $tList): ?>
+                                    <optgroup label="Unit <?= htmlspecialchars($uLabel) ?>">
+                                        <?php foreach ($tList as $tc): 
+                                            $isSelected = ($editSession && $editSession['teacher_id'] == $tc['id']) || ($prefillSchedule && $prefillSchedule['teacher_id'] == $tc['id']);
+                                        ?>
+                                            <option value="<?= $tc['id'] ?>" <?= $isSelected ? 'selected' : '' ?>>
+                                                <?= htmlspecialchars($tc['name']) ?> <?= !empty($tc['nik']) ? '(' . $tc['nik'] . ')' : '' ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </optgroup>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <?php foreach ($teachers as $tc): 
+                                    $isSelected = ($editSession && $editSession['teacher_id'] == $tc['id']) || ($prefillSchedule && $prefillSchedule['teacher_id'] == $tc['id']);
+                                ?>
+                                    <option value="<?= $tc['id'] ?>" <?= $isSelected ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($tc['name']) ?> <?= !empty($tc['nik']) ? '(' . $tc['nik'] . ')' : '' ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </select>
+                    <?php endif; ?>
                 </div>
 
                 <div>
