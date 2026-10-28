@@ -613,7 +613,7 @@ require_once __DIR__ . '/../../includes/header.php';
                     <div>
                         <label style="display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #334155;">Observer Utama *</label>
                         <?php if ($canChooseObserver): ?>
-                            <select name="observer_id" id="schedObserverSelect" class="form-control" required>
+                            <select name="observer_id" id="schedObserverSelect" class="form-control" required onchange="syncPrimaryObserver(this.value)">
                                 <option value="">-- Pilih Observer Utama --</option>
                                 <?php foreach ($observers as $ob): ?>
                                     <option value="<?= $ob['id'] ?>"><?= htmlspecialchars($ob['name']) ?> (<?= htmlspecialchars($ob['role']) ?><?= !empty($ob['unit_name']) ? ' - ' . $ob['unit_name'] : '' ?>)</option>
@@ -631,14 +631,22 @@ require_once __DIR__ . '/../../includes/header.php';
 
                 <!-- MULTI-OBSERVER TAMBAHAN -->
                 <div style="margin-bottom: 14px;">
-                    <label style="display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #334155;">
-                        Observer Tambahan (Opsional - Multi-Observer &gt; 1 Guru)
-                    </label>
-                    <div style="max-height: 120px; overflow-y: auto; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 12px; background: #f8fafc;">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <label style="font-size: 13px; font-weight: 700; color: #334155; margin: 0;">
+                            Observer Tambahan (Opsional - Multi-Observer &gt; 1 Guru)
+                        </label>
+                        <span id="selectedAddObsCount" class="badge" style="background: #e2e8f0; color: #475569; font-size: 11px; padding: 2px 8px; border-radius: 6px;">
+                            0 dipilih
+                        </span>
+                    </div>
+                    <div style="margin-bottom: 6px;">
+                        <input type="text" id="searchAddObsInput" class="form-control" placeholder="🔍 Cari nama guru observer tambahan..." style="padding: 6px 10px; font-size: 12px; border-radius: 6px;" oninput="filterAdditionalObservers(this.value)">
+                    </div>
+                    <div style="max-height: 150px; overflow-y: auto; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 12px; background: #f8fafc;">
+                        <div id="gridAddObs" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                             <?php foreach ($observers as $ob): ?>
-                                <label style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; cursor: pointer;">
-                                    <input type="checkbox" name="additional_observers[]" class="chk-add-obs" value="<?= $ob['id'] ?>">
+                                <label class="add-obs-item" data-name="<?= htmlspecialchars(strtolower($ob['name'])) ?>" style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; cursor: pointer;">
+                                    <input type="checkbox" name="additional_observers[]" class="chk-add-obs" value="<?= $ob['id'] ?>" onchange="updateSelectedAddObsCount()">
                                     <span><?= htmlspecialchars($ob['name']) ?></span>
                                 </label>
                             <?php endforeach; ?>
@@ -745,15 +753,63 @@ function toggleDelegatedBox(checked) {
     if (box) box.style.display = checked ? 'block' : 'none';
 }
 
+function filterAdditionalObservers(keyword) {
+    const term = keyword.toLowerCase().trim();
+    document.querySelectorAll('.add-obs-item').forEach(el => {
+        const name = el.getAttribute('data-name') || '';
+        el.style.display = (term === '' || name.includes(term)) ? 'flex' : 'none';
+    });
+}
+
+function updateSelectedAddObsCount() {
+    const checkedCount = document.querySelectorAll('.chk-add-obs:checked').length;
+    const badge = document.getElementById('selectedAddObsCount');
+    if (badge) {
+        badge.innerText = checkedCount + ' dipilih';
+        badge.style.background = checkedCount > 0 ? '#dbeafe' : '#e2e8f0';
+        badge.style.color = checkedCount > 0 ? '#1d4ed8' : '#475569';
+    }
+}
+
+function syncPrimaryObserver(primaryId) {
+    primaryId = parseInt(primaryId) || 0;
+    document.querySelectorAll('.chk-add-obs').forEach(chk => {
+        const item = chk.closest('.add-obs-item');
+        if (parseInt(chk.value) === primaryId) {
+            chk.checked = false;
+            chk.disabled = true;
+            if (item) {
+                item.style.opacity = '0.4';
+                item.title = 'Guru ini sudah dipilih sebagai Observer Utama';
+            }
+        } else {
+            chk.disabled = false;
+            if (item) {
+                item.style.opacity = '1';
+                item.title = '';
+            }
+        }
+    });
+    updateSelectedAddObsCount();
+}
+
 function openAddScheduleModal() {
     document.getElementById('modalScheduleTitle').innerText = 'Tambah Jadwal Supervisi Baru';
     document.getElementById('schedActionInput').value = 'add_schedule';
     document.getElementById('schedIdInput').value = '';
     document.getElementById('schedTeacherSelect').value = '';
-    const elObs = document.getElementById('schedObserverSelect'); if (elObs) elObs.value = '<?= $currentUserId ?>';
+
+    const searchObs = document.getElementById('searchAddObsInput');
+    if (searchObs) searchObs.value = '';
+    filterAdditionalObservers('');
+
+    const elObs = document.getElementById('schedObserverSelect'); 
+    if (elObs) elObs.value = '<?= $currentUserId ?>';
     
     // Uncheck all additional observers
     document.querySelectorAll('.chk-add-obs').forEach(chk => chk.checked = false);
+    syncPrimaryObserver(elObs ? elObs.value : '<?= $currentUserId ?>');
+    updateSelectedAddObsCount();
 
     // Default Principal
     const elPr = document.getElementById('schedPrincipalSelect');
@@ -781,13 +837,23 @@ function openEditScheduleModal(sc) {
     document.getElementById('schedIdInput').value = sc.id;
     document.getElementById('schedTypeSelect').value = sc.type_id;
     document.getElementById('schedTeacherSelect').value = sc.teacher_id;
-    const elObs2 = document.getElementById('schedObserverSelect'); if (elObs2) elObs2.value = sc.observer_id;
+
+    const searchObs = document.getElementById('searchAddObsInput');
+    if (searchObs) searchObs.value = '';
+    filterAdditionalObservers('');
+
+    const elObs2 = document.getElementById('schedObserverSelect'); 
+    if (elObs2) elObs2.value = sc.observer_id;
+    syncPrimaryObserver(sc.observer_id);
     
     // Set additional observers checkboxes
     const addIds = sc.additional_observer_ids || [];
     document.querySelectorAll('.chk-add-obs').forEach(chk => {
-        chk.checked = addIds.includes(parseInt(chk.value));
+        if (!chk.disabled) {
+            chk.checked = addIds.includes(parseInt(chk.value));
+        }
     });
+    updateSelectedAddObsCount();
 
     // Set Principal & Delegated
     const elPr = document.getElementById('schedPrincipalSelect');

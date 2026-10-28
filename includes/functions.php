@@ -468,7 +468,7 @@ if (!function_exists('getSupervisionObservers')) {
 
         $whereSql = implode(' AND ', $where);
         $sql = "
-            SELECT DISTINCT u.id, u.name, u.username, u.role, un.unit as unit_name
+            SELECT DISTINCT u.id, u.name, u.username, u.role, un.id as unit_id, un.unit as unit_name
             FROM users u
             LEFT JOIN staff s ON (s.user_id = u.id OR s.nik = u.username)
             LEFT JOIN units un ON un.id = s.unit_id
@@ -480,6 +480,7 @@ if (!function_exists('getSupervisionObservers')) {
             $stmt->execute($params);
             return $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Exception $e) {
+            error_log("getSupervisionObservers error: " . $e->getMessage());
             return [];
         }
     }
