@@ -52,7 +52,7 @@ if ($currentUserId > 0 && isset($pdo)) {
     .notif-item.unread { background: #f0f9ff; }
     .notif-item.unread:hover { background: #e0f2fe; }
     
-    .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; justify-content: center; align-items: center; backdrop-filter: blur(2px); }
+    .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.55); z-index: 2000; justify-content: center; align-items: center; }
     .modal-box { background: #fff; padding: 25px; border-radius: 12px; width: 100%; max-width: 400px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1); transform: translateY(0); transition: transform 0.3s ease; }
 
     /* --- GAYA BARU: TOMBOL HAMBURGER & TOMBOL X SIDEBAR --- */
@@ -126,7 +126,7 @@ if ($currentUserId > 0 && isset($pdo)) {
         width: 100vw;
         height: 100vh;
         background: rgba(15, 23, 42, 0.65);
-        backdrop-filter: blur(2px);
+        /* backdrop-filter dihapus – mencegah GPU compositing glitch saat scroll */
         z-index: 9998;
         opacity: 0;
         cursor: pointer;
@@ -178,13 +178,13 @@ if ($currentUserId > 0 && isset($pdo)) {
         display: none;
         position: fixed;
         top: 0; left: 0; right: 0; bottom: 0;
-        background: rgba(15, 23, 42, 0.65);
-        backdrop-filter: blur(4px);
+        background: rgba(15, 23, 42, 0.75);
         z-index: 9999;
         align-items: center;
         justify-content: center;
         padding: 20px;
-        overflow-y: auto;
+        overflow: hidden;
+        -webkit-overflow-scrolling: touch;
     }
     .custom-modal-box {
         background: #ffffff;
@@ -196,7 +196,6 @@ if ($currentUserId > 0 && isset($pdo)) {
         flex-direction: column;
         overflow: hidden;
         box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-        animation: modalSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
     }
     .custom-modal-box > form {
         display: flex;
@@ -469,10 +468,17 @@ function openModal(modalId) {
     document.getElementById('profileMenu').style.display = 'none';
     const nd = document.getElementById('notifDropdown');
     if (nd) nd.style.display = 'none';
+    // Kunci scroll body agar background tidak ikut scroll saat modal terbuka
+    document.body.style.overflow = 'hidden';
 }
 
 function closeModal(modalId) {
     document.getElementById(modalId).style.display = 'none';
+    // Cek apakah masih ada modal lain yang terbuka; jika tidak, kembalikan scroll
+    const anyOpen = document.querySelector('.custom-modal-overlay[style*="flex"], .modal-overlay[style*="flex"]');
+    if (!anyOpen) {
+        document.body.style.overflow = '';
+    }
 }
 
 // --- FUNGSI GLOBAL PENGONTROL SIDEBAR (DESKTOP & MOBILE) ---

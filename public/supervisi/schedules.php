@@ -1276,6 +1276,7 @@ function openAddScheduleModal() {
     document.getElementById('schedTimeEndInput').value = '08:50';
     document.getElementById('schedRoomInput').value = '';
     document.getElementById('schedStatusContainer').style.display = 'none';
+    document.body.style.overflow = 'hidden';
     document.getElementById('modalSchedule').style.display = 'flex';
 }
 
@@ -1328,17 +1329,18 @@ function openEditScheduleModal(sc) {
     document.getElementById('schedRoomInput').value = sc.room_location || '';
     document.getElementById('schedStatusSelect').value = sc.status;
     document.getElementById('schedStatusContainer').style.display = 'block';
+    document.body.style.overflow = 'hidden';
     document.getElementById('modalSchedule').style.display = 'flex';
 }
 
 function openCreatorPermissionsModal() {
     const modal = document.getElementById('modalCreatorPermissions');
-    if (modal) modal.style.display = 'flex';
+    if (modal) { document.body.style.overflow = 'hidden'; modal.style.display = 'flex'; }
 }
 
 function openKepsekPeerPermissionsModal() {
     const modal = document.getElementById('modalKepsekPeerPermissions');
-    if (modal) modal.style.display = 'flex';
+    if (modal) { document.body.style.overflow = 'hidden'; modal.style.display = 'flex'; }
 }
 
 function filterKepsekStaff(kw) {
@@ -1378,6 +1380,10 @@ function toggleAllPermStaff(state) {
 function closeModal(id) {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
+    const anyOpen = document.querySelector('.custom-modal-overlay[style*="flex"], .modal-overlay[style*="flex"]');
+    if (!anyOpen) {
+        document.body.style.overflow = '';
+    }
 }
 
 function filterTeacherOptions(keyword) {

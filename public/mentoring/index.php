@@ -17,6 +17,37 @@ $currentRole = currentRole();
 $userId = currentUserId();
 $isPrivileged = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true);
 
+// ── Gate akses: guru hanya boleh masuk jika diberi izin oleh kepala_sekolah ──
+// Cara edit: ubah array role di bawah jika ada role baru yang perlu di-gate
+$isTeacherRole = in_array($currentRole, ['teacher', 'guru', 'staff'], true);
+if ($isTeacherRole && !$isPrivileged) {
+    if (!canTeacherAccessMentoring($pdo, $userId)) {
+        require_once __DIR__ . '/../../includes/header.php';
+        echo '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;text-align:center;padding:32px;">';
+        echo '<div style="font-size:56px;margin-bottom:16px;">&#x1F512;</div>';
+        echo '<h2 style="color:#0f172a;margin-bottom:8px;">Akses Belum Diizinkan</h2>';
+        echo '<p style="color:#64748b;max-width:420px;line-height:1.6;">Anda belum memiliki izin untuk mengakses modul <strong>Kelola Mentoring</strong>.<br>Silakan hubungi <strong>Kepala Sekolah</strong> Anda untuk mendapatkan akses.</p>';
+        echo '</div>';
+        require_once __DIR__ . '/../../includes/footer.php';
+        exit;
+    }
+}
+
+// ── Apakah user berhak kelola izin guru mentoring? ───────────────────────
+$canManageMentoringPermissions = in_array($currentRole, ['super_admin', 'kepala_sekolah'], true);
+
+// ── Ambil unit_id kepala_sekolah untuk scoping izin guru ─────────────────
+$kepsekUnitId = null;
+if ($currentRole === 'kepala_sekolah') {
+    try {
+        $stmtKU = $pdo->prepare("SELECT s.unit_id FROM staff s WHERE s.user_id = ? LIMIT 1");
+        $stmtKU->execute([$userId]);
+        $kepsekUnitId = (int)($stmtKU->fetchColumn() ?: 0) ?: null;
+    } catch (Exception $e) {
+        $kepsekUnitId = null;
+    }
+}
+
 // Flash message
 // AJAX: Tarik data pemantauan adab santri pada pekan tertentu untuk Live Preview di Modal Jurnal
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_student_adab_week') {
@@ -487,6 +518,13 @@ require __DIR__ . '/../../includes/header.php';
                 </a>
             <?php endif; ?>
 
+            <?php if ($canManageMentoringPermissions): ?>
+                <button type="button" onclick="openMentoringPermissionsModal()"
+                    style="display:inline-flex;align-items:center;gap:8px;padding:8px 14px;font-size:13px;font-weight:700;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;"
+                    title="Kelola izin guru yang dapat mengakses modul Mentoring">
+                    <i class="fa-solid fa-user-shield"></i> Izin Guru Mentoring
+                </button>
+            <?php endif; ?>
             <?php if ($isPrivileged): ?>
                 <!-- Filter Pilihan Guru Mentor Khusus Pimpinan -->
                 <form method="GET" style="display: flex; gap: 8px; align-items: center;">
@@ -1058,6 +1096,166 @@ window.onclick = function(event) {
     var modal = document.getElementById('modalSession');
     if (event.target === modal) {
         modal.style.display = 'none';
+    }
+}
+</script>
+
+
+<!-- ========================================================================= -->
+<!-- MODAL: KELOLA IZIN GURU MENTORING (KHUSUS KEPALA SEKOLAH / SUPER ADMIN)  -->
+<!-- ========================================================================= -->
+<div id="modalMentoringPermissions" class="custom-modal-overlay">
+    <div class="custom-modal-box" style="max-width: 620px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <div class="custom-modal-header" style="flex-shrink: 0;">
+            <h3 style="margin: 0; font-size: 17px; color: #0f172a; display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-user-shield" style="color: #7c3aed;"></i>
+                Izin Akses Kelola Mentoring untuk Guru
+            </h3>
+            <button type="button" class="btn-close-sidebar" style="position: static;" onclick="closeModal('modalMentoringPermissions')">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+
+        <div class="custom-modal-body" style="padding: 20px; overflow-y: auto; flex: 1; min-height: 0;">
+            <div style="background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; font-size: 12.5px; color: #5b21b6; line-height: 1.5;">
+                <i class="fa-solid fa-circle-info" style="margin-right: 4px;"></i>
+                Secara default, guru/staff <strong>tidak dapat mengakses</strong> modul Mentoring. Berikan izin di bawah ini agar guru pilihan dapat melihat dan mengelola aktivitas mentoring santri binaan.
+            </div>
+
+            <!-- SEARCH GURU -->
+            <div style="margin-bottom: 12px;">
+                <input type="text" id="searchMentoringStaffInput" class="form-control" placeholder="Cari nama guru..." style="font-size: 13px;" oninput="filterMentoringStaffList(this.value)">
+            </div>
+
+            <!-- LIST GURU DENGAN CHECKBOX -->
+            <div id="mentoringStaffListContainer" style="max-height: 280px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px; background: #fafafa;">
+                <div style="text-align: center; color: #94a3b8; padding: 20px;" id="mentoringStaffLoading">
+                    <i class="fa-solid fa-spinner fa-spin"></i> Memuat daftar guru...
+                </div>
+                <div id="mentoringStaffListItems" style="display: none; display: flex; flex-direction: column; gap: 6px;"></div>
+            </div>
+            
+            <div id="mentoringPermFeedback" style="margin-top: 10px; font-size: 12.5px; display: none;"></div>
+        </div>
+
+        <div class="custom-modal-footer" style="flex-shrink: 0;">
+            <button type="button" class="btn btn-secondary" onclick="closeModal('modalMentoringPermissions')">Tutup</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const MENTORING_PERM_API = '<?= BASE_URL ?>/api/mentoring_permissions.php';
+
+function openMentoringPermissionsModal() {
+    const modal = document.getElementById('modalMentoringPermissions');
+    if (modal) {
+        document.body.style.overflow = 'hidden';
+        modal.style.display = 'flex';
+        loadMentoringPermissionsData();
+    }
+}
+
+async function loadMentoringPermissionsData() {
+    const loading = document.getElementById('mentoringStaffLoading');
+    const container = document.getElementById('mentoringStaffListItems');
+    if (loading) loading.style.display = 'block';
+    if (container) container.style.display = 'none';
+
+    try {
+        const res = await fetch(MENTORING_PERM_API, { credentials: 'same-origin' });
+        const resJson = await res.json();
+        
+        if (resJson.success) {
+            renderMentoringStaffList(resJson.data || []);
+        } else {
+            if (loading) loading.innerHTML = '<span style="color:#ef4444;">' + (resJson.message || 'Gagal memuat') + '</span>';
+        }
+    } catch (err) {
+        if (loading) loading.innerHTML = '<span style="color:#ef4444;">Koneksi gagal</span>';
+    }
+}
+
+function renderMentoringStaffList(items) {
+    const loading = document.getElementById('mentoringStaffLoading');
+    const container = document.getElementById('mentoringStaffListItems');
+    if (loading) loading.style.display = 'none';
+    if (!container) return;
+
+    if (items.length === 0) {
+        container.innerHTML = '<div style="text-align:center; padding:16px; color:#94a3b8; font-size:13px;">Tidak ada guru ditemukan di unit Anda.</div>';
+        container.style.display = 'block';
+        return;
+    }
+
+    let html = '';
+    items.forEach(item => {
+        const isChecked = item.has_access ? 'checked' : '';
+        const badgeRole = item.role ? `<span style="font-size:10.5px; background:#e0e7ff; color:#4338ca; padding:1px 6px; border-radius:4px; margin-left:6px;">${escapeHtml(item.role)}</span>` : '';
+        const unitName = item.unit_name ? `<span style="font-size:11px; color:#64748b; margin-left:4px;">(${escapeHtml(item.unit_name)})</span>` : '';
+
+        html += `
+            <label class="mentoring-staff-item" data-name="${escapeHtml((item.name || '').toLowerCase())}" style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:#fff; border:1px solid #e2e8f0; border-radius:6px; cursor:pointer; margin:0;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <input type="checkbox" ${isChecked} onchange="toggleMentoringPermission(${item.id}, this.checked)" style="width:16px; height:16px; cursor:pointer;">
+                    <span style="font-size:13px; font-weight:600; color:#1e293b;">
+                        ${escapeHtml(item.name)} ${badgeRole} ${unitName}
+                    </span>
+                </div>
+                <span id="perm-status-${item.id}" style="font-size:11px; font-weight:700; color:${item.has_access ? '#16a34a' : '#94a3b8'};">
+                    ${item.has_access ? 'Diizinkan' : 'Terkunci'}
+                </span>
+            </label>
+        `;
+    });
+
+    container.innerHTML = html;
+    container.style.display = 'flex';
+}
+
+function filterMentoringStaffList(keyword) {
+    const term = (keyword || '').toLowerCase().trim();
+    document.querySelectorAll('.mentoring-staff-item').forEach(el => {
+        const name = el.getAttribute('data-name') || '';
+        el.style.display = (term === '' || name.includes(term)) ? 'flex' : 'none';
+    });
+}
+
+async function toggleMentoringPermission(userId, grant) {
+    const statusEl = document.getElementById('perm-status-' + userId);
+    const feedback = document.getElementById('mentoringPermFeedback');
+    if (statusEl) statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+
+    try {
+        const res = await fetch(MENTORING_PERM_API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+                action: grant ? 'grant' : 'revoke',
+                teacher_user_id: userId
+            })
+        });
+        const resJson = await res.json();
+
+        if (resJson.success) {
+            if (statusEl) {
+                statusEl.innerText = grant ? 'Diizinkan' : 'Terkunci';
+                statusEl.style.color = grant ? '#16a34a' : '#94a3b8';
+            }
+            if (feedback) {
+                feedback.style.display = 'block';
+                feedback.style.color = '#16a34a';
+                feedback.innerText = resJson.message || 'Perubahan disimpan.';
+                setTimeout(() => { feedback.style.display = 'none'; }, 3000);
+            }
+        } else {
+            alert('Gagal: ' + (resJson.message || 'Terjadi kesalahan'));
+            loadMentoringPermissionsData();
+        }
+    } catch (err) {
+        alert('Gagal menghubungi server.');
+        loadMentoringPermissionsData();
     }
 }
 </script>

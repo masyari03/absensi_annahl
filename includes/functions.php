@@ -4243,3 +4243,99 @@ if (!function_exists('notifyLateStudentAttendance')) {
 
 }
 
+
+// =========================================================================
+// MENTORING TEACHER PERMISSIONS – Izin Guru Akses Kelola Mentoring
+// Diberikan oleh Kepala Sekolah atau Super Admin per unit.
+// Cara edit manual:
+//   - grantMentoringTeacherPermission($pdo, $guruId, $kepsekId, $unitId)
+//   - revokeMentoringTeacherPermission($pdo, $guruId)
+// =========================================================================
+
+if (!function_exists('canTeacherAccessMentoring')) {
+    /**
+     * Cek apakah guru diberi izin akses modul mentoring.
+     * @param PDO $pdo
+     * @param int $userId  ID user guru yang dicek
+     * @return bool
+     */
+    function canTeacherAccessMentoring(PDO $pdo, int $userId): bool {
+        try {
+            $stmt = $pdo->prepare(
+                "SELECT 1 FROM mentoring_teacher_permissions WHERE user_id = ? LIMIT 1"
+            );
+            $stmt->execute([$userId]);
+            return (bool) $stmt->fetchColumn();
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('getMentoringAllowedTeacherIds')) {
+    /**
+     * Ambil semua user_id guru yang diizinkan akses mentoring.
+     * @param PDO      $pdo
+     * @param int|null $unitId  Filter per unit jika diisi
+     * @return int[]
+     */
+    function getMentoringAllowedTeacherIds(PDO $pdo, ?int $unitId = null): array {
+        try {
+            if ($unitId !== null && $unitId > 0) {
+                $stmt = $pdo->prepare(
+                    "SELECT user_id FROM mentoring_teacher_permissions WHERE unit_id = ?"
+                );
+                $stmt->execute([$unitId]);
+            } else {
+                $stmt = $pdo->query(
+                    "SELECT user_id FROM mentoring_teacher_permissions"
+                );
+            }
+            return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN) ?: []);
+        } catch (Exception $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('grantMentoringTeacherPermission')) {
+    /**
+     * Berikan izin akses mentoring kepada seorang guru.
+     * @param PDO      $pdo
+     * @param int      $teacherUserId   ID guru
+     * @param int      $grantedBy       ID kepala_sekolah/super_admin
+     * @param int|null $unitId          Unit kepala sekolah (null untuk super_admin global)
+     * @return bool
+     */
+    function grantMentoringTeacherPermission(PDO $pdo, int $teacherUserId, int $grantedBy, ?int $unitId = null): bool {
+        try {
+            $stmt = $pdo->prepare(
+                "INSERT IGNORE INTO mentoring_teacher_permissions (user_id, granted_by, unit_id) VALUES (?, ?, ?)"
+            );
+            $stmt->execute([$teacherUserId, $grantedBy, $unitId]);
+            return true;
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('revokeMentoringTeacherPermission')) {
+    /**
+     * Cabut izin akses mentoring dari seorang guru.
+     * @param PDO $pdo
+     * @param int $teacherUserId  ID guru yang dicabut izinnya
+     * @return bool
+     */
+    function revokeMentoringTeacherPermission(PDO $pdo, int $teacherUserId): bool {
+        try {
+            $stmt = $pdo->prepare(
+                "DELETE FROM mentoring_teacher_permissions WHERE user_id = ?"
+            );
+            $stmt->execute([$teacherUserId]);
+            return true;
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+}

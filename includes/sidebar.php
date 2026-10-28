@@ -103,11 +103,15 @@ if (isset($pdo) && $currentUserId > 0) {
         });
     }
 
-    // 3. Menu 'mentoring_assignments' (Kelola Kelompok Mentoring) HANYA BISA DIAKSES OLEH KEPALA SEKOLAH, ADMIN & SUPER ADMIN (GURU TIDAK BISA AKSES)
+    // 3. Proteksi Modul Mentoring: Guru/Staff dilarang mengakses SEMUA menu Mentoring KECUALI diberi izin oleh Kepala Sekolah
     if (!in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true)) {
-        $rawMenus = array_filter($rawMenus, function($m) {
-            return ($m['menu_key'] ?? '') !== 'mentoring_assignments';
-        });
+        $hasMentoringAccess = function_exists('canTeacherAccessMentoring') && canTeacherAccessMentoring($pdo, (int)$currentUserId);
+        if (!$hasMentoringAccess) {
+            $mentoringKeys = ['mentoring_dashboard', 'mentoring_assignments', 'mentoring_report', 'mentoring_adab', 'mentoring_curriculum', 'pembinaan_parent'];
+            $rawMenus = array_filter($rawMenus, function($m) use ($mentoringKeys) {
+                return !in_array($m['menu_key'] ?? '', $mentoringKeys, true);
+            });
+        }
     }
 
     // Realtime session synchronization agar hak akses langsung sinkron tanpa logout
