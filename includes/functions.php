@@ -1091,6 +1091,7 @@ if (!function_exists('getSupervisionTimeLockStatus')) {
                 'is_locked'    => false,
 
                 'status'       => 'bypassed',
+
                 'status_key'   => 'bypassed',
 
                 'badge_label'  => 'Jam Dibuka',
@@ -1116,6 +1117,7 @@ if (!function_exists('getSupervisionTimeLockStatus')) {
                 'is_locked'    => true,
 
                 'status'       => 'before',
+
                 'status_key'   => 'before',
 
                 'badge_label'  => 'Belum Jamnya',
@@ -1141,6 +1143,7 @@ if (!function_exists('getSupervisionTimeLockStatus')) {
                 'is_locked'    => true,
 
                 'status'       => 'expired',
+
                 'status_key'   => 'expired',
 
                 'badge_label'  => 'Lewat Jam',
@@ -1162,6 +1165,7 @@ if (!function_exists('getSupervisionTimeLockStatus')) {
             'is_locked'    => false,
 
             'status'       => 'active',
+
                 'status_key'   => 'active',
 
             'badge_label'  => 'Sesi Aktif',
@@ -3850,6 +3854,34 @@ if (!function_exists('getMentorAllAccountIds')) {
 
 // =========================================================================
 
+if (!function_exists('calibrateNotificationUrl')) {
+    /**
+     * Kalibrasi URL Notifikasi ke Absolute Path BASE_URL
+     * Mencegah 404 Not Found saat notifikasi diklik dari sub-folder mana pun.
+     */
+    function calibrateNotificationUrl(?string $url): string {
+        if (empty($url) || trim($url) === '') {
+            return (defined('BASE_URL') ? rtrim(BASE_URL, '/') : '') . '/notifications/index.php';
+        }
+        $url = trim($url);
+        if (preg_match('#^https?://#i', $url)) {
+            return $url;
+        }
+
+        $baseUrl = defined('BASE_URL') ? rtrim(BASE_URL, '/') : '';
+        if (!empty($baseUrl) && strpos($url, $baseUrl) === 0) {
+            return $url;
+        }
+
+        $cleanPath = ltrim($url, '/');
+        if (strpos($cleanPath, 'public/') === 0) {
+            $cleanPath = substr($cleanPath, 7);
+        }
+
+        return $baseUrl . '/' . $cleanPath;
+    }
+}
+
 if (!function_exists('createNotification')) {
 
     /**
@@ -3910,7 +3942,8 @@ if (!function_exists('createNotification')) {
 
             ");
 
-            return $stmt->execute([$userId, trim($title), trim($message), $category, $linkUrl ? trim($linkUrl) : null]);
+            $calibratedUrl = (!empty($linkUrl) && trim($linkUrl) !== '') ? calibrateNotificationUrl($linkUrl) : null;
+            return $stmt->execute([$userId, trim($title), trim($message), $category, $calibratedUrl]);
 
         } catch (Exception $e) {
 
