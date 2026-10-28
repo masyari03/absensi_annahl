@@ -103,11 +103,22 @@ if (isset($pdo) && $currentUserId > 0) {
         });
     }
 
-    // 3. Proteksi Modul Mentoring: Guru/Staff dilarang mengakses SEMUA menu Mentoring KECUALI diberi izin oleh Kepala Sekolah
+    // 3. Proteksi Modul Mentoring & Pembuatan Kelompok:
+    // A. Menu 'mentoring_assignments' (Kelola Kelompok Mentoring) HANYA BISA DIAKSES OLEH KEPALA SEKOLAH & SUPER ADMIN
+    //    Guru / Staff TIDAK BOLEH melihat atau membuat kelompok mentoring dalam kondisi apa pun.
+    $isSuperOrKepsek = in_array($currentRole, ['super_admin', 'kepala_sekolah'], true);
+    if (!$isSuperOrKepsek) {
+        $rawMenus = array_filter($rawMenus, function($m) {
+            return ($m['menu_key'] ?? '') !== 'mentoring_assignments';
+        });
+    }
+
+    // B. Menu Pembinaan lainnya (dashboard, report, adab, curriculum):
+    //    Guru / Staff hanya bisa mengakses JIKA Kepala Sekolah telah memberikan izin.
     if (!in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true)) {
         $hasMentoringAccess = function_exists('canTeacherAccessMentoring') && canTeacherAccessMentoring($pdo, (int)$currentUserId);
         if (!$hasMentoringAccess) {
-            $mentoringKeys = ['mentoring_dashboard', 'mentoring_assignments', 'mentoring_report', 'mentoring_adab', 'mentoring_curriculum', 'pembinaan_parent'];
+            $mentoringKeys = ['mentoring_dashboard', 'mentoring_report', 'mentoring_adab', 'mentoring_curriculum', 'pembinaan_parent'];
             $rawMenus = array_filter($rawMenus, function($m) use ($mentoringKeys) {
                 return !in_array($m['menu_key'] ?? '', $mentoringKeys, true);
             });
