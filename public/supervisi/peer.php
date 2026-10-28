@@ -12,6 +12,12 @@ $pageTitle = 'Supervisi Teman Sejawat (Peer Observation)';
 $currentUserId = currentUserId();
 $currentRole = currentRole();
 
+// Proteksi Wewenang: Kepala Sekolah dilarang mengisi supervisi sejawat kecuali telah diberi izin Super Admin
+if ($currentRole === 'kepala_sekolah' && !canKepsekAccessPeerSupervision($pdo, $currentUserId)) {
+    flash('error', 'Akses ditolak: Kepala Sekolah tidak memiliki wewenang untuk mengisi supervisi teman sejawat, kecuali telah diberikan izin khusus oleh Super Admin.');
+    redirect('schedules.php');
+}
+
 // Ambil type_id = 1 (peer)
 $typeId = 1;
 $stmtType = $pdo->prepare("SELECT * FROM supervision_types WHERE id = ? LIMIT 1");
@@ -71,7 +77,7 @@ if ($scheduleId > 0) {
 
     // Otorisasi Observer: user harus super_admin, admin, kepsek, observer utama, atau observer tambahan pada jadwal ini
     if ($prefillSchedule && !$editSession) {
-        $isSuperUser = in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true);
+        $isSuperUser = in_array($currentRole, ['super_admin', 'admin'], true);
         $isAssignedPrimary = ((int)$prefillSchedule['observer_id'] === $currentUserId);
 
         $stmtCheckAdd = $pdo->prepare("SELECT 1 FROM supervision_schedule_observers WHERE schedule_id = ? AND observer_id = ?");
@@ -100,19 +106,19 @@ if ($checkScheduleId > 0) {
 }
 
 if ($schedData) {
-    $schedDate = $schedData['scheduled_date'];
-    $timeStart = $schedData['time_start'] ?: '00:00:00';
-    $bypassTime = (int)$schedData['bypass_time_lock'];
-
-    $schedTs = strtotime("{$schedDate} {$timeStart}");
-    if (time() < $schedTs && $bypassTime === 0) {
-        $isTimeLocked = true;
-        $timeLockMsg = "Jadwal supervisi belum dimulai. Waktu pelaksanaan terdaftar pada " . formatIndoDate($schedDate) . " pukul " . substr($timeStart, 0, 5) . ". Penilaian dikunci sampai jam pelaksanaan dimulai, atau sampai Kepala Sekolah membuka kunci jam supervisi.";
-    }
+    $timeStatus = getSupervisionTimeLockStatus(
+        $schedData['scheduled_date'],
+        $schedData['time_start'],
+        $schedData['time_end'],
+        (int)$schedData['bypass_time_lock']
+    );
+    $isTimeLocked = $timeStatus['is_locked'];
+    $timeLockMsg = $timeStatus['lock_message'];
 }
 
-if ($editSession && $editSession['status'] === 'completed') {
-    $isPrivilegedUser = in_array($currentRole, ['super_admin', 'kepala_sekolah', 'admin'], true);
+$isCompletedSession = ($editSession && $editSession['status'] === 'completed');
+if ($isCompletedSession) {
+    $isPrivilegedUser = in_array($currentRole, ['super_admin', 'admin'], true);
     $hasAllowEdit = ($schedData && (int)$schedData['allow_edit'] === 1);
     if (!$isPrivilegedUser && !$hasAllowEdit) {
         $isEditLocked = true;
@@ -120,6 +126,16 @@ if ($editSession && $editSession['status'] === 'completed') {
     }
 }
 $isFormLocked = ($isTimeLocked || $isEditLocked);
+
+// Proteksi Waktu Sesi (Sebelum jam atau Lewat jam)
+if (!$isCompletedSession && $isTimeLocked && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    flash('error', $timeLockMsg);
+    redirect('schedules.php');
+}
+if ($isCompletedSession && $isEditLocked && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    flash('error', $editLockMsg);
+    redirect('reports.php');
+}
 
 // =========================================================================
 // ACTION: SIMPAN FORMULIR SUPERVISI SEJAWAT (DRAF ATAU FINALISASI)

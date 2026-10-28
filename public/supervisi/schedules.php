@@ -289,6 +289,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         flash('success', 'Wewenang guru untuk membuat jadwal supervisi berhasil diperbarui.');
         redirect('schedules.php');
     }
+
+    // 7. KELOLA IZIN SUPERVISI SEJAWAT KEPALA SEKOLAH (KHUSUS SUPER ADMIN)
+    if ($action === 'save_kepsek_peer_permissions') {
+        if (!$isSuperAdmin) {
+            flash('error', 'Akses ditolak: Hanya Super Admin yang berwenang memberikan izin supervisi sejawat kepada Kepala Sekolah.');
+            redirect('schedules.php');
+        }
+
+        $allowedKepsekIds = isset($_POST['kepsek_peer_user_ids']) && is_array($_POST['kepsek_peer_user_ids']) ? array_map('intval', $_POST['kepsek_peer_user_ids']) : [];
+
+        $stmtValidKpk = $pdo->query("SELECT id FROM users WHERE role = 'kepala_sekolah'");
+        $allKepsekIds = $stmtValidKpk->fetchAll(PDO::FETCH_COLUMN);
+
+        try {
+            $pdo->beginTransaction();
+            $pdo->exec("DELETE FROM supervision_kepsek_peer_permissions");
+            if (!empty($allowedKepsekIds)) {
+                $stmtIns = $pdo->prepare("INSERT INTO supervision_kepsek_peer_permissions (user_id, granted_by) VALUES (?, ?)");
+                foreach ($allowedKepsekIds as $kId) {
+                    if ($kId > 0 && in_array($kId, $allKepsekIds)) {
+                        $stmtIns->execute([$kId, $currentUserId]);
+                    }
+                }
+            }
+            $pdo->commit();
+            flash('success', 'Wewenang Kepala Sekolah untuk menilai supervisi sejawat berhasil diperbarui.');
+        } catch (Exception $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            error_log("Error saving kepsek peer permissions: " . $e->getMessage());
+            flash('error', 'Gagal menyimpan pengaturan izin: ' . $e->getMessage());
+        }
+        redirect('schedules.php');
+    }
 }
 
 // =========================================================================
@@ -374,6 +407,23 @@ $principals = getSupervisionPrincipals($pdo, $userUnitId);
 
 // Data untuk Pengaturan Izin Tambah Jadwal Guru
 $activeCreatorUserIds = $pdo->query("SELECT user_id FROM supervision_schedule_creator_permissions")->fetchAll(PDO::FETCH_COLUMN);
+
+// Data untuk Pengaturan Izin Supervisi Sejawat untuk Kepala Sekolah (Khusus Super Admin)
+$kepsekUsersForPermissions = [];
+if ($isSuperAdmin) {
+    $stmtKpk = $pdo->query("
+        SELECT u.id, u.name, u.username, u.email,
+               GROUP_CONCAT(DISTINCT un.unit SEPARATOR ', ') as unit_names
+        FROM users u
+        LEFT JOIN staff s ON s.user_id = u.id
+        LEFT JOIN units un ON un.id = s.unit_id
+        WHERE u.role = 'kepala_sekolah' AND u.status = 'active'
+        GROUP BY u.id
+        ORDER BY u.name ASC
+    ");
+    $kepsekUsersForPermissions = $stmtKpk->fetchAll(PDO::FETCH_ASSOC);
+}
+$activeKepsekPeerUserIds = getKepsekPeerAllowedUserIds($pdo);
 $unitStaffForPermissions = [];
 if ($canManageSupervision) {
     $permStaffSql = "
@@ -428,6 +478,12 @@ require_once __DIR__ . '/../../includes/header.php';
         </div>
 
         <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <?php if ($isSuperAdmin): ?>
+                <button type="button" class="btn btn-outline-secondary" onclick="openKepsekPeerPermissionsModal()" style="display: inline-flex; align-items: center; gap: 8px; border: 1.5px solid #0284c7; color: #0284c7; font-weight: 700; border-radius: 8px; padding: 9px 15px; background: #f0f9ff;" title="Kelola wewenang Kepala Sekolah untuk menilai supervisi sejawat">
+                    <i class="fa-solid fa-user-lock"></i> Izin Sejawat Kepsek
+                </button>
+            <?php endif; ?>
+
             <?php if ($canManageSupervision): ?>
                 <button type="button" class="btn btn-outline-primary" onclick="openCreatorPermissionsModal()" style="display: inline-flex; align-items: center; gap: 8px; border: 1.5px solid #4f46e5; color: #4f46e5; font-weight: 700; border-radius: 8px; padding: 9px 15px; background: #eef2ff;">
                     <i class="fa-solid fa-user-shield"></i> Izin Tambah Jadwal Guru
@@ -510,10 +566,24 @@ require_once __DIR__ . '/../../includes/header.php';
                                 $timeStr = substr($sc['time_start'], 0, 5) . (!empty($sc['time_end']) ? ' - ' . substr($sc['time_end'], 0, 5) : '');
                             }
 
-                            $schedDateTime = strtotime($sc['scheduled_date'] . ' ' . ($sc['time_start'] ?: '00:00:00'));
-                            $isTimeLocked = (time() < $schedDateTime && (int)$sc['bypass_time_lock'] === 0);
+                            $timeStatus = getSupervisionTimeLockStatus(
+                                $sc['scheduled_date'],
+                                $sc['time_start'],
+                                $sc['time_end'],
+                                (int)$sc['bypass_time_lock']
+                            );
+                            $isTimeLocked = $timeStatus['is_locked'];
 
-                            $canAssessPeer = ($canManageSupervision || $sc['observer_id'] == $currentUserId || in_array($currentUserId, $sc['additional_observer_ids']));
+                            // Otorisasi Penilaian Sejawat:
+                            // Kepala Sekolah WAJIB memiliki izin khusus dari Super Admin
+                            $canKepsekPeer = canKepsekAccessPeerSupervision($pdo, $currentUserId);
+                            if ($currentRole === 'kepala_sekolah') {
+                                $canAssessPeer = $canKepsekPeer && ($sc['observer_id'] == $currentUserId || in_array($currentUserId, $sc['additional_observer_ids']) || $isSuperAdmin);
+                            } else {
+                                $canAssessPeer = ($isSuperAdmin || $currentRole === 'admin' || $sc['observer_id'] == $currentUserId || in_array($currentUserId, $sc['additional_observer_ids']));
+                            }
+
+                            // Otorisasi Penilaian Kepala Sekolah:
                             $canAssessPrincipal = ($canManageSupervision || $sc['principal_id'] == $currentUserId || $sc['delegated_user_id'] == $currentUserId || $currentRole === 'kepala_sekolah');
                         ?>
                             <tr style="border-bottom: 1px solid #f1f5f9; transition: background 0.15s;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='white'">
@@ -530,16 +600,20 @@ require_once __DIR__ . '/../../includes/header.php';
                                 </td>
                                 <td style="padding: 14px 14px; color: #475569; font-weight: 600; font-size: 12px;">
                                     <div><?= htmlspecialchars($timeStr) ?></div>
-                                    <?php if ($sc['bypass_time_lock']): ?>
-                                        <span class="badge" style="background: #dcfce7; color: #15803d; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-top: 3px; display: inline-block;">
+                                    <?php if ($timeStatus['status'] === 'bypassed'): ?>
+                                        <span class="badge" style="background: #dcfce7; color: #15803d; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-top: 3px; display: inline-block;" title="Kunci jam dibuka oleh Kepala Sekolah">
                                             <i class="fa-solid fa-lock-open"></i> Jam Dibuka
                                         </span>
-                                    <?php elseif ($isTimeLocked): ?>
-                                        <span class="badge" style="background: #fef3c7; color: #b45309; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-top: 3px; display: inline-block;">
-                                            <i class="fa-solid fa-lock"></i> Waktu Dikunci
+                                    <?php elseif ($timeStatus['status'] === 'before'): ?>
+                                        <span class="badge" style="background: #fef3c7; color: #b45309; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-top: 3px; display: inline-block;" title="<?= htmlspecialchars($timeStatus['lock_message']) ?>">
+                                            <i class="fa-solid fa-clock"></i> Belum Jamnya
+                                        </span>
+                                    <?php elseif ($timeStatus['status'] === 'expired'): ?>
+                                        <span class="badge" style="background: #fee2e2; color: #b91c1c; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-top: 3px; display: inline-block;" title="<?= htmlspecialchars($timeStatus['lock_message']) ?>">
+                                            <i class="fa-solid fa-hourglass-end"></i> Lewat Jam
                                         </span>
                                     <?php else: ?>
-                                        <span class="badge" style="background: #f1f5f9; color: #475569; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-top: 3px; display: inline-block;">
+                                        <span class="badge" style="background: #e0e7ff; color: #4338ca; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-top: 3px; display: inline-block;" title="Jadwal sedang berlangsung aktif">
                                             <i class="fa-solid fa-play"></i> Sesi Aktif
                                         </span>
                                     <?php endif; ?>
@@ -585,14 +659,26 @@ require_once __DIR__ . '/../../includes/header.php';
                                                 <i class="fa-solid fa-check"></i> Sejawat
                                             </span>
                                         <?php elseif ($isPeerDraft): ?>
-                                            <a href="peer.php?session_id=<?= $sc['peer_session_id'] ?>" class="btn btn-sm" style="background: #fef3c7; color: #b45309; border: 1px solid #fde68a; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Lanjutkan Pengisian Draf Sejawat">
-                                                <i class="fa-solid fa-clock-rotate-left"></i> Draf Sejawat
-                                            </a>
+                                            <?php if ($isTimeLocked): ?>
+                                                <button type="button" class="btn btn-sm btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed; padding: 4px 8px; border-radius: 6px; font-size: 11px;" title="<?= htmlspecialchars($timeStatus['lock_message']) ?>">
+                                                    <i class="fa-solid fa-lock"></i> Draf (<?= $timeStatus['status'] === 'before' ? 'Belum Jam' : 'Lewat Jam' ?>)
+                                                </button>
+                                            <?php else: ?>
+                                                <a href="peer.php?session_id=<?= $sc['peer_session_id'] ?>" class="btn btn-sm" style="background: #fef3c7; color: #b45309; border: 1px solid #fde68a; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Lanjutkan Pengisian Draf Sejawat">
+                                                    <i class="fa-solid fa-clock-rotate-left"></i> Draf Sejawat
+                                                </a>
+                                            <?php endif; ?>
                                         <?php else: ?>
                                             <?php if ($canAssessPeer): ?>
-                                                <a href="peer.php?schedule_id=<?= $sc['id'] ?>" class="btn btn-sm" style="background: #4f46e5; border-color: #4f46e5; color: white; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Mulai Nilai Sejawat">
-                                                    <i class="fa-solid fa-clipboard-check"></i> Nilai Sejawat
-                                                </a>
+                                                <?php if ($isTimeLocked): ?>
+                                                    <button type="button" class="btn btn-sm btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed; padding: 4px 8px; border-radius: 6px; font-size: 11px;" title="<?= htmlspecialchars($timeStatus['lock_message']) ?>">
+                                                        <i class="fa-solid fa-lock"></i> <?= $timeStatus['status'] === 'before' ? 'Belum Jam' : 'Lewat Jam' ?>
+                                                    </button>
+                                                <?php else: ?>
+                                                    <a href="peer.php?schedule_id=<?= $sc['id'] ?>" class="btn btn-sm" style="background: #4f46e5; border-color: #4f46e5; color: white; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Mulai Nilai Sejawat">
+                                                        <i class="fa-solid fa-clipboard-check"></i> Nilai Sejawat
+                                                    </a>
+                                                <?php endif; ?>
                                             <?php endif; ?>
                                         <?php endif; ?>
 
@@ -602,14 +688,26 @@ require_once __DIR__ . '/../../includes/header.php';
                                                 <i class="fa-solid fa-check-double"></i> Kepsek
                                             </span>
                                         <?php elseif ($isPrincipalDraft): ?>
-                                            <a href="principal.php?session_id=<?= $sc['principal_session_id'] ?>" class="btn btn-sm" style="background: #fed7aa; color: #c2410c; border: 1px solid #fdba74; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Lanjutkan Pengisian Draf Kepsek">
-                                                <i class="fa-solid fa-clock-rotate-left"></i> Draf Kepsek
-                                            </a>
+                                            <?php if ($isTimeLocked): ?>
+                                                <button type="button" class="btn btn-sm btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed; padding: 4px 8px; border-radius: 6px; font-size: 11px;" title="<?= htmlspecialchars($timeStatus['lock_message']) ?>">
+                                                    <i class="fa-solid fa-lock"></i> Draf (<?= $timeStatus['status'] === 'before' ? 'Belum Jam' : 'Lewat Jam' ?>)
+                                                </button>
+                                            <?php else: ?>
+                                                <a href="principal.php?session_id=<?= $sc['principal_session_id'] ?>" class="btn btn-sm" style="background: #fed7aa; color: #c2410c; border: 1px solid #fdba74; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Lanjutkan Pengisian Draf Kepsek">
+                                                    <i class="fa-solid fa-clock-rotate-left"></i> Draf Kepsek
+                                                </a>
+                                            <?php endif; ?>
                                         <?php else: ?>
                                             <?php if ($canAssessPrincipal): ?>
-                                                <a href="principal.php?schedule_id=<?= $sc['id'] ?>" class="btn btn-sm" style="background: #7c3aed; border-color: #7c3aed; color: white; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Mulai Nilai Kepala Sekolah">
-                                                    <i class="fa-solid fa-award"></i> Nilai Kepsek
-                                                </a>
+                                                <?php if ($isTimeLocked): ?>
+                                                    <button type="button" class="btn btn-sm btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed; padding: 4px 8px; border-radius: 6px; font-size: 11px;" title="<?= htmlspecialchars($timeStatus['lock_message']) ?>">
+                                                        <i class="fa-solid fa-lock"></i> <?= $timeStatus['status'] === 'before' ? 'Belum Jam' : 'Lewat Jam' ?>
+                                                    </button>
+                                                <?php else: ?>
+                                                    <a href="principal.php?schedule_id=<?= $sc['id'] ?>" class="btn btn-sm" style="background: #7c3aed; border-color: #7c3aed; color: white; font-weight: 700; padding: 4px 8px; border-radius: 6px; font-size: 11px; text-decoration: none;" title="Mulai Nilai Kepala Sekolah">
+                                                        <i class="fa-solid fa-award"></i> Nilai Kepsek
+                                                    </a>
+                                                <?php endif; ?>
                                             <?php endif; ?>
                                         <?php endif; ?>
 
@@ -666,18 +764,18 @@ require_once __DIR__ . '/../../includes/header.php';
 <!-- MODAL: TAMBAH / EDIT JADWAL SUPERVISI (DILENGKAPI MULTI-OBSERVER & KEPSEK) -->
 <!-- ========================================================================= -->
 <div id="modalSchedule" class="custom-modal-overlay">
-    <div class="custom-modal-box" style="max-width: 680px;">
-        <div class="custom-modal-header">
+    <div class="custom-modal-box" style="max-width: 680px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <div class="custom-modal-header" style="flex-shrink: 0;">
             <h3 id="modalScheduleTitle" style="margin: 0; font-size: 17px; color: #0f172a;">Tambah Jadwal Supervisi Baru</h3>
             <button type="button" class="btn-close-sidebar" style="position: static;" onclick="closeModal('modalSchedule')">
                 <i class="fa-solid fa-xmark"></i>
             </button>
         </div>
-        <form method="POST">
+        <form method="POST" style="display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; margin: 0;">
             <input type="hidden" name="action" id="schedActionInput" value="add_schedule">
             <input type="hidden" name="schedule_id" id="schedIdInput" value="">
 
-            <div class="custom-modal-body" style="padding: 20px;">
+            <div class="custom-modal-body" style="padding: 20px; overflow-y: auto; flex: 1; min-height: 0;">
                 <input type="hidden" name="type_id" id="schedTypeSelect" value="1">
                 <div style="margin-bottom: 14px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 10px 14px; display: flex; align-items: center; gap: 10px;">
                     <i class="fa-solid fa-graduation-cap" style="font-size: 20px; color: #2563eb;"></i>
@@ -870,12 +968,11 @@ require_once __DIR__ . '/../../includes/header.php';
                 </div>
             </div>
 
-            <div class="custom-modal-footer">
+            <div class="custom-modal-footer" style="flex-shrink: 0;">
                 <button type="button" class="btn btn-secondary" onclick="closeModal('modalSchedule')">Batal</button>
                 <button type="submit" class="btn btn-primary">Simpan Jadwal</button>
             </div>
         </form>
-    </div>
     </div>
 </div>
 
@@ -884,8 +981,8 @@ require_once __DIR__ . '/../../includes/header.php';
 <!-- ========================================================================= -->
 <?php if ($canManageSupervision): ?>
 <div id="modalCreatorPermissions" class="custom-modal-overlay">
-    <div class="custom-modal-box" style="max-width: 600px;">
-        <div class="custom-modal-header">
+    <div class="custom-modal-box" style="max-width: 600px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <div class="custom-modal-header" style="flex-shrink: 0;">
             <h3 style="margin: 0; font-size: 17px; color: #0f172a; display: flex; align-items: center; gap: 8px;">
                 <i class="fa-solid fa-user-shield" style="color: #4f46e5;"></i>
                 Izin Akses Tambah Jadwal Guru
@@ -894,11 +991,11 @@ require_once __DIR__ . '/../../includes/header.php';
                 <i class="fa-solid fa-xmark"></i>
             </button>
         </div>
-        <form method="POST">
+        <form method="POST" style="display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; margin: 0;">
             <input type="hidden" name="action" value="save_creator_permissions">
             <input type="hidden" name="target_unit_id" value="<?= (int)$userUnitId ?>">
 
-            <div class="custom-modal-body" style="padding: 20px;">
+            <div class="custom-modal-body" style="padding: 20px; overflow-y: auto; flex: 1; min-height: 0;">
                 <p style="margin: 0 0 14px; font-size: 13px; color: #475569; line-height: 1.5;">
                     Secara default guru reguler tidak dapat menambahkan jadwal supervisi sendiri. Centang guru di bawah ini yang Anda beri izin khusus untuk membuat dan menjadwalkan supervisi pada unit <?= $userUnitName ? '<strong>Unit ' . htmlspecialchars($userUnitName) . '</strong>' : 'ini' ?>.
                 </p>
@@ -932,9 +1029,73 @@ require_once __DIR__ . '/../../includes/header.php';
                 </div>
             </div>
 
-            <div class="custom-modal-footer">
+            <div class="custom-modal-footer" style="flex-shrink: 0;">
                 <button type="button" class="btn btn-secondary" onclick="closeModal('modalCreatorPermissions')">Batal</button>
                 <button type="submit" class="btn btn-primary" style="background: #4f46e5; border-color: #4f46e5;">Simpan Izin Akses</button>
+            </div>
+        </form>
+    </div>
+</div>
+<?php endif; ?>
+
+<!-- ========================================================================= -->
+<!-- MODAL: KELOLA IZIN SUPERVISI SEJAWAT KEPALA SEKOLAH (KHUSUS SUPER ADMIN)  -->
+<!-- ========================================================================= -->
+<?php if ($isSuperAdmin): ?>
+<div id="modalKepsekPeerPermissions" class="custom-modal-overlay">
+    <div class="custom-modal-box" style="max-width: 620px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+        <div class="custom-modal-header" style="flex-shrink: 0;">
+            <h3 style="margin: 0; font-size: 17px; color: #0f172a; display: flex; align-items: center; gap: 8px;">
+                <i class="fa-solid fa-user-lock" style="color: #0284c7;"></i>
+                Izin Supervisi Sejawat untuk Kepala Sekolah
+            </h3>
+            <button type="button" class="btn-close-sidebar" style="position: static;" onclick="closeModal('modalKepsekPeerPermissions')">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+        <form method="POST" style="display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; margin: 0;">
+            <input type="hidden" name="action" value="save_kepsek_peer_permissions">
+
+            <div class="custom-modal-body" style="padding: 20px; overflow-y: auto; flex: 1; min-height: 0;">
+                <p style="margin: 0 0 14px; font-size: 13px; color: #475569; line-height: 1.5;">
+                    Secara regulasi sistem, akun dengan peran <strong>Kepala Sekolah</strong> difokuskan untuk <em>Supervisi Kepala Sekolah</em> dan tidak dapat menilai <em>Supervisi Teman Sejawat</em>. Centang Kepala Sekolah di bawah ini jika Anda (Super Admin) memberikan wewenang khusus untuk dapat menilai supervisi sejawat.
+                </p>
+
+                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                    <input type="text" id="searchKepsekPerm" placeholder="🔍 Cari nama kepala sekolah..." class="form-control" style="font-size: 12.5px; padding: 7px 10px;" oninput="filterKepsekStaff(this.value)">
+                    <button type="button" class="btn btn-sm btn-secondary" onclick="toggleAllKepsekStaff(true)" style="white-space: nowrap; font-size: 11.5px;">Pilih Semua</button>
+                    <button type="button" class="btn btn-sm btn-secondary" onclick="toggleAllKepsekStaff(false)" style="white-space: nowrap; font-size: 11.5px;">Batal Semua</button>
+                </div>
+
+                <div style="max-height: 280px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 14px; background: #f8fafc;">
+                    <?php if (empty($kepsekUsersForPermissions)): ?>
+                        <div style="text-align: center; color: #94a3b8; padding: 20px;">Tidak ada akun Kepala Sekolah aktif yang terdaftar.</div>
+                    <?php else: ?>
+                        <div id="kepsekPermList" style="display: flex; flex-direction: column; gap: 8px;">
+                            <?php foreach ($kepsekUsersForPermissions as $kp): 
+                                $isAllowed = in_array((int)$kp['id'], $activeKepsekPeerUserIds);
+                            ?>
+                                <label class="kepsek-perm-item" data-name="<?= htmlspecialchars(strtolower($kp['name'])) ?>" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 6px; background: white; border: 1px solid #e2e8f0; cursor: pointer; transition: background 0.15s;">
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <input type="checkbox" name="kepsek_peer_user_ids[]" class="chk-kepsek-perm" value="<?= $kp['id'] ?>" <?= $isAllowed ? 'checked' : '' ?>>
+                                        <div>
+                                            <span style="font-weight: 600; font-size: 13px; color: #1e293b; display: block;"><?= htmlspecialchars($kp['name']) ?></span>
+                                            <span style="font-size: 11px; color: #64748b;">@<?= htmlspecialchars($kp['username']) ?></span>
+                                        </div>
+                                    </div>
+                                    <span style="font-size: 11px; color: #0284c7; background: #e0f2fe; padding: 2px 6px; border-radius: 4px; font-weight: 600;">
+                                        <?= htmlspecialchars($kp['unit_names'] ?: 'Semua Unit') ?>
+                                    </span>
+                                </label>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div class="custom-modal-footer" style="flex-shrink: 0;">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('modalKepsekPeerPermissions')">Batal</button>
+                <button type="submit" class="btn btn-primary" style="background: #0284c7; border-color: #0284c7;">Simpan Izin Akses</button>
             </div>
         </form>
     </div>
@@ -1173,6 +1334,28 @@ function openEditScheduleModal(sc) {
 function openCreatorPermissionsModal() {
     const modal = document.getElementById('modalCreatorPermissions');
     if (modal) modal.style.display = 'flex';
+}
+
+function openKepsekPeerPermissionsModal() {
+    const modal = document.getElementById('modalKepsekPeerPermissions');
+    if (modal) modal.style.display = 'flex';
+}
+
+function filterKepsekStaff(kw) {
+    const term = kw.toLowerCase().trim();
+    document.querySelectorAll('.kepsek-perm-item').forEach(el => {
+        const name = el.getAttribute('data-name') || '';
+        el.style.display = (term === '' || name.includes(term)) ? 'flex' : 'none';
+    });
+}
+
+function toggleAllKepsekStaff(state) {
+    document.querySelectorAll('.chk-kepsek-perm').forEach(chk => {
+        const item = chk.closest('.kepsek-perm-item');
+        if (item && item.style.display !== 'none') {
+            chk.checked = state;
+        }
+    });
 }
 
 function filterPermStaff(kw) {

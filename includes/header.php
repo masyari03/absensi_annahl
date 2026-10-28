@@ -184,6 +184,7 @@ if ($currentUserId > 0 && isset($pdo)) {
         align-items: center;
         justify-content: center;
         padding: 20px;
+        overflow-y: auto;
     }
     .custom-modal-box {
         background: #ffffff;
@@ -193,8 +194,16 @@ if ($currentUserId > 0 && isset($pdo)) {
         max-height: 90vh;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
         box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
         animation: modalSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .custom-modal-box > form {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
     }
     @keyframes modalSlideIn {
         from { opacity: 0; transform: scale(0.95) translateY(10px); }
@@ -206,11 +215,13 @@ if ($currentUserId > 0 && isset($pdo)) {
         display: flex;
         justify-content: space-between;
         align-items: center;
+        flex-shrink: 0;
     }
     .custom-modal-body {
         padding: 24px;
         overflow-y: auto;
         flex: 1;
+        min-height: 0;
     }
     .custom-modal-footer {
         padding: 16px 24px;
@@ -220,6 +231,7 @@ if ($currentUserId > 0 && isset($pdo)) {
         gap: 12px;
         background: #f8fafc;
         border-radius: 0 0 16px 16px;
+        flex-shrink: 0;
     }
     @media (max-width: 768px) {
         .custom-modal-overlay { padding: 10px; }
