@@ -412,12 +412,12 @@ $activeCreatorUserIds = $pdo->query("SELECT user_id FROM supervision_schedule_cr
 $kepsekUsersForPermissions = [];
 if ($isSuperAdmin) {
     $stmtKpk = $pdo->query("
-        SELECT u.id, u.name, u.username, u.email,
+        SELECT u.id, u.name, u.username,
                GROUP_CONCAT(DISTINCT un.unit SEPARATOR ', ') as unit_names
         FROM users u
         LEFT JOIN staff s ON s.user_id = u.id
         LEFT JOIN units un ON un.id = s.unit_id
-        WHERE u.role = 'kepala_sekolah' AND u.status = 'active'
+        WHERE u.role = 'kepala_sekolah' AND u.deleted_at IS NULL
         GROUP BY u.id
         ORDER BY u.name ASC
     ");
