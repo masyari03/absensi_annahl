@@ -8,328 +8,319 @@ require_once __DIR__ . '/../../includes/functions.php';
 requireLogin();
 requireMenuAccess('kinerja_nilai_paralel');
 
-$pageTitle = 'Penilaian Kinerja — Nilai Rata-Rata Semua Kelas';
+$pageTitle = 'Nilai Rata-Rata Semua Kelas — Penilaian Kinerja';
 $currentUserId = currentUserId();
 $currentRole = currentRole();
 
-// ── 1. Ambil Filter Unit & Tahun Ajaran dari API AIS Source ─────────────────
-$filtersResponse = fetchAisSourceKinerjaFilters();
-$availableUnits = $filtersResponse['success'] ? ($filtersResponse['units'] ?? []) : [];
-$availableTahunAjaran = $filtersResponse['success'] ? ($filtersResponse['tahun_ajaran'] ?? []) : [];
+// Filter Parameter
+$unitId = isset($_GET['unit_id']) ? (int)$_GET['unit_id'] : 2; // Default: Unit 2 (SD)
+$tahunAjaranId = isset($_GET['tahun_ajaran_id']) ? (int)$_GET['tahun_ajaran_id'] : null;
+$forceRefresh = isset($_GET['refresh']) && $_GET['refresh'] === '1';
 
-// Penentuan Default Filter
-$selectedUnitId = isset($_GET['unit_id']) ? (int)$_GET['unit_id'] : 2; // Default 2: SD
-$selectedTaId = isset($_GET['tahun_ajaran_id']) ? (int)$_GET['tahun_ajaran_id'] : 0;
+// Ambil data dari API AIS Laptop Sekolah
+$perfResponse = fetchAcademicPerformanceAverages($unitId, $tahunAjaranId, $forceRefresh);
 
-if ($selectedTaId === 0 && !empty($availableTahunAjaran)) {
-    // Gunakan tahun ajaran pertama (terbaru)
-    $selectedTaId = (int)$availableTahunAjaran[0]['id'];
-}
-
-// ── 2. Ambil Data Performa Paralel dari API AIS Source ──────────────────────
-$perfResponse = [];
-$apiError = null;
-
-if ($filtersResponse['success']) {
-    $perfResponse = fetchAisSourceKinerjaPerformance($selectedUnitId, $selectedTaId);
-    if (!$perfResponse['success']) {
-        $apiError = $perfResponse['message'] ?? 'Gagal memuat data performa dari server AIS Source.';
-    }
-} else {
-    $apiError = $filtersResponse['message'] ?? 'Tidak dapat terhubung ke server AIS Source (Laptop Sekolah).';
-}
-
-$unitInfo = $perfResponse['unit'] ?? null;
-$taInfo = $perfResponse['tahun_ajaran'] ?? null;
+$isSuccess = !empty($perfResponse['success']);
+$errorMessage = $perfResponse['error'] ?? null;
+$meta = $perfResponse['meta'] ?? [];
 $paralelData = $perfResponse['data'] ?? [];
-$totalParalel = count($paralelData);
+$isFromCache = !empty($perfResponse['from_cache']);
+$warningMessage = $perfResponse['warning'] ?? null;
 
-// Hitung Statistik Ringkasan
-$totalSiswaGlobal = 0;
-$allParalelAverages = [];
-foreach ($paralelData as $p) {
-    $totalSiswaGlobal += (int)($p['total_siswa'] ?? 0);
-    $allParalelAverages[] = (float)($p['rata_rata_paralel'] ?? 0);
+// Ekstrak meta
+$availableUnits = $meta['units'] ?? [];
+$availableYears = $meta['academic_years'] ?? [];
+$selectedUnit = $meta['selected_unit'] ?? null;
+$selectedYear = $meta['selected_tahun_ajaran'] ?? null;
+
+// Hitung KPI Rata-rata Unit Keseluruhan
+$overallUnitAvg = 0;
+$topParalel = null;
+$maxParalelAvg = -1;
+if (!empty($paralelData)) {
+    $sum = 0;
+    foreach ($paralelData as $p) {
+        $avg = (float)($p['rata_rata_paralel'] ?? 0);
+        $sum += $avg;
+        if ($avg > $maxParalelAvg) {
+            $maxParalelAvg = $avg;
+            $topParalel = $p['paralel_nama'] ?? '';
+        }
+    }
+    $overallUnitAvg = round($sum / count($paralelData), 2);
 }
-$topScoreParalel = !empty($allParalelAverages) ? max($allParalelAverages) : 0;
-$avgOverall = !empty($allParalelAverages) ? round(array_sum($allParalelAverages) / count($allParalelAverages), 2) : 0;
 
 require_once __DIR__ . '/../../includes/header.php';
 ?>
 
-<div class="space-y-6">
-    <!-- ── PAGE HEADER ──────────────────────────────────────────────────────── -->
-    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+<div class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
+
+    <!-- HEADER TITLE & ACTION -->
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm">
         <div>
             <div class="flex items-center gap-2 mb-1">
-                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    <i class="fa-solid fa-link text-[10px] mr-1.5"></i> Terhubung ke AIS Source
-                </span>
                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                    Murni Nilai Ujian Akhir (PAS / SAS / UAS)
+                    <i class="fa-solid fa-chart-line mr-1"></i> Data Pendidikan
                 </span>
+                <?php if ($isFromCache): ?>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200" title="Data diambil dari cache lokal untuk performa kilat">
+                        <i class="fa-solid fa-bolt text-amber-500 mr-1"></i> Mode Cepat (Cache)
+                    </span>
+                <?php endif; ?>
             </div>
-            <h1 class="text-2xl font-bold text-slate-800 tracking-tight">Pencapaian Nilai Rata-rata Per Paralel</h1>
-            <p class="text-sm text-slate-500 mt-0.5">
-                Evaluasi capaian belajar siswa berdasarkan data penilaian semesteran per tingkatan paralel dan rombel kelas.
+            <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Pencapaian Nilai Rata-rata Per Paralel</h1>
+            <p class="text-sm text-slate-500 mt-1">
+                Perhitungan total nilai seluruh siswa per paralel khusus komponen <strong>Ujian Akhir Semester (PAS)</strong>.
             </p>
         </div>
-        <div class="flex items-center gap-2">
-            <button type="button" onclick="window.print()" class="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-xl transition shadow-sm">
-                <i class="fa-solid fa-print"></i>
-                <span>Cetak Rekap</span>
-            </button>
-        </div>
-    </div>
 
-    <!-- ── FILTER CARD ──────────────────────────────────────────────────────── -->
-    <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
-        <form method="GET" action="" class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
-            <!-- Pilihan Unit -->
-            <div class="md:col-span-5">
-                <label for="unit_id" class="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1.5">
-                    <i class="fa-solid fa-school text-indigo-500 mr-1"></i> Unit Pendidikan
-                </label>
-                <select name="unit_id" id="unit_id" class="w-full bg-slate-50 border border-slate-200 text-slate-700 rounded-xl px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition">
+        <!-- FORM FILTER & REFRESH -->
+        <form method="GET" action="" class="flex flex-wrap items-center gap-2.5">
+            <!-- Filter Unit -->
+            <div class="relative">
+                <select name="unit_id" onchange="this.form.submit()" class="pl-3 pr-8 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium text-slate-700 cursor-pointer shadow-sm">
                     <?php if (empty($availableUnits)): ?>
                         <option value="2">SD (Sekolah Dasar)</option>
                     <?php else: ?>
                         <?php foreach ($availableUnits as $u): ?>
-                            <option value="<?= (int)$u['id'] ?>" <?= $selectedUnitId === (int)$u['id'] ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($u['nama']) ?>
+                            <option value="<?= (int)$u['id']; ?>" <?= ($selectedUnit && $selectedUnit['id'] == $u['id']) ? 'selected' : ''; ?>>
+                                <?= htmlspecialchars($u['nama'], ENT_QUOTES, 'UTF-8'); ?>
                             </option>
                         <?php endforeach; ?>
                     <?php endif; ?>
                 </select>
             </div>
 
-            <!-- Pilihan Tahun Ajaran & Semester -->
-            <div class="md:col-span-5">
-                <label for="tahun_ajaran_id" class="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1.5">
-                    <i class="fa-solid fa-calendar-days text-indigo-500 mr-1"></i> Tahun Ajaran & Semester
-                </label>
-                <select name="tahun_ajaran_id" id="tahun_ajaran_id" class="w-full bg-slate-50 border border-slate-200 text-slate-700 rounded-xl px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition">
-                    <?php if (empty($availableTahunAjaran)): ?>
-                        <option value="0">Tahun Ajaran Terbaru</option>
+            <!-- Filter Tahun Ajaran & Semester -->
+            <div class="relative">
+                <select name="tahun_ajaran_id" onchange="this.form.submit()" class="pl-3 pr-8 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium text-slate-700 cursor-pointer shadow-sm">
+                    <?php if (empty($availableYears)): ?>
+                        <option value="">Tahun Ajaran Aktif</option>
                     <?php else: ?>
-                        <?php foreach ($availableTahunAjaran as $ta): ?>
-                            <?php $semLabel = ((int)$ta['semester'] === 1) ? 'Semester 1 (Ganjil)' : 'Semester 2 (Genap)'; ?>
-                            <option value="<?= (int)$ta['id'] ?>" <?= $selectedTaId === (int)$ta['id'] ? 'selected' : '' ?>>
-                                Tahun <?= htmlspecialchars($ta['nama']) ?> — <?= $semLabel ?>
+                        <?php foreach ($availableYears as $y): ?>
+                            <option value="<?= (int)$y['id']; ?>" <?= ($selectedYear && $selectedYear['id'] == $y['id']) ? 'selected' : ''; ?>>
+                                TP <?= htmlspecialchars($y['nama'], ENT_QUOTES, 'UTF-8'); ?> (Sm. <?= (int)$y['semester']; ?>)
                             </option>
                         <?php endforeach; ?>
                     <?php endif; ?>
                 </select>
             </div>
 
-            <!-- Tombol Submit -->
-            <div class="md:col-span-2">
-                <button type="submit" class="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-sm rounded-xl transition shadow-sm shadow-indigo-200">
-                    <i class="fa-solid fa-filter"></i>
-                    <span>Tampilkan</span>
-                </button>
-            </div>
+            <!-- Tombol Sinkronkan Ulang -->
+            <a href="?unit_id=<?= (int)$unitId; ?><?= $tahunAjaranId ? '&tahun_ajaran_id=' . (int)$tahunAjaranId : ''; ?>&refresh=1" 
+               class="inline-flex items-center px-3.5 py-2 text-sm font-semibold text-slate-700 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 hover:text-indigo-600 transition-colors shadow-sm"
+               title="Tarik data terbaru dari server AIS laptop sekolah">
+                <i class="fa-solid fa-arrows-rotate mr-1.5 <?= $forceRefresh ? 'animate-spin' : ''; ?>"></i> Sinkronkan
+            </a>
         </form>
     </div>
 
-    <!-- ── ALERT JIKA ADA ERROR KONEKSI API ──────────────────────────────────── -->
-    <?php if ($apiError): ?>
-        <div class="p-5 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-amber-800">
-            <div class="flex items-start gap-3">
-                <div class="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center flex-shrink-0 text-amber-600 font-bold text-lg">
-                    <i class="fa-solid fa-triangle-exclamation"></i>
-                </div>
-                <div>
-                    <h3 class="font-bold text-slate-800 text-base">Tidak Dapat Memuat Data dari AIS Source</h3>
-                    <p class="text-sm text-slate-600 mt-0.5"><?= htmlspecialchars($apiError) ?></p>
-                    <p class="text-xs text-slate-500 mt-1">
-                        Endpoint: <code class="bg-amber-100/60 px-1.5 py-0.5 rounded font-mono"><?= htmlspecialchars(AIS_SOURCE_API_URL) ?></code>
-                    </p>
-                </div>
+    <!-- WARNING OFFLINE / FALLBACK NOTIFICATION -->
+    <?php if ($warningMessage): ?>
+        <div class="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3 text-amber-800">
+            <i class="fa-solid fa-triangle-exclamation text-amber-500 text-lg mt-0.5"></i>
+            <div class="text-sm">
+                <p class="font-semibold">Pemberitahuan Sinkronisasi Offline</p>
+                <p class="text-amber-700 mt-0.5"><?= htmlspecialchars($warningMessage, ENT_QUOTES, 'UTF-8'); ?></p>
             </div>
-            <a href="" class="inline-flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-xl transition flex-shrink-0 shadow-sm">
-                <i class="fa-solid fa-rotate-right"></i>
-                <span>Coba Lagi</span>
-            </a>
         </div>
     <?php endif; ?>
 
-    <!-- ── RINGKASAN KPI / STATISTIK CEPAT ───────────────────────────────────── -->
-    <?php if (!$apiError && !empty($paralelData)): ?>
+    <!-- ERROR STATE IF SERVER AIS UNREACHABLE & NO CACHE -->
+    <?php if (!$isSuccess): ?>
+        <div class="bg-white p-8 rounded-2xl border border-red-200 shadow-sm text-center">
+            <div class="w-16 h-16 bg-red-50 text-red-500 rounded-2xl flex items-center justify-center mx-auto mb-4 text-2xl">
+                <i class="fa-solid fa-server"></i>
+            </div>
+            <h2 class="text-xl font-bold text-slate-900 mb-2">Gagal Menghubungkan ke Server AIS</h2>
+            <p class="text-sm text-slate-600 max-w-lg mx-auto mb-6">
+                <?= htmlspecialchars($errorMessage ?? 'Tidak dapat mengambil data nilai dari laptop sekolah.', ENT_QUOTES, 'UTF-8'); ?>
+            </p>
+            <div class="flex items-center justify-center gap-3">
+                <a href="?unit_id=<?= (int)$unitId; ?>&refresh=1" class="inline-flex items-center px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition">
+                    <i class="fa-solid fa-rotate-right mr-2"></i> Coba Hubungkan Lagi
+                </a>
+            </div>
+        </div>
+    <?php else: ?>
+
+        <!-- SUMMARY STATS OVERVIEW CARDS -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <!-- Unit & Semester -->
-            <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
-                <div class="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl flex-shrink-0">
+            <!-- Card 1: Unit Terpilih -->
+            <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center gap-4">
+                <div class="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl shrink-0">
                     <i class="fa-solid fa-school"></i>
                 </div>
                 <div>
-                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Unit Sekolah</span>
-                    <h3 class="text-lg font-bold text-slate-800"><?= htmlspecialchars($unitInfo['nama'] ?? 'Unit') ?></h3>
-                    <p class="text-xs text-slate-500">
-                        <?= htmlspecialchars($taInfo['nama'] ?? '') ?> (Sem <?= htmlspecialchars($taInfo['semester'] ?? '') ?>)
-                    </p>
+                    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Unit Pendidikan</p>
+                    <h3 class="text-lg font-bold text-slate-900"><?= htmlspecialchars($selectedUnit['nama'] ?? 'SD', ENT_QUOTES, 'UTF-8'); ?></h3>
+                    <p class="text-xs text-slate-500"><?= count($paralelData); ?> Tingkat Paralel</p>
                 </div>
             </div>
 
-            <!-- Total Paralel -->
-            <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
-                <div class="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl flex-shrink-0">
-                    <i class="fa-solid fa-layer-group"></i>
+            <!-- Card 2: Periode Akademik -->
+            <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center gap-4">
+                <div class="w-12 h-12 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center text-xl shrink-0">
+                    <i class="fa-solid fa-calendar-check"></i>
                 </div>
                 <div>
-                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Paralel</span>
-                    <h3 class="text-xl font-bold text-slate-800"><?= $totalParalel ?> <span class="text-sm font-normal text-slate-500">Tingkat</span></h3>
-                    <p class="text-xs text-slate-500">Seluruh rombel terhitung</p>
+                    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Tahun & Semester</p>
+                    <h3 class="text-lg font-bold text-slate-900"><?= htmlspecialchars($selectedYear['nama'] ?? '-', ENT_QUOTES, 'UTF-8'); ?></h3>
+                    <p class="text-xs text-purple-600 font-medium">Semester <?= (int)($selectedYear['semester'] ?? 1); ?> (Ujian Akhir)</p>
                 </div>
             </div>
 
-            <!-- Total Siswa -->
-            <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
-                <div class="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl flex-shrink-0">
-                    <i class="fa-solid fa-user-graduate"></i>
+            <!-- Card 3: Rata-rata Seluruh Unit -->
+            <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center gap-4">
+                <div class="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl shrink-0">
+                    <i class="fa-solid fa-chart-simple"></i>
                 </div>
                 <div>
-                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Siswa Terdata</span>
-                    <h3 class="text-xl font-bold text-slate-800"><?= number_format($totalSiswaGlobal, 0, ',', '.') ?> <span class="text-sm font-normal text-slate-500">Anak</span></h3>
-                    <p class="text-xs text-slate-500">Mengikuti ujian akhir</p>
+                    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Rata-rata Unit</p>
+                    <h3 class="text-xl font-bold text-emerald-600"><?= number_format($overallUnitAvg, 2, ',', '.'); ?></h3>
+                    <p class="text-xs text-slate-500">Akumulasi Semua Paralel</p>
                 </div>
             </div>
 
-            <!-- Rata-rata Tertinggi -->
-            <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
-                <div class="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center text-xl flex-shrink-0">
-                    <i class="fa-solid fa-trophy"></i>
+            <!-- Card 4: Paralel Tertinggi -->
+            <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center gap-4">
+                <div class="w-12 h-12 rounded-xl bg-amber-50 text-amber-500 flex items-center justify-center text-xl shrink-0">
+                    <i class="fa-solid fa-award"></i>
                 </div>
                 <div>
-                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Rerata Tertinggi</span>
-                    <h3 class="text-xl font-bold text-amber-600"><?= number_format($topScoreParalel, 2, ',', '.') ?></h3>
-                    <p class="text-xs text-slate-500">Capaian paralel terbaik</p>
+                    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Paralel Tertinggi</p>
+                    <h3 class="text-lg font-bold text-slate-900"><?= htmlspecialchars($topParalel ?? '-', ENT_QUOTES, 'UTF-8'); ?></h3>
+                    <p class="text-xs text-amber-600 font-medium"><?= number_format($maxParalelAvg, 2, ',', '.'); ?> Nilai Rata-rata</p>
                 </div>
             </div>
         </div>
 
-        <!-- ── DAFTAR CARD PARALEL (BERURUTAN DARI TERTINGGI KE TERENDAH) ────────── -->
-        <div class="space-y-6">
-            <?php foreach ($paralelData as $idx => $p): 
-                $rank = $idx + 1;
-                $score = (float)$p['rata_rata_paralel'];
-
-                // Badge styling berdasarkan nilai
-                if ($score >= 90) {
-                    $badgeBg = 'bg-emerald-500 text-white';
-                    $rankBg = 'bg-emerald-100 text-emerald-800 border-emerald-200';
-                } elseif ($score >= 85) {
-                    $badgeBg = 'bg-blue-600 text-white';
-                    $rankBg = 'bg-blue-100 text-blue-800 border-blue-200';
-                } elseif ($score >= 80) {
-                    $badgeBg = 'bg-indigo-600 text-white';
-                    $rankBg = 'bg-indigo-100 text-indigo-800 border-indigo-200';
-                } else {
-                    $badgeBg = 'bg-amber-500 text-white';
-                    $rankBg = 'bg-amber-100 text-amber-800 border-amber-200';
-                }
-            ?>
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden transition hover:shadow-md">
-                    <!-- Header Kartu Paralel -->
-                    <div class="p-6 bg-slate-50/60 border-b border-slate-100 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                        <div class="flex items-center gap-3.5">
-                            <span class="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm border <?= $rankBg ?>">
-                                #<?= $rank ?>
-                            </span>
-                            <div>
-                                <h2 class="text-xl font-bold text-slate-800">
-                                    <?= htmlspecialchars($p['paralel']) ?>
-                                </h2>
-                                <p class="text-xs text-slate-500 mt-0.5">
-                                    Total Siswa Terdata: <strong><?= (int)$p['total_siswa'] ?></strong> anak
-                                </p>
+        <!-- LIST PARALEL KELAS (GRID) -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <?php foreach ($paralelData as $index => $paralel): ?>
+                <?php 
+                    $paralelAvg = (float)($paralel['rata_rata_paralel'] ?? 0);
+                    $subClasses = $paralel['sub_kelas'] ?? [];
+                    $mapelList  = $paralel['mapel_rankings'] ?? [];
+                ?>
+                <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden flex flex-col hover:border-slate-300 transition duration-150">
+                    
+                    <!-- HEADER KARTU PARALEL -->
+                    <div class="p-5 border-b border-slate-100 bg-gradient-to-r from-slate-50/80 via-white to-white flex items-center justify-between">
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <span class="w-7 h-7 rounded-lg bg-indigo-600 text-white font-bold text-xs flex items-center justify-center shadow-sm">
+                                    <?= $index + 1; ?>
+                                </span>
+                                <h3 class="text-lg font-bold text-slate-900 tracking-tight">
+                                    Paralel <?= htmlspecialchars($paralel['paralel_nama'], ENT_QUOTES, 'UTF-8'); ?>
+                                </h3>
                             </div>
+                            <p class="text-xs text-slate-500 mt-1 pl-9">
+                                Total Siswa: <span class="font-medium text-slate-700"><?= (int)($paralel['total_siswa'] ?? 0); ?> Siswa</span> 
+                                &bull; <span class="font-medium text-slate-700"><?= count($subClasses); ?> Rombel</span>
+                            </p>
                         </div>
 
-                        <!-- Nilai Rata-rata Paralel Utama -->
-                        <div class="flex items-center gap-3">
-                            <span class="text-xs uppercase tracking-wider font-semibold text-slate-400">Rata-rata Paralel:</span>
-                            <span class="px-4 py-1.5 rounded-xl text-lg font-black tracking-tight shadow-sm <?= $badgeBg ?>">
-                                <?= number_format($score, 2, ',', '.') ?>
+                        <!-- BADGE NILAI RATA-RATA PARALEL -->
+                        <div class="text-right">
+                            <span class="text-xs font-semibold text-slate-400 block uppercase tracking-wider">Rata-rata Paralel</span>
+                            <span class="inline-flex items-center px-3 py-1 rounded-xl text-lg font-black bg-indigo-50 text-indigo-700 border border-indigo-200/60 shadow-xs">
+                                <?= number_format($paralelAvg, 2, ',', '.'); ?>
                             </span>
                         </div>
                     </div>
 
-                    <div class="p-6 space-y-6">
-                        <!-- Rincian Kelas di Paralel ini (Sub-Rombel) -->
-                        <div>
-                            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-2.5">
-                                <i class="fa-solid fa-users-rectangle text-indigo-500 mr-1.5"></i>
-                                Pencapaian Nilai Rata-rata Per Kelas / Rombel:
+                    <!-- RINCIAN SUB-KELAS / ROMBEL -->
+                    <div class="px-5 py-3.5 bg-slate-50/60 border-b border-slate-100">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                                <i class="fa-solid fa-users-rectangle text-slate-400"></i> Rincian Sub-Kelas (Rombel)
                             </span>
-                            <div class="flex flex-wrap gap-2.5">
-                                <?php foreach ($p['kelas_list'] as $k): ?>
-                                    <div class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-50 border border-slate-200 hover:border-indigo-300 transition">
-                                        <span class="font-bold text-slate-700 text-sm">
-                                            Kelas <?= htmlspecialchars($k['code']) ?>:
-                                        </span>
-                                        <span class="font-black text-indigo-600 text-sm">
-                                            <?= number_format((float)$k['rata_rata'], 2, ',', '.') ?>
-                                        </span>
-                                        <span class="text-[11px] text-slate-400">
-                                            (<?= (int)$k['total_siswa'] ?> siswa)
-                                        </span>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <?php if (empty($subClasses)): ?>
+                                <span class="text-xs text-slate-400 italic">Belum ada rincian kelas</span>
+                            <?php else: ?>
+                                <?php foreach ($subClasses as $sub): ?>
+                                    <div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs shadow-2xs">
+                                        <span class="font-semibold text-slate-800"><?= htmlspecialchars($sub['nama'], ENT_QUOTES, 'UTF-8'); ?>:</span>
+                                        <span class="font-bold text-indigo-600"><?= number_format((float)$sub['rata_rata'], 2, ',', '.'); ?></span>
                                     </div>
                                 <?php endforeach; ?>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                    <!-- RANKING MATA PELAJARAN (TERTINGGI KE TERENDAH) -->
+                    <div class="p-5 flex-1 flex flex-col justify-between">
+                        <div>
+                            <div class="flex items-center justify-between mb-3">
+                                <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                                    <i class="fa-solid fa-trophy text-amber-500"></i> Urutan Mapel dari yang Tertinggi
+                                </span>
+                                <span class="text-[11px] text-slate-400">Total <?= count($mapelList); ?> Mapel</span>
+                            </div>
+
+                            <div class="space-y-2.5">
+                                <?php if (empty($mapelList)): ?>
+                                    <div class="py-6 text-center text-xs text-slate-400 italic">
+                                        Tidak ada entri nilai PAS untuk paralel ini.
+                                    </div>
+                                <?php else: ?>
+                                    <?php foreach ($mapelList as $m): ?>
+                                        <?php 
+                                            $rank = (int)($m['rank'] ?? 1);
+                                            $score = (float)($m['rata_rata'] ?? 0);
+                                            
+                                            // Badge warna ranking
+                                            $rankBadge = 'bg-slate-100 text-slate-600';
+                                            if ($rank === 1) $rankBadge = 'bg-amber-100 text-amber-800 font-black border border-amber-300';
+                                            elseif ($rank === 2) $rankBadge = 'bg-slate-200 text-slate-700 font-bold';
+                                            elseif ($rank === 3) $rankBadge = 'bg-amber-50 text-amber-700 font-bold';
+
+                                            // Warna progress bar
+                                            $barColor = 'bg-indigo-600';
+                                            if ($score >= 92) $barColor = 'bg-emerald-500';
+                                            elseif ($score >= 87) $barColor = 'bg-indigo-500';
+                                            elseif ($score >= 80) $barColor = 'bg-blue-500';
+                                            else $barColor = 'bg-amber-500';
+                                        ?>
+                                        <div class="group p-2.5 rounded-xl hover:bg-slate-50 transition border border-transparent hover:border-slate-100">
+                                            <div class="flex items-center justify-between text-xs mb-1.5">
+                                                <div class="flex items-center gap-2 max-w-[70%]">
+                                                    <span class="w-5 h-5 rounded-full flex items-center justify-center text-[11px] shrink-0 <?= $rankBadge; ?>">
+                                                        <?= $rank; ?>
+                                                    </span>
+                                                    <span class="font-semibold text-slate-800 truncate" title="<?= htmlspecialchars($m['mapel_nama'], ENT_QUOTES, 'UTF-8'); ?>">
+                                                        <?= htmlspecialchars($m['mapel_nama'], ENT_QUOTES, 'UTF-8'); ?>
+                                                    </span>
+                                                </div>
+                                                <span class="font-bold text-slate-900 text-sm">
+                                                    <?= number_format($score, 2, ',', '.'); ?>
+                                                </span>
+                                            </div>
+                                            <!-- Progress Bar Visual -->
+                                            <div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                                <div class="<?= $barColor; ?> h-full rounded-full transition-all duration-500" style="width: <?= min(100, max(0, $score)); ?>%;"></div>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
                             </div>
                         </div>
 
-                        <!-- Urutan Mapel dari yang Tertinggi di Paralel -->
-                        <div>
-                            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-3">
-                                <i class="fa-solid fa-arrow-down-wide-short text-emerald-500 mr-1.5"></i>
-                                Urutan Mata Pelajaran dari yang Tertinggi di <?= htmlspecialchars($p['paralel']) ?>:
-                            </span>
-
-                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                                <?php foreach ($p['mapel_ranking'] as $mIdx => $m): 
-                                    $mRank = $mIdx + 1;
-                                    $mScore = (float)$m['rata_rata'];
-                                ?>
-                                    <div class="p-3 rounded-xl bg-slate-50/50 border border-slate-100 flex items-center justify-between gap-3 hover:bg-slate-50 transition">
-                                        <div class="flex items-center gap-2.5 min-w-0">
-                                            <span class="w-6 h-6 rounded-lg bg-white border border-slate-200 text-slate-600 text-xs font-bold flex items-center justify-center flex-shrink-0">
-                                                <?= $mRank ?>
-                                            </span>
-                                            <div class="truncate">
-                                                <h4 class="text-sm font-semibold text-slate-800 truncate" title="<?= htmlspecialchars($m['nama']) ?>">
-                                                    <?= htmlspecialchars($m['singkatan']) ?>
-                                                </h4>
-                                                <p class="text-[11px] text-slate-400 truncate">
-                                                    <?= htmlspecialchars($m['nama']) ?>
-                                                </p>
-                                            </div>
-                                        </div>
-                                        <div class="text-right flex-shrink-0">
-                                            <span class="text-sm font-black text-slate-800">
-                                                <?= number_format($mScore, 2, ',', '.') ?>
-                                            </span>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
+                        <!-- Footer Info Paralel -->
+                        <div class="mt-4 pt-3 border-t border-slate-100 text-[11px] text-slate-400 flex items-center justify-between">
+                            <span>Komponen: <strong>PAS (Ujian Akhir Semester)</strong></span>
+                            <span>Total Penilaian: <?= number_format((int)($paralel['total_entri'] ?? 0), 0, ',', '.'); ?> data</span>
                         </div>
                     </div>
                 </div>
             <?php endforeach; ?>
         </div>
-    <?php elseif (!$apiError): ?>
-        <div class="bg-white p-12 rounded-2xl border border-slate-100 shadow-sm text-center">
-            <div class="w-16 h-16 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center text-2xl mx-auto mb-3">
-                <i class="fa-solid fa-folder-open"></i>
-            </div>
-            <h3 class="text-lg font-bold text-slate-800 mb-1">Belum Ada Data Nilai Ujian Akhir</h3>
-            <p class="text-sm text-slate-500 max-w-md mx-auto">
-                Tidak ditemukan data nilai PAS/SAS/UAS untuk unit dan tahun ajaran yang dipilih pada database AIS Source.
-            </p>
-        </div>
     <?php endif; ?>
+
 </div>
 
-<?php
-require_once __DIR__ . '/../../includes/footer.php';
+<?php require_once __DIR__ . '/../../includes/footer.php'; ?>

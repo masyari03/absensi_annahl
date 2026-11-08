@@ -36,3 +36,5 @@ task.md
 implementation_plan.md
 tools.yaml
 scratch/
+storage/cache/*
+!storage/cache/.gitkeep

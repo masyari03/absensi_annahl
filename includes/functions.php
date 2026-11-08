@@ -4340,114 +4340,127 @@ if (!function_exists('revokeMentoringTeacherPermission')) {
     }
 }
 
-if (!function_exists('fetchAisSourceKinerjaFilters')) {
+if (!function_exists('fetchAcademicPerformanceAverages')) {
     /**
-     * Mengambil filter Unit dan Tahun Ajaran dari AIS Source
+     * Memanggil API Penilaian Kinerja Akademik dari server laptop sekolah (ais_source).
+     * Dilengkapi timeout ketat (5 detik), Anti-SSRF, dan smart file cache (1 jam).
+     *
+     * @param int|null $unitId
+     * @param int|null $tahunAjaranId
+     * @param bool     $forceRefresh
      * @return array
      */
-    function fetchAisSourceKinerjaFilters(): array {
-        return callAisSourceKinerjaApi(['action' => 'filters']);
-    }
-}
+    function fetchAcademicPerformanceAverages(?int $unitId = null, ?int $tahunAjaranId = null, bool $forceRefresh = false): array {
+        $baseUrl = defined('AIS_PERFORMANCE_API_URL') ? AIS_PERFORMANCE_API_URL : 'http://100.126.179.54:8069/V1/performance/academic-averages';
+        $apiKey  = defined('AIS_PERFORMANCE_API_KEY') ? AIS_PERFORMANCE_API_KEY : 'c7f99b24e6a8d8102e3b8a139fa4219b6e828453';
 
-if (!function_exists('fetchAisSourceKinerjaPerformance')) {
-    /**
-     * Mengambil data performa paralel & kelas dari AIS Source
-     * @param int $unitId
-     * @param int $tahunAjaranId
-     * @return array
-     */
-    function fetchAisSourceKinerjaPerformance(int $unitId, int $tahunAjaranId = 0): array {
-        return callAisSourceKinerjaApi([
-            'action' => 'performance',
-            'unit_id' => $unitId,
-            'tahun_ajaran_id' => $tahunAjaranId
-        ]);
-    }
-}
-
-if (!function_exists('callAisSourceKinerjaApi')) {
-    /**
-     * Client pemanggil API AIS Source dengan timeout ketat, anti-SSRF, dan graceful fallback.
-     * @param array $queryParams
-     * @return array
-     */
-    function callAisSourceKinerjaApi(array $queryParams = []): array {
-        $baseUrl = defined('AIS_SOURCE_API_URL') ? AIS_SOURCE_API_URL : 'http://ais_source.test/api/kinerja.php';
-        $apiKey = defined('AIS_SOURCE_API_KEY') ? AIS_SOURCE_API_KEY : 'ais_kinerja_secret_key_2026';
-
-        // Validasi skema URL (Anti-SSRF)
-        $parsed = parse_url($baseUrl);
-        $scheme = strtolower($parsed['scheme'] ?? '');
+        // 1. Anti-SSRF Guard: pastikan hanya HTTP/HTTPS ke host yang valid
+        $parsedUrl = parse_url($baseUrl);
+        $scheme = strtolower($parsedUrl['scheme'] ?? '');
         if (!in_array($scheme, ['http', 'https'], true)) {
             return [
                 'success' => false,
-                'message' => 'Protokol URL tidak diizinkan. Hanya HTTP dan HTTPS yang didukung.'
+                'meta'    => [],
+                'data'    => [],
+                'from_cache' => false,
+                'error'   => 'Skema URL API tidak diizinkan (hanya HTTP/HTTPS).'
             ];
         }
 
-        $url = $baseUrl;
-        if (!empty($queryParams)) {
-            $url .= (strpos($url, '?') === false ? '?' : '&') . http_build_query($queryParams);
+        // 2. Setup Cache Path
+        $cacheDir = dirname(__DIR__) . '/storage/cache';
+        if (!is_dir($cacheDir)) {
+            @mkdir($cacheDir, 0777, true);
+        }
+        $cacheKey = 'perf_averages_' . ($unitId ?? 'def') . '_' . ($tahunAjaranId ?? 'def') . '.json';
+        $cacheFile = $cacheDir . '/' . $cacheKey;
+        $cacheTtl = 3600; // 1 Jam
+
+        // 3. Baca Cache Jika Masih Valid dan Tidak Force Refresh
+        if (!$forceRefresh && file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheTtl)) {
+            $cachedContent = @file_get_contents($cacheFile);
+            if ($cachedContent) {
+                $decoded = json_decode($cachedContent, true);
+                if (is_array($decoded) && !empty($decoded['success'])) {
+                    $decoded['from_cache'] = true;
+                    return $decoded;
+                }
+            }
         }
 
-        // Jalankan cURL dengan timeout ketat (maksimal 8 detik)
+        // 4. Siapkan Query Params
+        $queryParams = [];
+        if ($unitId !== null && $unitId > 0) {
+            $queryParams['unit_id'] = $unitId;
+        }
+        if ($tahunAjaranId !== null && $tahunAjaranId > 0) {
+            $queryParams['tahun_ajaran_id'] = $tahunAjaranId;
+        }
+        $targetUrl = $baseUrl . (!empty($queryParams) ? ('?' . http_build_query($queryParams)) : '');
+
+        // 5. Panggilan cURL Eksternal dengan Timeout Ketat (5 Detik)
         $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $url,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 8,
-            CURLOPT_CONNECTTIMEOUT => 4,
-            CURLOPT_HTTPHEADER => [
-                'X-API-KEY: ' . $apiKey,
-                'Accept: application/json'
-            ],
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_SSL_VERIFYHOST => false
+        curl_setopt($ch, CURLOPT_URL, $targetUrl);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 6);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'X-AIS-KEY: ' . $apiKey,
+            'Accept: application/json',
+            'User-Agent: AbsensiAnak-DataHub/1.0'
         ]);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
+        $curlErr  = curl_error($ch);
         curl_close($ch);
 
-        // Jika domain ais_source.test tidak ter-resolve (misal di IP loopback), coba fallback ke 127.0.0.1/ais_source
-        if ($response === false && strpos($baseUrl, 'ais_source.test') !== false) {
-            $fallbackUrl = str_replace('http://ais_source.test', 'http://127.0.0.1/ais_source', $url);
-            $ch = curl_init();
-            curl_setopt_array($ch, [
-                CURLOPT_URL => $fallbackUrl,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => 8,
-                CURLOPT_CONNECTTIMEOUT => 4,
-                CURLOPT_HTTPHEADER => [
-                    'X-API-KEY: ' . $apiKey,
-                    'Accept: application/json'
-                ]
-            ]);
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $curlError = curl_error($ch);
-            curl_close($ch);
-        }
+        if ($curlErr) {
+            // Jika ada cache lama meskipun expired, gunakan sebagai fallback saat offline
+            if (file_exists($cacheFile)) {
+                $stale = json_decode(@file_get_contents($cacheFile), true);
+                if (is_array($stale) && !empty($stale['success'])) {
+                    $stale['from_cache'] = true;
+                    $stale['warning'] = 'Menampilkan data cache offline. Server AIS laptop sekolah sedang offline (' . htmlspecialchars($curlErr, ENT_QUOTES, 'UTF-8') . ').';
+                    return $stale;
+                }
+            }
 
-        if ($response === false) {
             return [
                 'success' => false,
-                'message' => 'Koneksi ke server AIS Source gagal / offline: ' . ($curlError ?: 'Connection timeout')
+                'meta'    => [],
+                'data'    => [],
+                'from_cache' => false,
+                'error'   => 'Tidak dapat terhubung ke server AIS laptop sekolah: ' . $curlErr
             ];
         }
 
-        $data = json_decode($response, true);
-        if ($httpCode !== 200 || !is_array($data)) {
-            $errMsg = is_array($data) && isset($data['message']) ? $data['message'] : "HTTP {$httpCode}: Gagal memuat data dari AIS Source";
+        if ($httpCode !== 200) {
             return [
                 'success' => false,
-                'message' => $errMsg
+                'meta'    => [],
+                'data'    => [],
+                'from_cache' => false,
+                'error'   => 'Server AIS mengembalikan status HTTP ' . $httpCode . ' (' . strip_tags($response) . ')'
             ];
         }
 
-        return $data;
+        $decoded = json_decode($response, true);
+        if (!is_array($decoded) || empty($decoded['success'])) {
+            return [
+                'success' => false,
+                'meta'    => [],
+                'data'    => [],
+                'from_cache' => false,
+                'error'   => $decoded['message'] ?? 'Format data yang diterima dari server AIS tidak valid.'
+            ];
+        }
+
+        // 6. Simpan Hasil ke Cache Lokal
+        @file_put_contents($cacheFile, json_encode($decoded));
+        $decoded['from_cache'] = false;
+        return $decoded;
     }
 }
-
