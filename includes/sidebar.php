@@ -169,6 +169,8 @@ $menuUrlMap = [
     'supervisi_jadwal'      => '/supervisi/schedules.php',
     'supervisi_rekap'       => '/supervisi/reports.php',
     'supervisi_rubrik'      => '/supervisi/rubrics.php',
+    // PENILAIAN KINERJA
+    'kinerja_nilai_paralel' => '/kinerja/index.php',
 ];
 
 $allMenuUrls = [];

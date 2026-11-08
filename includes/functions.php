@@ -4339,3 +4339,115 @@ if (!function_exists('revokeMentoringTeacherPermission')) {
         }
     }
 }
+
+if (!function_exists('fetchAisSourceKinerjaFilters')) {
+    /**
+     * Mengambil filter Unit dan Tahun Ajaran dari AIS Source
+     * @return array
+     */
+    function fetchAisSourceKinerjaFilters(): array {
+        return callAisSourceKinerjaApi(['action' => 'filters']);
+    }
+}
+
+if (!function_exists('fetchAisSourceKinerjaPerformance')) {
+    /**
+     * Mengambil data performa paralel & kelas dari AIS Source
+     * @param int $unitId
+     * @param int $tahunAjaranId
+     * @return array
+     */
+    function fetchAisSourceKinerjaPerformance(int $unitId, int $tahunAjaranId = 0): array {
+        return callAisSourceKinerjaApi([
+            'action' => 'performance',
+            'unit_id' => $unitId,
+            'tahun_ajaran_id' => $tahunAjaranId
+        ]);
+    }
+}
+
+if (!function_exists('callAisSourceKinerjaApi')) {
+    /**
+     * Client pemanggil API AIS Source dengan timeout ketat, anti-SSRF, dan graceful fallback.
+     * @param array $queryParams
+     * @return array
+     */
+    function callAisSourceKinerjaApi(array $queryParams = []): array {
+        $baseUrl = defined('AIS_SOURCE_API_URL') ? AIS_SOURCE_API_URL : 'http://ais_source.test/api/kinerja.php';
+        $apiKey = defined('AIS_SOURCE_API_KEY') ? AIS_SOURCE_API_KEY : 'ais_kinerja_secret_key_2026';
+
+        // Validasi skema URL (Anti-SSRF)
+        $parsed = parse_url($baseUrl);
+        $scheme = strtolower($parsed['scheme'] ?? '');
+        if (!in_array($scheme, ['http', 'https'], true)) {
+            return [
+                'success' => false,
+                'message' => 'Protokol URL tidak diizinkan. Hanya HTTP dan HTTPS yang didukung.'
+            ];
+        }
+
+        $url = $baseUrl;
+        if (!empty($queryParams)) {
+            $url .= (strpos($url, '?') === false ? '?' : '&') . http_build_query($queryParams);
+        }
+
+        // Jalankan cURL dengan timeout ketat (maksimal 8 detik)
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 8,
+            CURLOPT_CONNECTTIMEOUT => 4,
+            CURLOPT_HTTPHEADER => [
+                'X-API-KEY: ' . $apiKey,
+                'Accept: application/json'
+            ],
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        // Jika domain ais_source.test tidak ter-resolve (misal di IP loopback), coba fallback ke 127.0.0.1/ais_source
+        if ($response === false && strpos($baseUrl, 'ais_source.test') !== false) {
+            $fallbackUrl = str_replace('http://ais_source.test', 'http://127.0.0.1/ais_source', $url);
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $fallbackUrl,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 8,
+                CURLOPT_CONNECTTIMEOUT => 4,
+                CURLOPT_HTTPHEADER => [
+                    'X-API-KEY: ' . $apiKey,
+                    'Accept: application/json'
+                ]
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlError = curl_error($ch);
+            curl_close($ch);
+        }
+
+        if ($response === false) {
+            return [
+                'success' => false,
+                'message' => 'Koneksi ke server AIS Source gagal / offline: ' . ($curlError ?: 'Connection timeout')
+            ];
+        }
+
+        $data = json_decode($response, true);
+        if ($httpCode !== 200 || !is_array($data)) {
+            $errMsg = is_array($data) && isset($data['message']) ? $data['message'] : "HTTP {$httpCode}: Gagal memuat data dari AIS Source";
+            return [
+                'success' => false,
+                'message' => $errMsg
+            ];
+        }
+
+        return $data;
+    }
+}
+

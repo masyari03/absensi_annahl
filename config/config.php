@@ -78,6 +78,14 @@ if (!defined('SCHOOL_RADIUS_METERS')) {
     define('SCHOOL_RADIUS_METERS', (int)(getenv('SCHOOL_RADIUS_METERS') ?: 250));
 }
 
+// Konfigurasi Integrasi External Data AIS Source (Read-Only Nilai Kinerja)
+if (!defined('AIS_SOURCE_API_URL')) {
+    define('AIS_SOURCE_API_URL', getenv('AIS_SOURCE_API_URL') ?: 'http://ais_source.test/api/kinerja.php');
+}
+if (!defined('AIS_SOURCE_API_KEY')) {
+    define('AIS_SOURCE_API_KEY', getenv('AIS_SOURCE_API_KEY') ?: 'ais_kinerja_secret_key_2026');
+}
+
 // PSR-4 Autoloader untuk namespace App
 spl_autoload_register(function ($class) {
     $prefix = 'App\\';
