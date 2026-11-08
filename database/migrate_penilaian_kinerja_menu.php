@@ -49,37 +49,44 @@ try {
         echo "[OK] Child menu 'kinerja_nilai_paralel' diperbarui (ID {$childId}).\n";
     }
 
-    // 3. Berikan Hak Akses ke roles: super_admin (1), kepala_sekolah (2), admin (3)
-    $rolesToGrant = ['super_admin', 'kepala_sekolah', 'admin'];
+    // 3. Hak Akses: HANYA Super Admin yang aktif secara default.
+    // Role lain (kepala_sekolah, admin, staff) ditutup (0), agar admin dapat mengatur secara selektif via matrix.
     $menuIds = [$parentId, $childId];
 
-    foreach ($rolesToGrant as $roleKey) {
-        $stmtRole = $pdo->prepare("SELECT id FROM roles WHERE role_key = ? LIMIT 1");
-        $stmtRole->execute([$roleKey]);
-        $roleId = $stmtRole->fetchColumn();
+    $stmtSuper = $pdo->prepare("SELECT id FROM roles WHERE role_key = 'super_admin' LIMIT 1");
+    $stmtSuper->execute();
+    $superAdminRoleId = (int)$stmtSuper->fetchColumn();
 
-        if ($roleId) {
-            foreach ($menuIds as $mId) {
-                $stmtCheck = $pdo->prepare("SELECT 1 FROM role_menu_access WHERE role_id = ? AND menu_id = ? LIMIT 1");
-                $stmtCheck->execute([$roleId, $mId]);
-                if (!$stmtCheck->fetchColumn()) {
-                    $stmtGrant = $pdo->prepare("
-                        INSERT INTO role_menu_access (role_id, menu_id, can_read, can_create, can_edit, can_delete)
-                        VALUES (?, ?, 1, 1, 1, 1)
-                    ");
-                    $stmtGrant->execute([$roleId, $mId]);
-                    echo "[OK] Diberikan izin akses menu ID {$mId} untuk role '{$roleKey}'.\n";
-                } else {
-                    $stmtUpdate = $pdo->prepare("
-                        UPDATE role_menu_access 
-                        SET can_read = 1, can_create = 1, can_edit = 1, can_delete = 1 
-                        WHERE role_id = ? AND menu_id = ?
-                    ");
-                    $stmtUpdate->execute([$roleId, $mId]);
-                    echo "[OK] Diperbarui izin akses menu ID {$mId} untuk role '{$roleKey}'.\n";
-                }
-            }
+    // Pastikan super_admin memiliki izin penuh (1)
+    foreach ($menuIds as $mId) {
+        $stmtCheck = $pdo->prepare("SELECT 1 FROM role_menu_access WHERE role_id = ? AND menu_id = ? LIMIT 1");
+        $stmtCheck->execute([$superAdminRoleId, $mId]);
+        if (!$stmtCheck->fetchColumn()) {
+            $stmtGrant = $pdo->prepare("
+                INSERT INTO role_menu_access (role_id, menu_id, can_read, can_create, can_edit, can_delete)
+                VALUES (?, ?, 1, 1, 1, 1)
+            ");
+            $stmtGrant->execute([$superAdminRoleId, $mId]);
+        } else {
+            $stmtUpdate = $pdo->prepare("
+                UPDATE role_menu_access 
+                SET can_read = 1, can_create = 1, can_edit = 1, can_delete = 1 
+                WHERE role_id = ? AND menu_id = ?
+            ");
+            $stmtUpdate->execute([$superAdminRoleId, $mId]);
         }
+        echo "[OK] Izin akses menu ID {$mId} untuk Super Admin diaktifkan.\n";
+    }
+
+    // Cabut izin (set 0) untuk semua role lain selain super_admin
+    foreach ($menuIds as $mId) {
+        $stmtRevoke = $pdo->prepare("
+            UPDATE role_menu_access 
+            SET can_read = 0, can_create = 0, can_edit = 0, can_delete = 0 
+            WHERE menu_id = ? AND role_id != ?
+        ");
+        $stmtRevoke->execute([$mId, $superAdminRoleId]);
+        echo "[OK] Izin akses menu ID {$mId} untuk role lain dicabut (dibatasi hanya Super Admin).\n";
     }
 
     echo "=== MIGRASI MENU SELESAI SUKSES 100% ===\n";
