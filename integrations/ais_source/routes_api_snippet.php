@@ -11,3 +11,4 @@ Route::prefix('V1')->group(function () {
     // API Penilaian Kinerja Akademik (Read-Only)
     Route::get('performance/academic-averages', [PerformanceApiController::class, 'getAcademicAverages']);
 });
+

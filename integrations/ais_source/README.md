@@ -48,3 +48,4 @@ if (!defined('AIS_PERFORMANCE_API_KEY')) {
    });
    ```
 3. Pastikan port Docker Laravel terekspos ke Tailscale IP sekolah (`100.126.179.54:8069:8069`).
+
