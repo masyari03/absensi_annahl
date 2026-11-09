@@ -4,20 +4,35 @@ Direktori ini memuat sumber daya dan referensi teknis untuk menghubungkan aplika
 
 ---
 
-## 🏗️ Arsitektur Integrasi
+## 🏗️ Arsitektur Integrasi (Public Cloudflare Tunnel & Tailscale Fallback)
 
 ```text
-[ Server Absensi (absensi-anak) ]
+[ Server Absensi Publik (ais-absensi.ametriyadhi.com) ]
           │
-          │ GET /V1/performance/academic-averages
-          │ Header: X-AIS-KEY: <secret_key>
+          │ 1. GET https://ais.codika.my.id/V1/performance/academic-averages
+          │    (Cloudflare Tunnel Publik - Tanpa Perlu Tailscale)
+          │    Header: X-AIS-KEY: <secret_key>
           ▼
-[ Laptop Sekolah / AIS Source: 100.126.179.54:8069 ] (Docker / ais-php)
+[ Cloudflare Zero Trust Edge Network ]
+          │
+          │ Enkripsi Tunnel Terproteksi
+          ▼
+[ Laptop Sekolah: Docker ais-cloudflared ]
+          │
+          │ Reverse Proxy Internal (Port 8068 / 8069)
+          ▼
+[ Docker ais-php:8.2 (Laravel API) ]
           │
           │ Query SQL (JSON_TABLE ekstensi PAS / UAS)
           ▼
 [ MySQL adanicoi_lms_annahl ] (ams_nilai_raport)
 ```
+
+> [!NOTE]
+> Sistem dilengkapi **Smart Dual-Fallback**:
+> - **Prioritas 1 (Publik):** `https://ais.codika.my.id/V1/performance/academic-averages` (Dapat diakses oleh server mana pun tanpa Tailscale).
+> - **Prioritas 2 (Internal):** `http://100.126.179.54:8069/V1/performance/academic-averages` (Fallback jika berada di dalam VPN Tailscale).
+> - **Prioritas 3 (Offline):** Smart local cache di `storage/cache/` jika laptop sekolah mati.
 
 ---
 
@@ -26,7 +41,10 @@ Direktori ini memuat sumber daya dan referensi teknis untuk menghubungkan aplika
 ```php
 // AIS Performance API Integration
 if (!defined('AIS_PERFORMANCE_API_URL')) {
-    define('AIS_PERFORMANCE_API_URL', getenv('AIS_PERFORMANCE_API_URL') ?: 'http://100.126.179.54:8069/V1/performance/academic-averages');
+    define('AIS_PERFORMANCE_API_URL', getenv('AIS_PERFORMANCE_API_URL') ?: 'https://ais.codika.my.id/V1/performance/academic-averages');
+}
+if (!defined('AIS_PERFORMANCE_API_FALLBACK_URL')) {
+    define('AIS_PERFORMANCE_API_FALLBACK_URL', getenv('AIS_PERFORMANCE_API_FALLBACK_URL') ?: 'http://100.126.179.54:8069/V1/performance/academic-averages');
 }
 if (!defined('AIS_PERFORMANCE_API_KEY')) {
     define('AIS_PERFORMANCE_API_KEY', getenv('AIS_PERFORMANCE_API_KEY') ?: 'c7f99b24e6a8d8102e3b8a139fa4219b6e828453');
@@ -47,5 +65,4 @@ if (!defined('AIS_PERFORMANCE_API_KEY')) {
        Route::get('performance/academic-averages', [PerformanceApiController::class, 'getAcademicAverages']);
    });
    ```
-3. Pastikan port Docker Laravel terekspos ke Tailscale IP sekolah (`100.126.179.54:8069:8069`).
-
+3. Docker stack `ais_docker` di laptop sekolah secara otomatis mengekspos rute ini melalui Cloudflare Tunnel `ais-cloudflared` ke `https://ais.codika.my.id`.

@@ -4343,7 +4343,8 @@ if (!function_exists('revokeMentoringTeacherPermission')) {
 if (!function_exists('fetchAcademicPerformanceAverages')) {
     /**
      * Memanggil API Penilaian Kinerja Akademik dari server laptop sekolah (ais_source).
-     * Dilengkapi timeout ketat (5 detik), Anti-SSRF, dan smart file cache (1 jam).
+     * Dilengkapi Smart Dual-Fallback (Cloudflare Tunnel Publik -> Tailscale Internal),
+     * Timeout ketat (5 detik), Anti-SSRF, dan smart file cache lokal (1 jam).
      *
      * @param int|null $unitId
      * @param int|null $tahunAjaranId
@@ -4351,23 +4352,11 @@ if (!function_exists('fetchAcademicPerformanceAverages')) {
      * @return array
      */
     function fetchAcademicPerformanceAverages(?int $unitId = null, ?int $tahunAjaranId = null, bool $forceRefresh = false): array {
-        $baseUrl = defined('AIS_PERFORMANCE_API_URL') ? AIS_PERFORMANCE_API_URL : 'http://100.126.179.54:8069/V1/performance/academic-averages';
-        $apiKey  = defined('AIS_PERFORMANCE_API_KEY') ? AIS_PERFORMANCE_API_KEY : 'c7f99b24e6a8d8102e3b8a139fa4219b6e828453';
+        $primaryUrl  = defined('AIS_PERFORMANCE_API_URL') ? AIS_PERFORMANCE_API_URL : 'https://ais.codika.my.id/V1/performance/academic-averages';
+        $fallbackUrl = defined('AIS_PERFORMANCE_API_FALLBACK_URL') ? AIS_PERFORMANCE_API_FALLBACK_URL : 'http://100.126.179.54:8069/V1/performance/academic-averages';
+        $apiKey      = defined('AIS_PERFORMANCE_API_KEY') ? AIS_PERFORMANCE_API_KEY : 'c7f99b24e6a8d8102e3b8a139fa4219b6e828453';
 
-        // 1. Anti-SSRF Guard: pastikan hanya HTTP/HTTPS ke host yang valid
-        $parsedUrl = parse_url($baseUrl);
-        $scheme = strtolower($parsedUrl['scheme'] ?? '');
-        if (!in_array($scheme, ['http', 'https'], true)) {
-            return [
-                'success' => false,
-                'meta'    => [],
-                'data'    => [],
-                'from_cache' => false,
-                'error'   => 'Skema URL API tidak diizinkan (hanya HTTP/HTTPS).'
-            ];
-        }
-
-        // 2. Setup Cache Path
+        // 1. Setup Cache Path
         $cacheDir = dirname(__DIR__) . '/storage/cache';
         if (!is_dir($cacheDir)) {
             @mkdir($cacheDir, 0777, true);
@@ -4376,7 +4365,7 @@ if (!function_exists('fetchAcademicPerformanceAverages')) {
         $cacheFile = $cacheDir . '/' . $cacheKey;
         $cacheTtl = 3600; // 1 Jam
 
-        // 3. Baca Cache Jika Masih Valid dan Tidak Force Refresh
+        // 2. Baca Cache Jika Masih Valid dan Tidak Force Refresh
         if (!$forceRefresh && file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheTtl)) {
             $cachedContent = @file_get_contents($cacheFile);
             if ($cachedContent) {
@@ -4388,7 +4377,7 @@ if (!function_exists('fetchAcademicPerformanceAverages')) {
             }
         }
 
-        // 4. Siapkan Query Params
+        // 3. Siapkan Query Params
         $queryParams = [];
         if ($unitId !== null && $unitId > 0) {
             $queryParams['unit_id'] = $unitId;
@@ -4396,71 +4385,75 @@ if (!function_exists('fetchAcademicPerformanceAverages')) {
         if ($tahunAjaranId !== null && $tahunAjaranId > 0) {
             $queryParams['tahun_ajaran_id'] = $tahunAjaranId;
         }
-        $targetUrl = $baseUrl . (!empty($queryParams) ? ('?' . http_build_query($queryParams)) : '');
+        $queryStr = !empty($queryParams) ? ('?' . http_build_query($queryParams)) : '';
 
-        // 5. Panggilan cURL Eksternal dengan Timeout Ketat (5 Detik)
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $targetUrl);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 6);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'X-AIS-KEY: ' . $apiKey,
-            'Accept: application/json',
-            'User-Agent: AbsensiAnak-DataHub/1.0'
-        ]);
+        // 4. Daftar URL Kandidat (Prioritas: Cloudflare Tunnel Publik -> Tailscale Internal)
+        $candidateUrls = array_unique(array_filter([$primaryUrl, $fallbackUrl]));
+        $lastCurlErr = '';
+        $lastHttpCode = 0;
+        $lastResponse = '';
 
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlErr  = curl_error($ch);
-        curl_close($ch);
+        foreach ($candidateUrls as $baseUrl) {
+            // Anti-SSRF Guard: pastikan skema valid dan bukan IP metadata cloud terlarang
+            $parsedUrl = parse_url($baseUrl);
+            $scheme = strtolower($parsedUrl['scheme'] ?? '');
+            $host = strtolower($parsedUrl['host'] ?? '');
 
-        if ($curlErr) {
-            // Jika ada cache lama meskipun expired, gunakan sebagai fallback saat offline
-            if (file_exists($cacheFile)) {
-                $stale = json_decode(@file_get_contents($cacheFile), true);
-                if (is_array($stale) && !empty($stale['success'])) {
-                    $stale['from_cache'] = true;
-                    $stale['warning'] = 'Menampilkan data cache offline. Server AIS laptop sekolah sedang offline (' . htmlspecialchars($curlErr, ENT_QUOTES, 'UTF-8') . ').';
-                    return $stale;
+            if (!in_array($scheme, ['http', 'https'], true) || $host === '169.254.169.254') {
+                continue;
+            }
+
+            $targetUrl = $baseUrl . $queryStr;
+
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $targetUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 6);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'X-AIS-KEY: ' . $apiKey,
+                'Accept: application/json',
+                'User-Agent: AbsensiAnak-DataHub/1.0'
+            ]);
+
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlErr  = curl_error($ch);
+            curl_close($ch);
+
+            if (!$curlErr && $httpCode === 200) {
+                $decoded = json_decode($response, true);
+                if (is_array($decoded) && !empty($decoded['success'])) {
+                    // Simpan Hasil ke Cache Lokal
+                    @file_put_contents($cacheFile, json_encode($decoded));
+                    $decoded['from_cache'] = false;
+                    return $decoded;
                 }
             }
 
-            return [
-                'success' => false,
-                'meta'    => [],
-                'data'    => [],
-                'from_cache' => false,
-                'error'   => 'Tidak dapat terhubung ke server AIS laptop sekolah: ' . $curlErr
-            ];
+            $lastCurlErr  = $curlErr;
+            $lastHttpCode = $httpCode;
+            $lastResponse = $response;
         }
 
-        if ($httpCode !== 200) {
-            return [
-                'success' => false,
-                'meta'    => [],
-                'data'    => [],
-                'from_cache' => false,
-                'error'   => 'Server AIS mengembalikan status HTTP ' . $httpCode . ' (' . strip_tags($response) . ')'
-            ];
+        // 5. Jika kedua jalur gagal, gunakan cache lama jika tersedia (Offline Resilient)
+        if (file_exists($cacheFile)) {
+            $stale = json_decode(@file_get_contents($cacheFile), true);
+            if (is_array($stale) && !empty($stale['success'])) {
+                $stale['from_cache'] = true;
+                $stale['warning'] = 'Menampilkan data cache offline. Server AIS laptop sekolah sedang offline (' . htmlspecialchars($lastCurlErr ?: "HTTP {$lastHttpCode}", ENT_QUOTES, 'UTF-8') . ').';
+                return $stale;
+            }
         }
 
-        $decoded = json_decode($response, true);
-        if (!is_array($decoded) || empty($decoded['success'])) {
-            return [
-                'success' => false,
-                'meta'    => [],
-                'data'    => [],
-                'from_cache' => false,
-                'error'   => $decoded['message'] ?? 'Format data yang diterima dari server AIS tidak valid.'
-            ];
-        }
-
-        // 6. Simpan Hasil ke Cache Lokal
-        @file_put_contents($cacheFile, json_encode($decoded));
-        $decoded['from_cache'] = false;
-        return $decoded;
+        return [
+            'success' => false,
+            'meta'    => [],
+            'data'    => [],
+            'from_cache' => false,
+            'error'   => 'Tidak dapat terhubung ke server AIS laptop sekolah: ' . ($lastCurlErr ?: ("HTTP status " . $lastHttpCode . " (" . strip_tags($lastResponse) . ")"))
+        ];
     }
 }

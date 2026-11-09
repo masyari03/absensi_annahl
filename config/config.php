@@ -78,9 +78,12 @@ if (!defined('SCHOOL_RADIUS_METERS')) {
     define('SCHOOL_RADIUS_METERS', (int)(getenv('SCHOOL_RADIUS_METERS') ?: 250));
 }
 
-// AIS Performance API Integration (Laptop Sekolah / Data Hub)
+// AIS Performance API Integration (Laptop Sekolah / Cloudflare Tunnel / Tailscale)
 if (!defined('AIS_PERFORMANCE_API_URL')) {
-    define('AIS_PERFORMANCE_API_URL', getenv('AIS_PERFORMANCE_API_URL') ?: 'http://100.126.179.54:8069/V1/performance/academic-averages');
+    define('AIS_PERFORMANCE_API_URL', getenv('AIS_PERFORMANCE_API_URL') ?: 'https://ais.codika.my.id/V1/performance/academic-averages');
+}
+if (!defined('AIS_PERFORMANCE_API_FALLBACK_URL')) {
+    define('AIS_PERFORMANCE_API_FALLBACK_URL', getenv('AIS_PERFORMANCE_API_FALLBACK_URL') ?: 'http://100.126.179.54:8069/V1/performance/academic-averages');
 }
 if (!defined('AIS_PERFORMANCE_API_KEY')) {
     define('AIS_PERFORMANCE_API_KEY', getenv('AIS_PERFORMANCE_API_KEY') ?: 'c7f99b24e6a8d8102e3b8a139fa4219b6e828453');
