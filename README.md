@@ -58,6 +58,22 @@ Aplikasi manajemen dan presensi sekolah terpadu berbasis web (PHP & MySQL) yang 
 - Ekspor laporan kehadiran dan rekap lembur ke format **Excel (.xlsx)** dan cetak **PDF**.
 - Halaman monitoring perangkat ESP32 online/offline beserta log audit tap presensi.
 
+### 6. 📈 Penilaian Kinerja Akademik (Integrasi AIS Source)
+- **Dashboard Eksekutif Nilai Rata-Rata**: Visualisasi pencapaian nilai PAS/UAS seluruh kelas per paralel secara otomatis.
+- **Urutan Ranking Paralel**: Otomatis diurutkan dari nilai tertinggi ke terendah dengan badge medali (🥇 Juara 1, 🥈 Juara 2, 🥉 Juara 3).
+- **Rincian Per Rombel & Ranking Mapel**: Dilengkapi visual progress bar persentase per mata pelajaran dan rincian kelas per paralel.
+- **Sinkronisasi Aman & Caching**: Terhubung langsung ke API server sekolah via Tailscale dengan fallback cache cerdas (TTL 10 menit) dan perlindungan anti-SSRF.
+- **Kontrol Hak Akses Ketat (RBAC Matrix)**: Terintegrasi penuh ke Matriks Hak Akses Per Role dan Izin Akses Per Pengguna (`public/kelola/index.php`).
+
+### 7. 👨‍🏫 Sistem Supervisi Guru & Supervisi Sejawat
+- **Supervisi Terpadu**: Jadwal supervisi akademik per unit dengan dukungan multi-observer dan observer sejawat.
+- **Time-Lock Cerdas**: Evaluasi hanya dapat diisi saat rentang jam supervisi aktif; dikunci otomatis sebelum jam mulai atau setelah jam selesai kecuali dibuka oleh Kepala Sekolah.
+- **Skor & Rubrik Standar**: Penilaian otomatis dengan pembobotan dan rekapitulasi data formatif/sumatif.
+
+### 8. 🕌 Pembinaan Mentoring Santri (MIP) & Jurnal Adab
+- **Kelompok Mentoring**: Pembagian santri binaan per mentor guru/staf dengan pembatasan hak akses berbasis delegasi Kepala Sekolah.
+- **Pemantauan Adab Harian**: Jurnal amalan harian santri dengan rekap nilai adab bulanan dan integrasi notifikasi in-app ke pembimbing.
+
 ---
 
 ## 🛡️ Arsitektur & Anti-Tabrakan Perangkat IoT
