@@ -204,9 +204,11 @@ require_once __DIR__ . '/../../includes/header.php';
 .kinerja-wrapper {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     color: #1e293b;
-    padding: 24px;
-    max-width: 1400px;
-    margin: 0 auto;
+    padding: 0;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin: 0;
 }
 
 /* TOP HEADER CARD */
@@ -222,6 +224,8 @@ require_once __DIR__ . '/../../includes/header.php';
     flex-wrap: wrap;
     gap: 20px;
     margin-bottom: 24px;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .kinerja-header-info h1 {
@@ -309,12 +313,15 @@ require_once __DIR__ . '/../../includes/header.php';
     padding: 18px 24px;
     margin-bottom: 24px;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.02);
+    width: 100%;
+    box-sizing: border-box;
 }
 .kinerja-filter-form {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 16px;
+    width: 100%;
 }
 .filter-group {
     display: flex;
@@ -349,9 +356,17 @@ require_once __DIR__ . '/../../includes/header.php';
 /* 4 KPI OVERVIEW CARDS */
 .kpi-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
     gap: 18px;
     margin-bottom: 28px;
+    width: 100%;
+    box-sizing: border-box;
+}
+@media (max-width: 1200px) {
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+    .kpi-grid { grid-template-columns: 1fr; }
 }
 .kpi-card {
     background: #ffffff;
@@ -364,6 +379,8 @@ require_once __DIR__ . '/../../includes/header.php';
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
     position: relative;
     overflow: hidden;
+    width: 100%;
+    box-sizing: border-box;
 }
 .kpi-card::before {
     content: '';
@@ -423,8 +440,10 @@ require_once __DIR__ . '/../../includes/header.php';
     grid-template-columns: 1fr 1fr;
     gap: 24px;
     margin-bottom: 36px;
+    width: 100%;
+    box-sizing: border-box;
 }
-@media (max-width: 992px) {
+@media (max-width: 1050px) {
     .executive-showcase { grid-template-columns: 1fr; }
 }
 
@@ -434,6 +453,8 @@ require_once __DIR__ . '/../../includes/header.php';
     border: 1px solid #e2e8f0;
     overflow: hidden;
     box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+    width: 100%;
+    box-sizing: border-box;
 }
 .showcase-header {
     padding: 20px 24px;
@@ -633,11 +654,13 @@ require_once __DIR__ . '/../../includes/header.php';
 
 .paralel-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    grid-template-columns: repeat(2, 1fr);
     gap: 20px;
     margin-bottom: 36px;
+    width: 100%;
+    box-sizing: border-box;
 }
-@media (max-width: 600px) {
+@media (max-width: 1100px) {
     .paralel-grid { grid-template-columns: 1fr; }
 }
 
@@ -1314,3 +1337,4 @@ function closeFormulaModal() {
 </script>
 
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>
+
