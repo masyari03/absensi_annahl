@@ -5758,7 +5758,7 @@ if (!function_exists('callTahfidzAiProvider')) {
         }
         $enabled  = defined('TAHFIDZ_AI_ENABLED') ? (bool)TAHFIDZ_AI_ENABLED : false;
         $provider = defined('TAHFIDZ_AI_PROVIDER') ? (string)TAHFIDZ_AI_PROVIDER : 'gemini';
-        $model    = defined('TAHFIDZ_AI_MODEL') ? (string)TAHFIDZ_AI_MODEL : 'gemini-2.5-flash';
+        $model    = defined('TAHFIDZ_AI_MODEL') ? (string)TAHFIDZ_AI_MODEL : 'gemini-flash-lite-latest';
         $apiKey   = defined('TAHFIDZ_AI_API_KEY') ? trim((string)TAHFIDZ_AI_API_KEY) : '';
 
         if (!$enabled || $apiKey === '') {
@@ -5821,7 +5821,7 @@ if (!function_exists('callTahfidzAiProvider')) {
                 ],
             ], JSON_UNESCAPED_UNICODE);
         } else {
-            $safeModel = preg_replace('/[^a-zA-Z0-9._-]/', '', $model) ?: 'gemini-2.5-flash';
+            $safeModel = preg_replace('/[^a-zA-Z0-9._-]/', '', $model) ?: 'gemini-flash-lite-latest';
             $endpoint  = "https://generativelanguage.googleapis.com/v1beta/models/{$safeModel}:generateContent";
             $headers   = [
                 'Content-Type: application/json',
@@ -5847,7 +5847,7 @@ if (!function_exists('callTahfidzAiProvider')) {
             CURLOPT_POSTFIELDS     => $body,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_TIMEOUT        => 12,
+            CURLOPT_TIMEOUT        => 10,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_HTTPHEADER     => $headers,

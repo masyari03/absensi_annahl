@@ -200,7 +200,7 @@ $sourceVia        = $ctx['source_via'];
 $surahAiDict  = getTahfidzAiSurahDictionary();
 $aiConfigured = (defined('TAHFIDZ_AI_ENABLED') && TAHFIDZ_AI_ENABLED && defined('TAHFIDZ_AI_API_KEY') && TAHFIDZ_AI_API_KEY !== '');
 $aiProvider   = defined('TAHFIDZ_AI_PROVIDER') ? (string)TAHFIDZ_AI_PROVIDER : 'gemini';
-$aiModel      = defined('TAHFIDZ_AI_MODEL') ? (string)TAHFIDZ_AI_MODEL : 'gemini-2.5-flash';
+$aiModel      = defined('TAHFIDZ_AI_MODEL') ? (string)TAHFIDZ_AI_MODEL : 'gemini-flash-lite-latest';
 
 $targetConfigs   = $isSuccess ? getTahfidzTargetConfigs($pdo, $unitId, $selectedSemester) : [];
 $emptyHierarchy  = [

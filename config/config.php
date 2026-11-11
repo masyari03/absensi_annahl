@@ -129,7 +129,7 @@ if (!defined('TAHFIDZ_AI_PROVIDER')) {
     define('TAHFIDZ_AI_PROVIDER', in_array($prov, ['gemini', 'openai'], true) ? $prov : 'gemini');
 }
 if (!defined('TAHFIDZ_AI_MODEL')) {
-    $defModel = TAHFIDZ_AI_PROVIDER === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash';
+    $defModel = TAHFIDZ_AI_PROVIDER === 'openai' ? 'gpt-4o-mini' : 'gemini-flash-lite-latest';
     define('TAHFIDZ_AI_MODEL', trim((string)(getenv('TAHFIDZ_AI_MODEL') ?: $defModel)));
 }
 if (!defined('TAHFIDZ_AI_API_KEY')) {
