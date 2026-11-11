@@ -1,0 +1,75 @@
+<?php
+/**
+ * Migrasi Tabel Cache AI Semantik & Koreksi Manual Capaian Tahfidz
+ * Jalankan: php database/migrate_penilaian_kinerja_tahfidz_ai.php
+ */
+
+require_once __DIR__ . '/../config/database.php';
+
+echo "=================================================================\n";
+echo "  MIGRASI: TAHFIDZ AI SEMANTIC CACHE & MANUAL OVERRIDES\n";
+echo "=================================================================\n";
+
+try {
+    echo "[1/2] Membuat tabel kinerja_tahfidz_ai_cache...\n";
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS kinerja_tahfidz_ai_cache (
+            id INT NOT NULL AUTO_INCREMENT,
+            note_hash CHAR(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+            source_type ENUM('quran_nilai','tes_ummi','rapor','jurnal') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'quran_nilai',
+            kd_nama VARCHAR(150) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+            materi VARCHAR(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+            raw_text TEXT COLLATE utf8mb4_unicode_ci NOT NULL,
+            is_achievement TINYINT(1) NOT NULL DEFAULT 0,
+            juz TINYINT DEFAULT NULL,
+            surah_key VARCHAR(40) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+            ayat_end SMALLINT DEFAULT NULL,
+            juz30_rank DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+            juz29_rank DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+            juz28_rank DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+            juz_stage SMALLINT NOT NULL DEFAULT 0,
+            is_munaqasyah TINYINT(1) NOT NULL DEFAULT 0,
+            confidence DECIMAL(4,2) NOT NULL DEFAULT 0.00,
+            ai_reason VARCHAR(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+            ai_provider VARCHAR(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+            ai_model VARCHAR(60) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+            parsed_json LONGTEXT COLLATE utf8mb4_unicode_ci NULL,
+            review_status ENUM('auto_ai','verified','rejected') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'auto_ai',
+            reviewed_by INT DEFAULT NULL,
+            created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_note_hash (note_hash),
+            KEY idx_review_status (review_status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
+    echo "[2/2] Membuat tabel kinerja_tahfidz_student_overrides...\n";
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS kinerja_tahfidz_student_overrides (
+            id INT NOT NULL AUTO_INCREMENT,
+            unit_id INT NOT NULL,
+            tahun_ajaran_id INT NOT NULL,
+            siswa_id INT NOT NULL,
+            juz30_rank DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+            juz29_rank DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+            juz28_rank DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+            juz_stage SMALLINT NOT NULL DEFAULT 0,
+            has_munaqasyah_juz30 TINYINT(1) NOT NULL DEFAULT 0,
+            has_munaqasyah_juz29 TINYINT(1) NOT NULL DEFAULT 0,
+            has_munaqasyah_juz28 TINYINT(1) NOT NULL DEFAULT 0,
+            display_label VARCHAR(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+            reason VARCHAR(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+            updated_by INT DEFAULT NULL,
+            updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_unit_ta_siswa (unit_id, tahun_ajaran_id, siswa_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
+    echo "✅ Migrasi tabel AI cache & koreksi manual Tahfidz selesai dengan sukses!\n";
+} catch (Throwable $e) {
+    error_log('[migrate_penilaian_kinerja_tahfidz_ai] Error: ' . $e->getMessage());
+    fwrite(STDERR, "❌ Migrasi gagal: " . $e->getMessage() . "\n");
+    exit(1);
+}

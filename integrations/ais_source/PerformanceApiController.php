@@ -451,6 +451,14 @@ class PerformanceApiController extends ApiController
         $ncp = $this->normText($cp);
         $kompLower = strtolower($komp);
 
+        if ($ncp === '' && $komp !== '') {
+            $fromKomp = $this->extractSurahKeysFromText($komp, $catalog);
+            if (!empty($fromKomp)) {
+                $ncp = (string)end($fromKomp);
+                $cp  = $ncp;
+            }
+        }
+
         if ($ncp === '') {
             return $res;
         }
@@ -764,6 +772,52 @@ class PerformanceApiController extends ApiController
             }
         }
         return ['type' => null, 'value' => 0.0, 'label' => ''];
+    }
+
+    /**
+     * Klasifikasi ringan konteks catatan bebas guru:
+     * - negative: absensi / gagal / belum hafal -> jangan dihitung capaian oleh regex
+     * - future_plan: target berikutnya / PR / drill -> serahkan ke AI agar tidak salah kira sudah hafal
+     * - prose: kalimat bebas >= 4 kata -> serahkan ke AI
+     * - clean: nama surat/ayat singkat yang aman diparsing Layer 1
+     */
+    protected function classifyNoteTextState(string $text): string
+    {
+        $t = strtolower(trim($text));
+        if ($t === '' || $t === '-') {
+            return 'empty';
+        }
+        if (preg_match('/\b(belum\s+hafal|belum\s+siap|belum\s+lancar|tidak\s+hadir|izin|sakit|alpha|alfa|upacara|hexafest|masih\s+di\s?bantu|ulang|remidi|mengulang)\b/i', $t)) {
+            return 'negative';
+        }
+        if (preg_match('/\b(lanjut\s+(?:qs|sur|ke)|pr\s+(?:qs|sur)|persiapan|siapkan|target\s+berikut)\b/i', $t)) {
+            return 'future_plan';
+        }
+        $words = preg_split('/\s+/', $t) ?: [];
+        if (count($words) >= 4) {
+            return 'prose';
+        }
+        return 'clean';
+    }
+
+    protected function isGenericCpOrKd(string $text): bool
+    {
+        $t = trim(str_replace('\\/', '/', $text));
+        if ($t === '') {
+            return true;
+        }
+        return (bool)preg_match('/^(h\d+\/\d+|juz\s*\d*|tahfi[dz]*|al[\s-]*qur.?an|tahsin|turjuman.*)$/i', $t);
+    }
+
+    protected function buildNoteHash(string $sourceType, string $kdNama, string $materi, string $rawText): string
+    {
+        $payload = implode('|', [
+            strtolower(trim($sourceType)),
+            strtolower(trim($kdNama)),
+            strtolower(trim($materi)),
+            strtolower(trim($rawText)),
+        ]);
+        return hash('sha256', $payload);
     }
 
     /**
@@ -1094,9 +1148,9 @@ class PerformanceApiController extends ApiController
                 ORDER BY qh.tahun_ajaran_id ASC, qna.id ASC
             ", array_merge($allSiswaIds, [$tahunAjaranId]));
 
-            // Batch 2: Tes Kenaikan Ummi / Munaqasyah Juz Lulus
+            // Batch 2: Tes Kenaikan Ummi / Munaqasyah / Catatan Tes Mengandung Surat
             $tesRows = DB::select("
-                SELECT qhs.siswa_id, qh.tahun_ajaran_id, t.jilid_ummi, t.catatan
+                SELECT qhs.siswa_id, qh.tahun_ajaran_id, t.jilid_ummi, t.catatan, t.hasil
                 FROM quran_catatan_tes_ummi t
                 JOIN quran_halaqah_siswa qhs ON qhs.id = t.siswa_id AND qhs.deleted_at IS NULL
                 JOIN quran_halaqah qh ON qh.id = qhs.halaqah_id
@@ -1104,23 +1158,43 @@ class PerformanceApiController extends ApiController
                   AND qh.tahun_ajaran_id <= ?
                   AND t.deleted_at IS NULL
                   AND t.hasil = 1
-                  AND (t.jilid_ummi LIKE 'Juz%' OR t.jilid_ummi LIKE '%Munaq%')
+                  AND (
+                      t.jilid_ummi LIKE 'Juz%'
+                      OR t.jilid_ummi LIKE '%Munaq%'
+                      OR LOWER(COALESCE(t.catatan, '')) REGEXP '(qs|surat|surah|juz|h[1-4]/|tasmi|munaq|hafal)'
+                  )
             ", array_merge($allSiswaIds, [$tahunAjaranId]));
 
-            // Batch 3: Setoran Harian Valid
+            // Batch 3: Setoran Harian (tanpa MAX(keterangan) timpa abjad; dukung nilai NULL bila catatan terisi)
             $harianRows = DB::select("
-                SELECT qhs.siswa_id, qh.tahun_ajaran_id, qkd.nama as kd_nama,
-                       MAX(qn.materi) as sample_materi,
-                       MAX(qn.keterangan) as sample_ket
+                SELECT qhs.siswa_id,
+                       qh.tahun_ajaran_id,
+                       qn.mapel,
+                       COALESCE(qkd.nama, '') AS kd_nama,
+                       COALESCE(qn.materi, '') AS materi,
+                       COALESCE(qn.keterangan, '') AS keterangan,
+                       MAX(qn.nilai) AS max_nilai,
+                       MAX(qn.tanggal) AS max_tanggal
                 FROM quran_nilai qn
-                JOIN quran_kd qkd ON qkd.id = qn.kd_id
+                LEFT JOIN quran_kd qkd ON qkd.id = qn.kd_id
                 JOIN quran_halaqah_siswa qhs ON qhs.id = qn.siswa_id AND qhs.deleted_at IS NULL
                 JOIN quran_halaqah qh ON qh.id = qhs.halaqah_id
                 WHERE qhs.siswa_id IN ({$placeholders})
                   AND qh.tahun_ajaran_id <= ?
-                  AND qn.mapel = 'Tahfiz'
-                  AND (qn.nilai >= 70 OR LOWER(COALESCE(qn.keterangan, '')) LIKE '%lulus%')
-                GROUP BY qhs.siswa_id, qh.tahun_ajaran_id, qkd.nama
+                  AND (
+                      qn.mapel = 'Tahfiz'
+                      OR (
+                          qn.mapel = 'Tahsin'
+                          AND LOWER(COALESCE(qn.keterangan, '')) REGEXP '(juz|surat|surah|qs|baqarah|imran|nisa|mulk|naba|nas|hafal)'
+                      )
+                  )
+                  AND (
+                      qn.nilai >= 70
+                      OR (qn.nilai IS NULL AND (TRIM(COALESCE(qn.materi, '')) <> '' OR TRIM(COALESCE(qn.keterangan, '')) <> ''))
+                      OR LOWER(COALESCE(qn.keterangan, '')) REGEXP '(lulus|hafal|selesai|tuntas)'
+                  )
+                GROUP BY qhs.siswa_id, qh.tahun_ajaran_id, qn.mapel, kd_nama, qn.materi, qn.keterangan
+                ORDER BY qh.tahun_ajaran_id ASC, max_tanggal ASC
             ", array_merge($allSiswaIds, [$tahunAjaranId]));
 
             $qnaBySiswa = [];
@@ -1144,6 +1218,7 @@ class PerformanceApiController extends ApiController
             }
 
             $catalog = $this->getTahfidzCatalog();
+            $ambiguousNotesPool = [];
             $normalizedStudents = [];
 
             foreach ($studentsMap as $sid => $st) {
@@ -1161,8 +1236,24 @@ class PerformanceApiController extends ApiController
                 $teacherTargetRaw = '';
                 $teacherTarget = ['type' => null, 'value' => 0.0, 'label' => ''];
                 $hasCurrentRaport = false;
+                $studentNoteHashes = [];
 
-                // 1. Rapor Akhir Qur'an
+                $enqueueAmbiguous = function (string $srcType, string $kd, string $mat, string $rawTxt, $nilaiVal = null) use (&$ambiguousNotesPool, &$studentNoteHashes) {
+                    $hash = $this->buildNoteHash($srcType, $kd, $mat, $rawTxt);
+                    if (!isset($ambiguousNotesPool[$hash])) {
+                        $ambiguousNotesPool[$hash] = [
+                            'note_hash'   => $hash,
+                            'source_type' => $srcType,
+                            'kd_nama'     => $kd,
+                            'materi'      => $mat,
+                            'raw_text'    => $rawTxt,
+                            'nilai'       => $nilaiVal !== null ? (float)$nilaiVal : null,
+                        ];
+                    }
+                    $studentNoteHashes[$hash] = true;
+                };
+
+                // 1. Rapor Akhir Qur'an (gabung kompetensi + deskripsi + catatan)
                 foreach ($qnaBySiswa[$sid] ?? [] as $qr) {
                     $decoded = json_decode((string)$qr->nilai, true);
                     if (!is_array($decoded)) {
@@ -1185,9 +1276,17 @@ class PerformanceApiController extends ApiController
                             }
                         }
 
+                        $cpRaw = trim((string)($item['cp_nama'] ?? ''));
+                        $kompCombined = trim(
+                            (string)($item['kompetensi'] ?? '') . ' ' .
+                            (string)($item['deskripsi'] ?? '') . ' ' .
+                            (string)($item['catatan'] ?? '') . ' ' .
+                            (string)($item['keterangan'] ?? '')
+                        );
+
                         $parsed = $this->parseTahfidzEntry(
-                            (string)($item['cp_nama'] ?? ''),
-                            (string)($item['kompetensi'] ?? ''),
+                            $cpRaw,
+                            $kompCombined,
                             $catalog,
                             true
                         );
@@ -1206,6 +1305,12 @@ class PerformanceApiController extends ApiController
                         if ($parsed['munaq_juz29']) $munaq29 = true;
                         if ($parsed['munaq_juz28']) $munaq28 = true;
 
+                        if ($parsed['juz30_rank'] < 0 && $parsed['juz29_rank'] < 0 && $parsed['juz28_rank'] < 0 && $parsed['juz_stage'] === 0) {
+                            if ($cpRaw !== '' || $kompCombined !== '') {
+                                $enqueueAmbiguous('rapor', $cpRaw, '', $kompCombined, $item['nilai'] ?? null);
+                            }
+                        }
+
                         if ($isCurrentTa && $parsed['label'] !== '') {
                             $currentTaEntries[] = $parsed['label'];
                         } elseif ($parsed['label'] !== '') {
@@ -1214,7 +1319,7 @@ class PerformanceApiController extends ApiController
                     }
                 }
 
-                // 2. Validasi Tes Kenaikan / Munaqasyah
+                // 2. Validasi Tes Kenaikan / Munaqasyah & Catatan Tes Ummi
                 foreach ($tesBySiswa[$sid] ?? [] as $tr) {
                     $jilid = trim((string)$tr->jilid_ummi);
                     $catatanDecoded = json_decode((string)($tr->catatan ?? ''), true);
@@ -1222,6 +1327,14 @@ class PerformanceApiController extends ApiController
                         ? implode(' ', array_map('strval', $catatanDecoded))
                         : trim((string)($tr->catatan ?? ''));
                     $catatanLow = strtolower($catatanTxt);
+
+                    $isJuzOrMunaqJilid = (stripos($jilid, 'Juz') === 0 || stripos($jilid, 'Munaq') !== false);
+                    if (!$isJuzOrMunaqJilid) {
+                        if ($catatanTxt !== '') {
+                            $enqueueAmbiguous('tes_ummi', $jilid, '', $catatanTxt, null);
+                        }
+                        continue;
+                    }
 
                     $catatanSurahs = $this->extractSurahKeysFromText($catatanTxt, $catalog);
                     $hasBlockNote = (bool)preg_match('/\bh([1-4])\s*\/\s*(\d+)/i', str_replace('\\/', '/', $catatanTxt), $mbCat);
@@ -1242,6 +1355,9 @@ class PerformanceApiController extends ApiController
                             $juz28Set[$k] = true;
                         }
                         $juzStage = max($juzStage, $parsedCat['juz_stage']);
+                        if ($parsedCat['juz30_rank'] < 0 && $parsedCat['juz29_rank'] < 0 && $parsedCat['juz28_rank'] < 0 && $parsedCat['juz_stage'] === 0) {
+                            $enqueueAmbiguous('tes_ummi', $jilid, '', $catatanTxt, null);
+                        }
                         continue;
                     }
 
@@ -1291,37 +1407,111 @@ class PerformanceApiController extends ApiController
                     }
                 }
 
-                // 3. Setoran Harian Valid (sebagai histori pelengkap & fallback tengah semester)
+                // 3. Setoran Harian & Pembacaan Catatan Guru (quran_nilai)
                 $hasHarianCurrentTa = false;
+                $upgradedFromDailyNote = false;
                 foreach ($harianBySiswa[$sid] ?? [] as $hr) {
                     $isCurrentTa = ((int)$hr->tahun_ajaran_id === $tahunAjaranId);
                     if ($isCurrentTa) {
                         $hasHarianCurrentTa = true;
                     }
-                    $kompTxt = $hr->sample_materi ? ('Ayat ' . $hr->sample_materi) : (string)($hr->sample_ket ?? '');
-                    $allowJuzExpand = str_contains(strtolower((string)$hr->sample_ket), 'lulus') || str_contains(strtolower((string)$hr->sample_ket), 'munaq');
 
-                    $parsedH = $this->parseTahfidzEntry(
-                        (string)$hr->kd_nama,
-                        $kompTxt,
-                        $catalog,
-                        $allowJuzExpand
-                    );
+                    $kdRaw  = trim((string)$hr->kd_nama);
+                    $matRaw = trim((string)$hr->materi);
+                    $ketRaw = trim((string)$hr->keterangan);
+                    $valNum = $hr->max_nilai !== null ? (float)$hr->max_nilai : null;
 
-                    foreach ($parsedH['juz29_keys'] as $k) {
-                        $juz29Set[$k] = true;
+                    $ketState  = $this->classifyNoteTextState($ketRaw);
+                    $isGenKd   = $this->isGenericCpOrKd($kdRaw);
+
+                    // Lewati catatan murni absensi / gagal bila KD generik
+                    if ($ketState === 'negative' && $isGenKd) {
+                        continue;
                     }
-                    foreach ($parsedH['juz28_keys'] as $k) {
-                        $juz28Set[$k] = true;
-                    }
-                    $juz29Rank = max($juz29Rank, $parsedH['juz29_rank']);
-                    $juz28Rank = max($juz28Rank, $parsedH['juz28_rank']);
 
-                    if (!$hasCurrentRaport && $isCurrentTa) {
-                        $juz30Rank = max($juz30Rank, $parsedH['juz30_rank']);
-                        $juzStage = max($juzStage, $parsedH['juz_stage']);
-                        if ($parsedH['label'] !== '') {
-                            $currentTaEntries[] = $parsedH['label'];
+                    if (!$isGenKd && $hr->mapel === 'Tahfiz') {
+                        // KD sudah spesifik menyebut surat (mis. "Al-Balad"), gunakan rentang ayat saja bila ket tidak negatif
+                        if ($ketState !== 'negative') {
+                            $kompH = $matRaw !== '' ? ('Ayat ' . $matRaw) : (preg_match('/^\d+\s*-\s*\d+$/', $ketRaw) ? ('Ayat ' . $ketRaw) : '');
+                            $parsedH = $this->parseTahfidzEntry($kdRaw, $kompH, $catalog, false);
+
+                            foreach ($parsedH['juz29_keys'] as $k) $juz29Set[$k] = true;
+                            foreach ($parsedH['juz28_keys'] as $k) $juz28Set[$k] = true;
+                            if ($parsedH['juz29_rank'] > $juz29Rank) $juz29Rank = $parsedH['juz29_rank'];
+                            if ($parsedH['juz28_rank'] > $juz28Rank) $juz28Rank = $parsedH['juz28_rank'];
+
+                            if ($isCurrentTa || !$hasCurrentRaport) {
+                                if ($parsedH['juz30_rank'] > $juz30Rank) {
+                                    $juz30Rank = $parsedH['juz30_rank'];
+                                    $upgradedFromDailyNote = true;
+                                }
+                                if ($parsedH['juz_stage'] > $juzStage) {
+                                    $juzStage = $parsedH['juz_stage'];
+                                }
+                                if ($parsedH['label'] !== '' && !$hasCurrentRaport) {
+                                    $currentTaEntries[] = $parsedH['label'];
+                                }
+                            }
+                        }
+                        if (($ketState === 'prose' || $ketState === 'future_plan') && preg_match('/(qs|sur|juz|h[1-4]\/|sampai\s+ay|sampe\s+ay|ayat\s+\d+|lulus|tuntas|baqarah|imran|mulk|naba|nas|fajr|balad)/i', $ketRaw)) {
+                            $enqueueAmbiguous('quran_nilai', $kdRaw, $matRaw, $ketRaw, $valNum);
+                        }
+                    } else {
+                        // KD Generik (mis. H3/30, Juz 30, Juz 1, Al-Qur'an) -> cek apakah catatan/materi bersih atau perlu AI
+                        $combinedMatKet = trim(($matRaw !== '' ? $matRaw . ' ' : '') . $ketRaw);
+                        if ($combinedMatKet === '') {
+                            continue;
+                        }
+                        if ($ketState === 'clean') {
+                            $allowExpand = str_contains(strtolower($ketRaw), 'lulus') || str_contains(strtolower($ketRaw), 'munaq');
+                            $matSurahs = $this->extractSurahKeysFromText($combinedMatKet, $catalog);
+                            $parsedH = !empty($matSurahs)
+                                ? $this->parseTahfidzEntry((string)end($matSurahs), $combinedMatKet, $catalog, $allowExpand)
+                                : $this->parseTahfidzEntry($kdRaw, $combinedMatKet, $catalog, $allowExpand);
+                            foreach ($parsedH['juz29_keys'] as $k) $juz29Set[$k] = true;
+                            foreach ($parsedH['juz28_keys'] as $k) $juz28Set[$k] = true;
+
+                            $prevBest = max($juz30Rank, $juz29Rank, $juz28Rank);
+                            if ($parsedH['juz29_rank'] > $juz29Rank) $juz29Rank = $parsedH['juz29_rank'];
+                            if ($parsedH['juz28_rank'] > $juz28Rank) $juz28Rank = $parsedH['juz28_rank'];
+
+                            if ($isCurrentTa || !$hasCurrentRaport) {
+                                if ($parsedH['juz30_rank'] > $juz30Rank) $juz30Rank = $parsedH['juz30_rank'];
+                                if ($parsedH['juz_stage'] > $juzStage) $juzStage = $parsedH['juz_stage'];
+                                if (max($juz30Rank, $juz29Rank, $juz28Rank) > $prevBest && $parsedH['label'] !== '') {
+                                    $upgradedFromDailyNote = true;
+                                    $currentTaEntries[] = $parsedH['label'] . ' [Catatan Harian]';
+                                }
+                            }
+
+                            // Jika masih belum terekstrak dari keterangan namun memuat kata kunci penting, kirim ke antrean AI
+                            if ($parsedH['juz30_rank'] < 0 && $parsedH['juz29_rank'] < 0 && $parsedH['juz28_rank'] < 0 && $parsedH['juz_stage'] === 0) {
+                                if (preg_match('/(qs|sur|juz|hafal|lulus|tuntas|muroja|ziyadah|h[1-4])/i', $combinedMatKet)) {
+                                    $enqueueAmbiguous('quran_nilai', $kdRaw, $matRaw, $ketRaw, $valNum);
+                                }
+                            }
+                        } elseif ($ketState === 'empty' && $matRaw !== '' && !preg_match('/^(drill|muroja|muraja|tes|ulang|\d)/i', $matRaw)) {
+                            $matSurahs = $this->extractSurahKeysFromText($matRaw, $catalog);
+                            if (!empty($matSurahs)) {
+                                $parsedH = $this->parseTahfidzEntry((string)end($matSurahs), $matRaw, $catalog, false);
+                                foreach ($parsedH['juz29_keys'] as $k) $juz29Set[$k] = true;
+                                foreach ($parsedH['juz28_keys'] as $k) $juz28Set[$k] = true;
+                                $prevBest = max($juz30Rank, $juz29Rank, $juz28Rank);
+                                if ($parsedH['juz29_rank'] > $juz29Rank) $juz29Rank = $parsedH['juz29_rank'];
+                                if ($parsedH['juz28_rank'] > $juz28Rank) $juz28Rank = $parsedH['juz28_rank'];
+                                if ($isCurrentTa || !$hasCurrentRaport) {
+                                    if ($parsedH['juz30_rank'] > $juz30Rank) $juz30Rank = $parsedH['juz30_rank'];
+                                    if ($parsedH['juz_stage'] > $juzStage) $juzStage = $parsedH['juz_stage'];
+                                    if (max($juz30Rank, $juz29Rank, $juz28Rank) > $prevBest && $parsedH['label'] !== '') {
+                                        $upgradedFromDailyNote = true;
+                                        $currentTaEntries[] = $parsedH['label'] . ' [Materi Harian]';
+                                    }
+                                }
+                            }
+                        } elseif ($ketState === 'prose' || $ketState === 'future_plan') {
+                            if (preg_match('/(qs|sur|juz|hafal|lulus|tuntas|muroja|ziyadah|h[1-4]|baqarah|imran|mulk|naba|nas)/i', $combinedMatKet)) {
+                                $enqueueAmbiguous('quran_nilai', $kdRaw, $matRaw, $ketRaw, $valNum);
+                            }
                         }
                     }
                 }
@@ -1343,7 +1533,7 @@ class PerformanceApiController extends ApiController
 
                 $sourceType = 'none';
                 if ($hasCurrentRaport) {
-                    $sourceType = 'rapor';
+                    $sourceType = $upgradedFromDailyNote ? 'rapor+catatan' : 'rapor';
                 } elseif ($hasHarianCurrentTa) {
                     $sourceType = 'harian';
                 } elseif (!empty($tesBySiswa[$sid]) || $juz30Rank >= 0) {
@@ -1390,6 +1580,7 @@ class PerformanceApiController extends ApiController
                     'teacher_target_type' => $teacherTarget['type'],
                     'teacher_target_value' => $teacherTarget['value'],
                     'teacher_target_label' => $teacherTarget['label'],
+                    'note_hashes' => array_slice(array_keys($studentNoteHashes), 0, 15),
                 ];
             }
 
@@ -1407,9 +1598,11 @@ class PerformanceApiController extends ApiController
                     'unit_active_days' => $unitActiveDays,
                     'has_raport_data' => $hasAnyRaportCurrentTa,
                     'total_students' => count($normalizedStudents),
+                    'ambiguous_notes_count' => count($ambiguousNotesPool),
                     'server_time' => now()->toIso8601String(),
                 ],
                 'students' => $normalizedStudents,
+                'ambiguous_notes' => $ambiguousNotesPool,
                 'guru_journals' => $guruJournals,
             ]);
 

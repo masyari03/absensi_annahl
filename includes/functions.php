@@ -5016,6 +5016,9 @@ if (!function_exists('calculateTahfidzHierarchy')) {
                 'target_label'      => $eval['target_label'],
                 'status_key'        => $eval['status_key'],
                 'status_label'      => $eval['status_label'],
+                'ai_badge'          => (string)($stu['ai_badge'] ?? ''),
+                'ai_evidence'       => $stu['ai_evidence'] ?? null,
+                'manual_override'   => $stu['manual_override'] ?? null,
             ];
 
             if (!isset($paralelsMap[$pId])) {
@@ -5544,5 +5547,675 @@ if (!function_exists('mergeTeacherAttendanceWithJournals')) {
             ],
             'rows' => $rows,
         ];
+    }
+}
+
+// =========================================================================
+// TAHFIDZ AI SEMANTIC CACHE ENGINE (HYBRID DETERMINISTIC + LLM CLASSIFIER)
+// =========================================================================
+
+if (!function_exists('isAllowedAiEndpointUrl')) {
+    /**
+     * Anti-SSRF whitelist ketat: hanya mengizinkan endpoint API resmi Gemini/OpenAI HTTPS.
+     */
+    function isAllowedAiEndpointUrl(string $url): bool
+    {
+        $parts = @parse_url($url);
+        if (!is_array($parts)) {
+            return false;
+        }
+        $scheme = strtolower($parts['scheme'] ?? '');
+        $host   = strtolower($parts['host'] ?? '');
+        return $scheme === 'https' && in_array($host, [
+            'generativelanguage.googleapis.com',
+            'api.openai.com',
+        ], true);
+    }
+}
+
+if (!function_exists('getTahfidzAiSurahDictionary')) {
+    /**
+     * Kamus baku surat & rank resmi An-Nahl untuk mengonversi hasil ekstraksi AI secara deterministik.
+     */
+    function getTahfidzAiSurahDictionary(): array
+    {
+        $catalog = getTahfidzSurahCatalog();
+        $juz30Ayats = [
+            0 => 7, 1 => 6, 2 => 5, 3 => 4, 4 => 5, 5 => 3, 6 => 6, 7 => 3, 8 => 7, 9 => 4,
+            10 => 5, 11 => 9, 12 => 3, 13 => 8, 14 => 11, 15 => 11, 16 => 8, 17 => 8, 18 => 5, 19 => 19,
+            20 => 8, 21 => 8, 22 => 11, 23 => 21, 24 => 15, 25 => 20, 26 => 30, 27 => 26, 28 => 19, 29 => 17,
+            30 => 22, 31 => 25, 32 => 36, 33 => 19, 34 => 29, 35 => 42, 36 => 46, 37 => 40,
+        ];
+        $juz30Keys = [
+            0 => 'alfatihah', 1 => 'annas', 2 => 'alfalaq', 3 => 'alikhlas', 4 => 'allahab', 5 => 'annashr',
+            6 => 'alkafirun', 7 => 'alkautsar', 8 => 'almaun', 9 => 'quraisy', 10 => 'alfil', 11 => 'alhumazah',
+            12 => 'alashr', 13 => 'attakatsur', 14 => 'alqariah', 15 => 'aladiyat', 16 => 'azzalzalah', 17 => 'albayyinah',
+            18 => 'alqadr', 19 => 'alalaq', 20 => 'attin', 21 => 'alinsyirah', 22 => 'adhdhuha', 23 => 'allail',
+            24 => 'asysyams', 25 => 'albalad', 26 => 'alfajr', 27 => 'alghasyiyah', 28 => 'alalaa', 29 => 'atthariq',
+            30 => 'alburuj', 31 => 'alinsyiqaq', 32 => 'almuthaffifin', 33 => 'alinfithar', 34 => 'attakwir', 35 => 'abasa',
+            36 => 'annaziat', 37 => 'annaba',
+        ];
+        $juz29Ayats = [
+            38 => ['key' => 'almulk', 'ayats' => 30],
+            39 => ['key' => 'alqalam', 'ayats' => 52],
+            40 => ['key' => 'alhaqqah', 'ayats' => 52],
+            41 => ['key' => 'almaarij', 'ayats' => 44],
+            42 => ['key' => 'nuh', 'ayats' => 28],
+            43 => ['key' => 'aljin', 'ayats' => 28],
+            44 => ['key' => 'almuzzammil', 'ayats' => 20],
+            45 => ['key' => 'almuddatstsir', 'ayats' => 56],
+            46 => ['key' => 'alqiyamah', 'ayats' => 40],
+            47 => ['key' => 'alinsan', 'ayats' => 31],
+            48 => ['key' => 'almursalat', 'ayats' => 50],
+        ];
+        $juz28Ayats = [
+            49 => ['key' => 'almujadilah', 'ayats' => 22],
+            50 => ['key' => 'alhasyr', 'ayats' => 24],
+            51 => ['key' => 'almumtahanah', 'ayats' => 13],
+            52 => ['key' => 'assaff', 'ayats' => 14],
+            53 => ['key' => 'aljumuah', 'ayats' => 11],
+            54 => ['key' => 'almunafiqun', 'ayats' => 11],
+            55 => ['key' => 'attaghabun', 'ayats' => 18],
+            56 => ['key' => 'attalaq', 'ayats' => 12],
+            57 => ['key' => 'attahrim', 'ayats' => 12],
+        ];
+
+        $surahMap = [];
+        foreach ($juz30Keys as $rk => $key) {
+            $surahMap[$key] = [
+                'juz'   => 30,
+                'rank'  => $rk,
+                'ayats' => $juz30Ayats[$rk],
+                'label' => $catalog['juz30_rank'][$rk] ?? ucfirst($key),
+            ];
+        }
+        foreach ($juz29Ayats as $rk => $meta) {
+            $surahMap[$meta['key']] = [
+                'juz'   => 29,
+                'rank'  => $rk,
+                'ayats' => $meta['ayats'],
+                'label' => $catalog['juz29_rank'][$rk] ?? ucfirst($meta['key']),
+            ];
+        }
+        foreach ($juz28Ayats as $rk => $meta) {
+            $surahMap[$meta['key']] = [
+                'juz'   => 28,
+                'rank'  => $rk,
+                'ayats' => $meta['ayats'],
+                'label' => $catalog['juz28_rank'][$rk] ?? ucfirst($meta['key']),
+            ];
+        }
+
+        // Alias umum yang mungkin dikembalikan LLM
+        $aliases = [
+            'annaas' => 'annas', 'nas' => 'annas', 'naas' => 'annas',
+            'alqoriah' => 'alqariah', 'aladiyat' => 'aladiyat',
+            'alzalzalah' => 'azzalzalah', 'atthariq' => 'atthariq', 'attariq' => 'atthariq',
+            'abasa' => 'abasa', 'annaba' => 'annaba', 'annaziat' => 'annaziat',
+            'almulk' => 'almulk', 'alqolam' => 'alqalam', 'aljinn' => 'aljin',
+            'almuzammil' => 'almuzzammil', 'almuddassir' => 'almuddatstsir', 'almudatsir' => 'almuddatstsir',
+            'alinsan' => 'alinsan', 'almursalat' => 'almursalat',
+            'almujadalah' => 'almujadilah', 'ashshaf' => 'assaff', 'asshaf' => 'assaff',
+        ];
+
+        return ['surahs' => $surahMap, 'aliases' => $aliases];
+    }
+}
+
+if (!function_exists('convertAiExtractionToRanks')) {
+    /**
+     * Mengonversi output semantik AI ({is_achievement, juz, surah_key, ayat_end, is_munaqasyah})
+     * menjadi angka rank/stage resmi secara deterministik di PHP.
+     */
+    function convertAiExtractionToRanks(array $parsed, ?array $dict = null): array
+    {
+        $dict = $dict ?? getTahfidzAiSurahDictionary();
+        $out = [
+            'is_achievement' => !empty($parsed['is_achievement']) ? 1 : 0,
+            'juz'            => isset($parsed['juz']) && $parsed['juz'] !== null ? (int)$parsed['juz'] : null,
+            'surah_key'      => null,
+            'ayat_end'       => isset($parsed['ayat_end']) && (int)$parsed['ayat_end'] > 0 ? (int)$parsed['ayat_end'] : null,
+            'juz30_rank'     => 0.0,
+            'juz29_rank'     => 0.0,
+            'juz28_rank'     => 0.0,
+            'juz_stage'      => 0,
+            'is_munaqasyah'  => !empty($parsed['is_munaqasyah']) ? 1 : 0,
+            'confidence'     => max(0.0, min(1.0, (float)($parsed['confidence'] ?? 0.0))),
+            'ai_reason'      => mb_substr(trim(strip_tags((string)($parsed['reason'] ?? ''))), 0, 250),
+            'surah_label'    => '',
+        ];
+
+        if ($out['is_achievement'] === 0) {
+            return $out;
+        }
+
+        $rawKey = preg_replace('/[^a-z0-9]/', '', strtolower((string)($parsed['surah_key'] ?? ''))) ?? '';
+        if ($rawKey !== '' && isset($dict['aliases'][$rawKey])) {
+            $rawKey = $dict['aliases'][$rawKey];
+        }
+
+        if ($rawKey !== '' && isset($dict['surahs'][$rawKey])) {
+            $info = $dict['surahs'][$rawKey];
+            $out['surah_key'] = $rawKey;
+            $out['juz']       = (int)$info['juz'];
+            $frac = 1.0;
+            if ($out['ayat_end'] !== null && $info['ayats'] > 0 && $out['ayat_end'] < $info['ayats']) {
+                $frac = min(1.0, max(0.05, $out['ayat_end'] / $info['ayats']));
+            }
+
+            if ($info['juz'] === 30) {
+                $out['juz30_rank'] = $info['rank'] === 0 ? 0.5 : round(($info['rank'] - 1) + $frac, 2);
+                $out['juz_stage']  = 1;
+            } elseif ($info['juz'] === 29) {
+                $out['juz30_rank'] = 37.0;
+                $out['juz29_rank'] = round(($info['rank'] - 1) + $frac, 2);
+                $out['juz_stage']  = 2;
+            } elseif ($info['juz'] === 28) {
+                $out['juz30_rank'] = 37.0;
+                $out['juz29_rank'] = 48.0;
+                $out['juz28_rank'] = round(($info['rank'] - 1) + $frac, 2);
+                $out['juz_stage']  = 30;
+            }
+            $out['surah_label'] = $info['label'] . ($out['ayat_end'] !== null ? " (Ayat s.d. {$out['ayat_end']})" : '');
+        } elseif ($out['juz'] !== null && $out['juz'] >= 1 && $out['juz'] <= 30) {
+            $jn = $out['juz'];
+            if ($jn === 30) {
+                $out['juz30_rank'] = 37.0;
+                $out['juz_stage']  = 1;
+                $out['surah_label'] = 'Juz 30';
+            } elseif ($jn === 29) {
+                $out['juz30_rank'] = 37.0;
+                $out['juz29_rank'] = 48.0;
+                $out['juz_stage']  = 2;
+                $out['surah_label'] = 'Juz 29';
+            } elseif ($jn === 28) {
+                $out['juz30_rank'] = 37.0;
+                $out['juz29_rank'] = 48.0;
+                $out['juz28_rank'] = 57.0;
+                $out['juz_stage']  = 30;
+                $out['surah_label'] = 'Juz 28';
+            } else {
+                $out['juz30_rank'] = 37.0;
+                $out['juz29_rank'] = 48.0;
+                $out['juz_stage']  = 2 + $jn;
+                $out['surah_label'] = "Juz {$jn}";
+            }
+        }
+
+        return $out;
+    }
+}
+
+if (!function_exists('callTahfidzAiProvider')) {
+    /**
+     * Memanggil LLM (Gemini / OpenAI) secara server-side dengan prompt JSON terstruktur,
+     * proteksi SSRF, dan batas timeout <= 12 detik. API key tidak pernah dibocorkan ke client.
+     */
+    function callTahfidzAiProvider(array $batchNotes): array
+    {
+        if (empty($batchNotes)) {
+            return ['success' => true, 'items' => [], 'provider' => '', 'model' => '', 'error' => null];
+        }
+        $enabled  = defined('TAHFIDZ_AI_ENABLED') ? (bool)TAHFIDZ_AI_ENABLED : false;
+        $provider = defined('TAHFIDZ_AI_PROVIDER') ? (string)TAHFIDZ_AI_PROVIDER : 'gemini';
+        $model    = defined('TAHFIDZ_AI_MODEL') ? (string)TAHFIDZ_AI_MODEL : 'gemini-2.5-flash';
+        $apiKey   = defined('TAHFIDZ_AI_API_KEY') ? trim((string)TAHFIDZ_AI_API_KEY) : '';
+
+        if (!$enabled || $apiKey === '') {
+            return [
+                'success'  => false,
+                'items'    => [],
+                'provider' => $provider,
+                'model'    => $model,
+                'error'    => 'API Key AI belum dikonfigurasi pada file .env server (TAHFIDZ_AI_API_KEY).',
+            ];
+        }
+
+        if (!function_exists('curl_init')) {
+            return ['success' => false, 'items' => [], 'provider' => $provider, 'model' => $model, 'error' => 'Ekstensi PHP cURL tidak tersedia.'];
+        }
+
+        $itemsPayload = [];
+        foreach ($batchNotes as $n) {
+            $itemsPayload[] = [
+                'note_hash'   => (string)$n['note_hash'],
+                'source_type' => (string)$n['source_type'],
+                'kd_nama'     => (string)$n['kd_nama'],
+                'materi'      => (string)$n['materi'],
+                'raw_text'    => (string)$n['raw_text'],
+                'nilai'       => $n['nilai'],
+            ];
+        }
+
+        $systemPrompt = implode("\n", [
+            'Anda adalah analis data Tahfidz Al-Qur\'an di An-Nahl Islamic School.',
+            'Tugas Anda HANYA mengekstrak informasi hafalan yang SUDAH DIHAFAL / TUNTAS dari catatan bebas guru menjadi JSON valid.',
+            'Aturan Urutan Resmi:',
+            '- Juz 30 (mundur): annas, alfalaq, alikhlas, allahab, annashr, alkafirun, alkautsar, almaun, quraisy, alfil, alhumazah, alashr, attakatsur, alqariah, aladiyat, azzalzalah, albayyinah, alqadr, alalaq, attin, alinsyirah, adhdhuha, allail, asysyams, albalad, alfajr, alghasyiyah, alalaa, atthariq, alburuj, alinsyiqaq, almuthaffifin, alinfithar, attakwir, abasa, annaziat, annaba.',
+            '- Juz 29 (maju): almulk, alqalam, alhaqqah, almaarij, nuh, aljin, almuzzammil, almuddatstsir, alqiyamah, alinsan, almursalat.',
+            '- Juz 28 (maju): almujadilah, alhasyr, almumtahanah, assaff, aljumuah, almunafiqun, attaghabun, attalaq, attahrim.',
+            'Aturan Penilaian Konteks:',
+            '1. Jika catatan adalah PR / target besok ("Lanjut Qs. Al Fajr" saat kd_nama="Al-Balad", atau "PR ...", "siapkan ..."), maka capaian yang tuntas adalah kd_nama/materi ("albalad"), BUKAN surat target PR ("alfajr")!',
+            '2. Jika catatan menyebut batasan ayat nyata ("hafal sampe ayat 7", meski materi tertulis "1-11"), pakai ayat_end = 7.',
+            '3. Jika catatan adalah absensi ("izin", "sakit", "tidak hadir"), remedial/belum hafal ("belum hafal", "ulang", "masih tertukar" dengan nilai <70), Turjuman (terjemah per kata), Ghoroibul Qur\'an/Tadarrus membaca, maka set is_achievement = false.',
+            '4. Jika catatan jelas menyebut setoran ziyadah/lulus di keterangan walau kd_nama generik ("Ziyadah: Al Infithar, At Takwir 1-18" atau "Alhamdulillah lulus nilai 87" di kd H3/30), set is_achievement = true dengan surah_key tertinggi yang dicapai.',
+            '5. Keluarkan JSON OBJECT dengan key "results" berupa array object berformat:',
+            '   {"note_hash": string, "is_achievement": boolean, "juz": int|null, "surah_key": string|null, "ayat_end": int|null, "is_munaqasyah": boolean, "confidence": float 0..1, "reason": string singkat max 140 char}.',
+        ]);
+
+        $userPrompt = 'Ekstrak array "results" untuk catatan berikut: ' . json_encode($itemsPayload, JSON_UNESCAPED_UNICODE);
+
+        if ($provider === 'openai') {
+            $endpoint = 'https://api.openai.com/v1/chat/completions';
+            $headers  = [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $apiKey,
+            ];
+            $body = json_encode([
+                'model'           => $model,
+                'temperature'     => 0.1,
+                'response_format' => ['type' => 'json_object'],
+                'messages'        => [
+                    ['role' => 'system', 'content' => $systemPrompt],
+                    ['role' => 'user', 'content' => $userPrompt],
+                ],
+            ], JSON_UNESCAPED_UNICODE);
+        } else {
+            $safeModel = preg_replace('/[^a-zA-Z0-9._-]/', '', $model) ?: 'gemini-2.5-flash';
+            $endpoint  = "https://generativelanguage.googleapis.com/v1beta/models/{$safeModel}:generateContent";
+            $headers   = [
+                'Content-Type: application/json',
+                'x-goog-api-key: ' . $apiKey,
+            ];
+            $body = json_encode([
+                'systemInstruction' => ['parts' => [['text' => $systemPrompt]]],
+                'contents'          => [['role' => 'user', 'parts' => [['text' => $userPrompt]]]],
+                'generationConfig'  => [
+                    'temperature'      => 0.1,
+                    'responseMimeType' => 'application/json',
+                ],
+            ], JSON_UNESCAPED_UNICODE);
+        }
+
+        if (!isAllowedAiEndpointUrl($endpoint)) {
+            return ['success' => false, 'items' => [], 'provider' => $provider, 'model' => $model, 'error' => 'Endpoint AI ditolak oleh proteksi SSRF.'];
+        }
+
+        $ch = curl_init($endpoint);
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $body,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT        => 12,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_HTTPHEADER     => $headers,
+            CURLOPT_IPRESOLVE      => CURL_IPRESOLVE_V4,
+        ]);
+        $rawResp  = curl_exec($ch);
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr  = curl_error($ch);
+        curl_close($ch);
+
+        if ($rawResp === false || $curlErr !== '') {
+            error_log("[callTahfidzAiProvider] {$provider} network error: {$curlErr}");
+            return ['success' => false, 'items' => [], 'provider' => $provider, 'model' => $model, 'error' => 'Koneksi ke layanan AI gagal atau melewati batas waktu (timeout).'];
+        }
+
+        $respJson = json_decode((string)$rawResp, true);
+        if ($httpCode !== 200 || !is_array($respJson)) {
+            error_log("[callTahfidzAiProvider] {$provider} HTTP {$httpCode}");
+            return ['success' => false, 'items' => [], 'provider' => $provider, 'model' => $model, 'error' => "Layanan AI merespons HTTP {$httpCode}. Periksa kuota atau validitas API key pada .env."];
+        }
+
+        $jsonText = '';
+        if ($provider === 'openai') {
+            $jsonText = (string)($respJson['choices'][0]['message']['content'] ?? '');
+        } else {
+            $jsonText = (string)($respJson['candidates'][0]['content']['parts'][0]['text'] ?? '');
+        }
+
+        // Bersihkan pembungkus markdown ```json jika ada
+        $jsonText = preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($jsonText)) ?? trim($jsonText);
+        $parsed   = json_decode($jsonText, true);
+        $results  = is_array($parsed['results'] ?? null) ? $parsed['results'] : (is_array($parsed) && isset($parsed[0]) ? $parsed : []);
+
+        return [
+            'success'  => true,
+            'items'    => $results,
+            'provider' => $provider,
+            'model'    => $model,
+            'error'    => null,
+        ];
+    }
+}
+
+if (!function_exists('extractTahfidzNotesWithAiBatch')) {
+    /**
+     * Memproses antrean catatan unik yang belum ada di kinerja_tahfidz_ai_cache dalam satu batch transaksi aman.
+     */
+    function extractTahfidzNotesWithAiBatch(PDO $pdo, array $pendingNotes, int $batchLimit = 25): array
+    {
+        $limitSafe = max(1, min(50, $batchLimit));
+        if (empty($pendingNotes)) {
+            return ['success' => true, 'processed' => 0, 'remaining' => 0, 'error' => null];
+        }
+
+        $pendingByHash = [];
+        foreach ($pendingNotes as $n) {
+            if (!empty($n['note_hash'])) {
+                $pendingByHash[(string)$n['note_hash']] = $n;
+            }
+        }
+        $allHashes = array_keys($pendingByHash);
+        if (empty($allHashes)) {
+            return ['success' => true, 'processed' => 0, 'remaining' => 0, 'error' => null];
+        }
+
+        $existing = [];
+        foreach (array_chunk($allHashes, 200) as $chunk) {
+            $ph = implode(',', array_fill(0, count($chunk), '?'));
+            $stmtEx = $pdo->prepare("SELECT note_hash FROM kinerja_tahfidz_ai_cache WHERE note_hash IN ({$ph})");
+            $stmtEx->execute($chunk);
+            foreach ($stmtEx->fetchAll(PDO::FETCH_COLUMN) as $h) {
+                $existing[(string)$h] = true;
+            }
+        }
+
+        $toProcess = [];
+        foreach ($pendingByHash as $h => $note) {
+            if (!isset($existing[$h])) {
+                $toProcess[] = $note;
+            }
+        }
+
+        if (empty($toProcess)) {
+            return ['success' => true, 'processed' => 0, 'remaining' => 0, 'error' => null];
+        }
+
+        $batch    = array_slice($toProcess, 0, $limitSafe);
+        $aiResult = callTahfidzAiProvider($batch);
+        if (empty($aiResult['success'])) {
+            return [
+                'success'   => false,
+                'processed' => 0,
+                'remaining' => count($toProcess),
+                'error'     => $aiResult['error'] ?? 'Ekstraksi AI gagal.',
+            ];
+        }
+
+        $dict      = getTahfidzAiSurahDictionary();
+        $batchMap  = [];
+        foreach ($batch as $b) {
+            $batchMap[(string)$b['note_hash']] = $b;
+        }
+
+        try {
+            $pdo->beginTransaction();
+            $stmtUp = $pdo->prepare("
+                INSERT INTO kinerja_tahfidz_ai_cache
+                    (note_hash, source_type, kd_nama, materi, raw_text, is_achievement, juz, surah_key, ayat_end,
+                     juz30_rank, juz29_rank, juz28_rank, juz_stage, is_munaqasyah, confidence, ai_reason,
+                     ai_provider, ai_model, parsed_json, review_status)
+                VALUES
+                    (:note_hash, :source_type, :kd_nama, :materi, :raw_text, :is_achievement, :juz, :surah_key, :ayat_end,
+                     :juz30_rank, :juz29_rank, :juz28_rank, :juz_stage, :is_munaqasyah, :confidence, :ai_reason,
+                     :ai_provider, :ai_model, :parsed_json, 'auto_ai')
+                ON DUPLICATE KEY UPDATE
+                    is_achievement = VALUES(is_achievement),
+                    juz            = VALUES(juz),
+                    surah_key      = VALUES(surah_key),
+                    ayat_end       = VALUES(ayat_end),
+                    juz30_rank     = VALUES(juz30_rank),
+                    juz29_rank     = VALUES(juz29_rank),
+                    juz28_rank     = VALUES(juz28_rank),
+                    juz_stage      = VALUES(juz_stage),
+                    is_munaqasyah  = VALUES(is_munaqasyah),
+                    confidence     = VALUES(confidence),
+                    ai_reason      = VALUES(ai_reason),
+                    ai_provider    = VALUES(ai_provider),
+                    ai_model       = VALUES(ai_model),
+                    parsed_json    = VALUES(parsed_json)
+            ");
+
+            $saved = 0;
+            foreach ($aiResult['items'] as $item) {
+                if (!is_array($item) || empty($item['note_hash'])) {
+                    continue;
+                }
+                $h = (string)$item['note_hash'];
+                if (!isset($batchMap[$h])) {
+                    continue;
+                }
+                $src = $batchMap[$h];
+                $conv = convertAiExtractionToRanks($item, $dict);
+
+                $stmtUp->execute([
+                    ':note_hash'      => $h,
+                    ':source_type'    => in_array($src['source_type'] ?? '', ['quran_nilai', 'tes_ummi', 'rapor', 'jurnal'], true) ? $src['source_type'] : 'quran_nilai',
+                    ':kd_nama'        => mb_substr((string)($src['kd_nama'] ?? ''), 0, 150),
+                    ':materi'         => mb_substr((string)($src['materi'] ?? ''), 0, 255),
+                    ':raw_text'       => (string)($src['raw_text'] ?? ''),
+                    ':is_achievement' => $conv['is_achievement'],
+                    ':juz'            => $conv['juz'],
+                    ':surah_key'      => $conv['surah_key'],
+                    ':ayat_end'       => $conv['ayat_end'],
+                    ':juz30_rank'     => $conv['juz30_rank'],
+                    ':juz29_rank'     => $conv['juz29_rank'],
+                    ':juz28_rank'     => $conv['juz28_rank'],
+                    ':juz_stage'      => $conv['juz_stage'],
+                    ':is_munaqasyah'  => $conv['is_munaqasyah'],
+                    ':confidence'     => $conv['confidence'],
+                    ':ai_reason'      => $conv['ai_reason'],
+                    ':ai_provider'    => (string)$aiResult['provider'],
+                    ':ai_model'       => (string)$aiResult['model'],
+                    ':parsed_json'    => json_encode($item, JSON_UNESCAPED_UNICODE) ?: null,
+                ]);
+                $saved++;
+            }
+
+            $pdo->commit();
+            return [
+                'success'   => true,
+                'processed' => $saved,
+                'remaining' => max(0, count($toProcess) - $saved),
+                'error'     => null,
+            ];
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('[extractTahfidzNotesWithAiBatch] DB error: ' . $e->getMessage());
+            return [
+                'success'   => false,
+                'processed' => 0,
+                'remaining' => count($toProcess),
+                'error'     => 'Gagal menyimpan hasil ekstraksi AI ke database cache.',
+            ];
+        }
+    }
+}
+
+if (!function_exists('applyTahfidzAiCacheToStudents')) {
+    /**
+     * Menggabungkan hasil AI Semantic Cache & Koreksi Manual (tanpa panggilan API eksternal) ke dataset santri
+     * sebelum calculateTahfidzHierarchy() dijalankan.
+     */
+    function applyTahfidzAiCacheToStudents(PDO $pdo, array &$apiData, int $unitId, int $tahunAjaranId, float $confidenceThreshold = 0.80): array
+    {
+        $ambiguousMap = is_array($apiData['ambiguous_notes'] ?? null) ? $apiData['ambiguous_notes'] : [];
+        $summary = [
+            'total_ambiguous'      => count($ambiguousMap),
+            'cached_count'         => 0,
+            'pending_count'        => count($ambiguousMap),
+            'pending_review_count' => 0,
+            'ai_upgraded_count'    => 0,
+            'override_count'       => 0,
+            'pending_notes'        => array_values($ambiguousMap),
+            'tables_ready'         => true,
+        ];
+
+        $students = is_array($apiData['students'] ?? null) ? $apiData['students'] : [];
+        if (empty($students)) {
+            return $summary;
+        }
+
+        $cacheRows     = [];
+        $overrideRows  = [];
+
+        try {
+            $hashes = array_keys($ambiguousMap);
+            if (!empty($hashes)) {
+                foreach (array_chunk($hashes, 200) as $chunk) {
+                    $ph = implode(',', array_fill(0, count($chunk), '?'));
+                    $stmtC = $pdo->prepare("SELECT * FROM kinerja_tahfidz_ai_cache WHERE note_hash IN ({$ph})");
+                    $stmtC->execute($chunk);
+                    foreach ($stmtC->fetchAll(PDO::FETCH_ASSOC) as $cr) {
+                        $cacheRows[(string)$cr['note_hash']] = $cr;
+                    }
+                }
+            }
+
+            if ($unitId > 0 && $tahunAjaranId > 0) {
+                $stmtO = $pdo->prepare("
+                    SELECT * FROM kinerja_tahfidz_student_overrides
+                    WHERE unit_id = :unit_id AND tahun_ajaran_id = :ta_id
+                ");
+                $stmtO->execute([':unit_id' => $unitId, ':ta_id' => $tahunAjaranId]);
+                foreach ($stmtO->fetchAll(PDO::FETCH_ASSOC) as $or) {
+                    $overrideRows[(int)$or['siswa_id']] = $or;
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[applyTahfidzAiCacheToStudents] Table check skipped: ' . $e->getMessage());
+            $summary['tables_ready'] = false;
+            return $summary;
+        }
+
+        $pendingList = [];
+        foreach ($ambiguousMap as $h => $noteMeta) {
+            if (!isset($cacheRows[$h])) {
+                $pendingList[] = $noteMeta;
+            }
+        }
+        $summary['cached_count']  = count($cacheRows);
+        $summary['pending_count'] = count($pendingList);
+        $summary['pending_notes'] = $pendingList;
+
+        $dict = getTahfidzAiSurahDictionary();
+
+        foreach ($students as &$st) {
+            $sid = (int)($st['siswa_id'] ?? 0);
+            $st['ai_badge']    = '';
+            $st['ai_evidence'] = null;
+            $st['manual_override'] = null;
+
+            // 1. Koreksi Manual Santri memiliki prioritas absolut
+            if (isset($overrideRows[$sid])) {
+                $ov = $overrideRows[$sid];
+                $st['juz30_rank'] = max((float)($st['juz30_rank'] ?? 0), (float)$ov['juz30_rank']);
+                $st['juz29_rank'] = max((float)($st['juz29_rank'] ?? 0), (float)$ov['juz29_rank']);
+                $st['juz28_rank'] = max((float)($st['juz28_rank'] ?? 0), (float)$ov['juz28_rank']);
+                $st['juz_stage']  = max((int)($st['juz_stage'] ?? 0), (int)$ov['juz_stage']);
+                if (!empty($ov['has_munaqasyah_juz30'])) $st['has_munaqasyah_juz30'] = true;
+                if (!empty($ov['has_munaqasyah_juz29'])) $st['has_munaqasyah_juz29'] = true;
+                if (!empty($ov['has_munaqasyah_juz28'])) $st['has_munaqasyah_juz28'] = true;
+                $st['actual_display'] = (string)$ov['display_label'];
+                $st['ai_badge']       = 'manual_override';
+                $st['manual_override'] = [
+                    'display_label' => (string)$ov['display_label'],
+                    'reason'        => (string)$ov['reason'],
+                    'updated_at'    => $ov['updated_at'] ?? null,
+                ];
+                $summary['override_count']++;
+                continue;
+            }
+
+            $noteHashes = is_array($st['note_hashes'] ?? null) ? $st['note_hashes'] : [];
+            if (empty($noteHashes)) {
+                continue;
+            }
+
+            $bestApplied = null;
+            $bestPending = null;
+            $curTopScore = max((float)($st['juz28_rank'] ?? 0), (float)($st['juz29_rank'] ?? 0), (float)($st['juz30_rank'] ?? 0));
+
+            foreach ($noteHashes as $nh) {
+                if (!isset($cacheRows[$nh])) {
+                    continue;
+                }
+                $c = $cacheRows[$nh];
+                if ($c['review_status'] === 'rejected' || (int)$c['is_achievement'] !== 1) {
+                    continue;
+                }
+
+                $conf = (float)$c['confidence'];
+                $cTopScore = max((float)$c['juz28_rank'], (float)$c['juz29_rank'], (float)$c['juz30_rank']);
+                $cStage    = (int)$c['juz_stage'];
+                $isHigher  = ($cTopScore > $curTopScore) || ($cStage > (int)($st['juz_stage'] ?? 0));
+
+                $surahInfo = (!empty($c['surah_key']) && isset($dict['surahs'][$c['surah_key']]))
+                    ? $dict['surahs'][$c['surah_key']]['label']
+                    : ($c['juz'] ? ('Juz ' . (int)$c['juz']) : 'Catatan');
+
+                $ev = [
+                    'note_hash'     => $nh,
+                    'source_type'   => (string)$c['source_type'],
+                    'kd_nama'       => (string)$c['kd_nama'],
+                    'raw_text'      => (string)$c['raw_text'],
+                    'surah_label'   => $surahInfo . (!empty($c['ayat_end']) ? " (Ayat s.d. {$c['ayat_end']})" : ''),
+                    'confidence'    => round($conf * 100, 0),
+                    'ai_reason'     => (string)$c['ai_reason'],
+                    'review_status' => (string)$c['review_status'],
+                ];
+
+                $noteScore = $cTopScore + ($cStage * 100);
+                if ($c['review_status'] === 'verified' || $conf >= $confidenceThreshold) {
+                    if ($bestApplied === null || $noteScore > $bestApplied['score']) {
+                        $bestApplied = ['row' => $c, 'ev' => $ev, 'upgraded' => $isHigher, 'score' => $noteScore];
+                    }
+                } elseif ($isHigher && ($bestPending === null || $noteScore > $bestPending['score'])) {
+                    $bestPending = ['row' => $c, 'ev' => $ev, 'score' => $noteScore];
+                }
+            }
+
+            if ($bestApplied !== null && ($bestApplied['upgraded'] || ($st['actual_display'] ?? '') === 'Belum Ada Data')) {
+                $c = $bestApplied['row'];
+                $st['juz30_rank'] = max((float)($st['juz30_rank'] ?? 0), (float)$c['juz30_rank']);
+                $st['juz29_rank'] = max((float)($st['juz29_rank'] ?? 0), (float)$c['juz29_rank']);
+                $st['juz28_rank'] = max((float)($st['juz28_rank'] ?? 0), (float)$c['juz28_rank']);
+                $st['juz_stage']  = max((int)($st['juz_stage'] ?? 0), (int)$c['juz_stage']);
+
+                if ((int)$c['juz'] === 30 && !empty($c['is_munaqasyah'])) $st['has_munaqasyah_juz30'] = true;
+                if ((int)$c['juz'] === 29 && !empty($c['is_munaqasyah'])) $st['has_munaqasyah_juz29'] = true;
+                if ((int)$c['juz'] === 28 && !empty($c['is_munaqasyah'])) $st['has_munaqasyah_juz28'] = true;
+
+                if ($st['juz_stage'] >= 2 || $st['juz29_rank'] >= 38) {
+                    $st['juz30_rank'] = max($st['juz30_rank'], 37.0);
+                }
+                if ($st['juz_stage'] >= 3) {
+                    $st['juz29_rank'] = max($st['juz29_rank'], 48.0);
+                    $st['juz29_count'] = 11;
+                }
+
+                $st['ai_badge']    = ($c['review_status'] === 'verified') ? 'ai_verified' : 'ai_applied';
+                $st['ai_evidence'] = $bestApplied['ev'];
+
+                $prefix = ($c['review_status'] === 'verified') ? 'Terverifikasi: ' : 'AI Catatan: ';
+                $st['actual_display'] = $prefix . $bestApplied['ev']['surah_label'];
+                if ($bestApplied['upgraded']) {
+                    $summary['ai_upgraded_count']++;
+                }
+            } elseif ($bestPending !== null) {
+                $st['ai_badge']    = 'ai_pending';
+                $st['ai_evidence'] = $bestPending['ev'];
+                $summary['pending_review_count']++;
+            }
+        }
+        unset($st);
+
+        $apiData['students'] = $students;
+        return $summary;
     }
 }

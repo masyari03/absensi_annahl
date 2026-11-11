@@ -1,5 +1,29 @@
 <?php
 
+// Loader .env server-side aman (tidak pernah mengekspos variabel sensitif ke client)
+$rootEnvPath = dirname(__DIR__) . '/.env';
+if (is_file($rootEnvPath) && is_readable($rootEnvPath)) {
+    $envLines = @file($rootEnvPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (is_array($envLines)) {
+        foreach ($envLines as $envLine) {
+            $trimmed = trim($envLine);
+            if ($trimmed === '' || $trimmed[0] === '#' || strpos($trimmed, '=') === false) {
+                continue;
+            }
+            [$k, $v] = explode('=', $trimmed, 2);
+            $k = trim($k);
+            $v = trim($v);
+            if ((str_starts_with($v, '"') && str_ends_with($v, '"')) || (str_starts_with($v, "'") && str_ends_with($v, "'"))) {
+                $v = substr($v, 1, -1);
+            }
+            if ($k !== '' && getenv($k) === false) {
+                @putenv("{$k}={$v}");
+                $_ENV[$k] = $v;
+            }
+        }
+    }
+}
+
 // Deteksi Skema & Host Otomatis
 $isHttps = (
     (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
@@ -93,6 +117,23 @@ if (!defined('AIS_TAHFIDZ_API_URL')) {
 }
 if (!defined('AIS_TAHFIDZ_API_FALLBACK_URL')) {
     define('AIS_TAHFIDZ_API_FALLBACK_URL', getenv('AIS_TAHFIDZ_API_FALLBACK_URL') ?: 'http://100.126.179.54:8069/V1/performance/tahfidz-achievement');
+}
+
+// Konfigurasi AI Semantic Cache untuk Ekstraksi Catatan Guru Tahfidz (100% Server-Side)
+if (!defined('TAHFIDZ_AI_ENABLED')) {
+    $aiEnabledEnv = getenv('TAHFIDZ_AI_ENABLED');
+    define('TAHFIDZ_AI_ENABLED', $aiEnabledEnv === false ? true : in_array(strtolower((string)$aiEnabledEnv), ['1', 'true', 'yes', 'on'], true));
+}
+if (!defined('TAHFIDZ_AI_PROVIDER')) {
+    $prov = strtolower(trim((string)(getenv('TAHFIDZ_AI_PROVIDER') ?: 'gemini')));
+    define('TAHFIDZ_AI_PROVIDER', in_array($prov, ['gemini', 'openai'], true) ? $prov : 'gemini');
+}
+if (!defined('TAHFIDZ_AI_MODEL')) {
+    $defModel = TAHFIDZ_AI_PROVIDER === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash';
+    define('TAHFIDZ_AI_MODEL', trim((string)(getenv('TAHFIDZ_AI_MODEL') ?: $defModel)));
+}
+if (!defined('TAHFIDZ_AI_API_KEY')) {
+    define('TAHFIDZ_AI_API_KEY', trim((string)(getenv('TAHFIDZ_AI_API_KEY') ?: '')));
 }
 
 // PSR-4 Autoloader untuk namespace App
