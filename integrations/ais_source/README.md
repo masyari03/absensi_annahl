@@ -63,6 +63,13 @@ if (!defined('AIS_PERFORMANCE_API_KEY')) {
 
    Route::prefix('V1')->group(function () {
        Route::get('performance/academic-averages', [PerformanceApiController::class, 'getAcademicAverages']);
+       Route::get('performance/tahfidz-achievement', [PerformanceApiController::class, 'getTahfidzAchievement']);
    });
    ```
 3. Docker stack `ais_docker` di laptop sekolah secara otomatis mengekspos rute ini melalui Cloudflare Tunnel `ais-cloudflared` ke `https://ais.codika.my.id`.
+
+### Endpoint Tambahan (`V1/performance/tahfidz-achievement`)
+- Parameter query: `unit_id`, `tahun_ajaran_id`, dan opsional `month` (`1..12`).
+- Mengembalikan:
+  - Normalisasi capaian Al-Qur'an santri berdasar tangga resmi An-Nahl (**Juz 30 mundur `An-Nas → An-Naba'`**, **Juz 29 maju `Al-Mulk → Al-Mursalat`**, **Juz 1–28 maju**) beserta pembimbing halaqah & target rapor.
+  - Rekap statistik pengisian jurnal (`quran_jurnal`) & input nilai (`quran_nilai`) per guru Qur'an untuk disinkronkan dengan `staff_attendances` pada aplikasi `absensi-anak`.

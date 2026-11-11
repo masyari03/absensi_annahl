@@ -88,6 +88,12 @@ if (!defined('AIS_PERFORMANCE_API_FALLBACK_URL')) {
 if (!defined('AIS_PERFORMANCE_API_KEY')) {
     define('AIS_PERFORMANCE_API_KEY', getenv('AIS_PERFORMANCE_API_KEY') ?: 'c7f99b24e6a8d8102e3b8a139fa4219b6e828453');
 }
+if (!defined('AIS_TAHFIDZ_API_URL')) {
+    define('AIS_TAHFIDZ_API_URL', getenv('AIS_TAHFIDZ_API_URL') ?: 'https://ais.codika.my.id/V1/performance/tahfidz-achievement');
+}
+if (!defined('AIS_TAHFIDZ_API_FALLBACK_URL')) {
+    define('AIS_TAHFIDZ_API_FALLBACK_URL', getenv('AIS_TAHFIDZ_API_FALLBACK_URL') ?: 'http://100.126.179.54:8069/V1/performance/tahfidz-achievement');
+}
 
 // PSR-4 Autoloader untuk namespace App
 spl_autoload_register(function ($class) {

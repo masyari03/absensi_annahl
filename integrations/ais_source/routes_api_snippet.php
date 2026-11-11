@@ -10,5 +10,7 @@ use App\Http\Controllers\Api\V1\PerformanceApiController;
 Route::prefix('V1')->group(function () {
     // API Penilaian Kinerja Akademik (Read-Only)
     Route::get('performance/academic-averages', [PerformanceApiController::class, 'getAcademicAverages']);
-});
 
+    // API Penilaian Kinerja Tahfidz & Jurnal Guru Qur'an (Read-Only)
+    Route::get('performance/tahfidz-achievement', [PerformanceApiController::class, 'getTahfidzAchievement']);
+});
