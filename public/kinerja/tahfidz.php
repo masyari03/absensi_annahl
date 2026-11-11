@@ -368,14 +368,9 @@ require_once __DIR__ . '/../../includes/header.php';
     padding: 0;
     margin: 0;
     box-sizing: border-box;
-    animation: fadeInTahfidz 0.3s ease-out;
 }
 @media (max-width: 768px) {
     .kinerja-wrapper { padding: 0; }
-}
-@keyframes fadeInTahfidz {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
 }
 
 .kinerja-header-card {
@@ -848,7 +843,6 @@ require_once __DIR__ . '/../../includes/header.php';
 .rombel-row-btn:hover {
     background: #ecfdf5;
     border-color: #6ee7b7;
-    transform: translateX(2px);
 }
 .rombel-row-head {
     display: flex;
@@ -1022,48 +1016,38 @@ require_once __DIR__ . '/../../includes/header.php';
     margin-top: 4px;
 }
 
-/* MODALS */
-.modal-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(15, 23, 42, 0.62);
-    backdrop-filter: blur(4px);
-    z-index: 9999;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
+/* MODALS (Mengikuti standar .custom-modal global di header.php — bebas backdrop-filter & transform glitch) */
+.custom-modal-overlay.tahfidz-modal {
+    overflow-y: auto;
 }
-.modal-overlay.active { display: flex; }
-.modal-box {
-    background: #ffffff;
-    border-radius: 16px;
-    max-width: 920px;
-    width: 100%;
-    max-height: 88vh;
+.custom-modal-overlay.tahfidz-modal .custom-modal-box {
+    max-height: 90vh;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 24px 38px -8px rgba(0, 0, 0, 0.25);
-    border: 1px solid #e2e8f0;
     overflow: hidden;
+    border: 1px solid #e2e8f0;
 }
-.modal-header {
+.custom-modal-overlay.tahfidz-modal .custom-modal-header {
     padding: 18px 24px;
-    border-bottom: 1px solid #e2e8f0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
     background: #f8fafc;
+    flex-shrink: 0;
 }
-.modal-header h4 { margin: 0; font-size: 17px; font-weight: 800; color: #0f172a; }
-.modal-body { padding: 20px 24px; overflow-y: auto; flex: 1; }
-.modal-footer {
+.custom-modal-overlay.tahfidz-modal .custom-modal-header h4 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 800;
+    color: #0f172a;
+}
+.custom-modal-overlay.tahfidz-modal .custom-modal-body {
+    padding: 20px 24px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+    overscroll-behavior: contain;
+}
+.custom-modal-overlay.tahfidz-modal .custom-modal-footer {
     padding: 14px 24px;
-    border-top: 1px solid #e2e8f0;
-    display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    background: #f8fafc;
+    flex-shrink: 0;
 }
 .raw-table { width: 100%; border-collapse: collapse; font-size: 12.8px; }
 .raw-table th {
@@ -1138,11 +1122,11 @@ $barColor = static function (float $val): string {
                 <i class="fa-solid fa-arrows-rotate"></i> Sinkronkan
             </a>
             <?php if ($isSuccess && !empty($paralels)): ?>
-                <button type="button" class="btn-kinerja btn-kinerja-indigo" onclick="openModal('targetModal')">
+                <button type="button" class="btn-kinerja btn-kinerja-indigo" onclick="openTahfidzModal('targetModal')">
                     <i class="fa-solid fa-sliders"></i> Atur Target Kurikulum
                 </button>
             <?php endif; ?>
-            <button type="button" class="btn-kinerja btn-kinerja-outline" onclick="openModal('methodModal')">
+            <button type="button" class="btn-kinerja btn-kinerja-outline" onclick="openTahfidzModal('methodModal')">
                 <i class="fa-solid fa-scale-balanced"></i> Urutan &amp; Rumus
             </button>
         </div>
@@ -1652,13 +1636,13 @@ $barColor = static function (float $val): string {
 <!-- ======================================================================= -->
 <!-- MODAL 1: DETAIL SANTRI PER ROMBEL (TAB 1)                               -->
 <!-- ======================================================================= -->
-<div id="studentDetailModal" class="modal-overlay" onclick="if(event.target===this) closeModal('studentDetailModal')">
-    <div class="modal-box">
-        <div class="modal-header">
+<div id="studentDetailModal" class="custom-modal-overlay tahfidz-modal" onclick="if(event.target===this) closeModal('studentDetailModal')">
+    <div class="custom-modal-box" style="max-width: 920px;">
+        <div class="custom-modal-header">
             <h4 id="rombelModalTitle">Rincian Capaian Santri</h4>
             <button type="button" class="btn-kinerja btn-kinerja-outline" style="padding:6px 12px;" onclick="closeModal('studentDetailModal')">Tutup</button>
         </div>
-        <div class="modal-body">
+        <div class="custom-modal-body">
             <div id="rombelModalMeta" style="margin-bottom:14px; font-size:13px; color:#475569; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;"></div>
             <input type="text" id="rombelStudentSearch" class="journal-search-input" style="width:100%; box-sizing:border-box; margin-bottom:12px;" placeholder="Cari nama santri atau pembimbing..." oninput="renderFilteredRombelStudents()">
             <div style="overflow-x:auto;">
@@ -1677,19 +1661,22 @@ $barColor = static function (float $val): string {
                 </table>
             </div>
         </div>
+        <div class="custom-modal-footer">
+            <button type="button" class="btn-kinerja btn-kinerja-outline" onclick="closeModal('studentDetailModal')">Tutup</button>
+        </div>
     </div>
 </div>
 
 <!-- ======================================================================= -->
 <!-- MODAL 2: DETAIL HALAQAH & SANTRI PER GURU (TAB 2)                       -->
 <!-- ======================================================================= -->
-<div id="teacherDetailModal" class="modal-overlay" onclick="if(event.target===this) closeModal('teacherDetailModal')">
-    <div class="modal-box">
-        <div class="modal-header">
+<div id="teacherDetailModal" class="custom-modal-overlay tahfidz-modal" onclick="if(event.target===this) closeModal('teacherDetailModal')">
+    <div class="custom-modal-box" style="max-width: 920px;">
+        <div class="custom-modal-header">
             <h4 id="teacherModalTitle">Detail Halaqah Guru</h4>
             <button type="button" class="btn-kinerja btn-kinerja-outline" style="padding:6px 12px;" onclick="closeModal('teacherDetailModal')">Tutup</button>
         </div>
-        <div class="modal-body">
+        <div class="custom-modal-body">
             <div id="teacherModalSummary" style="margin-bottom:16px;"></div>
             <div style="font-size:12.5px; font-weight:700; color:#475569; margin-bottom:8px;">
                 Daftar Santri Binaan (Diurutkan dari yang perlu pendampingan prioritas):
@@ -1711,20 +1698,23 @@ $barColor = static function (float $val): string {
                 </table>
             </div>
         </div>
+        <div class="custom-modal-footer">
+            <button type="button" class="btn-kinerja btn-kinerja-outline" onclick="closeModal('teacherDetailModal')">Tutup</button>
+        </div>
     </div>
 </div>
 
 <!-- ======================================================================= -->
 <!-- MODAL 3: ATUR TARGET KURIKULUM TAHFIDZ                                  -->
 <!-- ======================================================================= -->
-<div id="targetModal" class="modal-overlay" onclick="if(event.target===this) closeModal('targetModal')">
-    <div class="modal-box" style="max-width: 980px;">
-        <div class="modal-header">
+<div id="targetModal" class="custom-modal-overlay tahfidz-modal" onclick="if(event.target===this) closeModal('targetModal')">
+    <div class="custom-modal-box" style="max-width: 980px;">
+        <div class="custom-modal-header">
             <h4>Atur Target Kurikulum Tahfidz — <?= htmlspecialchars((string)$selectedUnit['nama']) ?> (Semester <?= $selectedSemester ?>)</h4>
             <button type="button" class="btn-kinerja btn-kinerja-outline" style="padding:6px 12px;" onclick="closeModal('targetModal')">Tutup</button>
         </div>
         <form method="POST" action="">
-            <div class="modal-body">
+            <div class="custom-modal-body">
                 <?= csrfField() ?>
                 <input type="hidden" name="action" value="save_targets">
                 <input type="hidden" name="unit_id" value="<?= (int)$unitId ?>">
@@ -1813,7 +1803,7 @@ $barColor = static function (float $val): string {
                     </table>
                 </div>
             </div>
-            <div class="modal-footer">
+            <div class="custom-modal-footer">
                 <button type="button" class="btn-kinerja btn-kinerja-outline" onclick="closeModal('targetModal')">Batal</button>
                 <?php if ($canEditTarget): ?>
                     <button type="submit" class="btn-kinerja btn-kinerja-primary">
@@ -1828,13 +1818,13 @@ $barColor = static function (float $val): string {
 <!-- ======================================================================= -->
 <!-- MODAL 4: METODOLOGI URUTAN SURAT & RUMUS INDIKATOR                      -->
 <!-- ======================================================================= -->
-<div id="methodModal" class="modal-overlay" onclick="if(event.target===this) closeModal('methodModal')">
-    <div class="modal-box" style="max-width: 780px;">
-        <div class="modal-header">
+<div id="methodModal" class="custom-modal-overlay tahfidz-modal" onclick="if(event.target===this) closeModal('methodModal')">
+    <div class="custom-modal-box" style="max-width: 780px;">
+        <div class="custom-modal-header">
             <h4>Acuan Urutan Surat &amp; Rumus Evaluasi Tahfidz</h4>
             <button type="button" class="btn-kinerja btn-kinerja-outline" style="padding:6px 12px;" onclick="closeModal('methodModal')">Tutup</button>
         </div>
-        <div class="modal-body" style="font-size:13.5px; line-height:1.6; color:#334155;">
+        <div class="custom-modal-body" style="font-size:13.5px; line-height:1.6; color:#334155;">
             <h5 style="margin-top:0; color:#0f172a;">1. Urutan Resmi Tangga Hafalan An-Nahl (Komparator)</h5>
             <ul>
                 <li><strong>Juz 30 (Rank 1 &ndash; 37):</strong> Mundur dari <code>An-Nas</code> &rarr; <code>An-Naba'</code> (termasuk progres ayat parsial).</li>
@@ -1853,6 +1843,9 @@ $barColor = static function (float $val): string {
                 <li><strong>Kuadran Kinerja:</strong> Memetakan disiplin <code>% Jurnal</code> (&ge;85% vs &lt;60%) terhadap <code>% Ketuntasan Anak Binaan</code> (&ge;75% vs &lt;75%) sehingga supervisi tepat sasaran.</li>
             </ul>
         </div>
+        <div class="custom-modal-footer">
+            <button type="button" class="btn-kinerja btn-kinerja-outline" onclick="closeModal('methodModal')">Tutup</button>
+        </div>
     </div>
 </div>
 
@@ -1869,14 +1862,34 @@ function escHtml(str) {
     return div.innerHTML;
 }
 
-function openModal(id) {
+// Gunakan openModal() & closeModal() global dari header.php (scroll lock otomatis) + reset scroll body modal
+function openTahfidzModal(id) {
     const el = document.getElementById(id);
-    if (el) el.classList.add('active');
+    if (!el) return;
+    if (typeof window.openModal === 'function') {
+        window.openModal(id);
+    } else {
+        el.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+    const body = el.querySelector('.custom-modal-body');
+    if (body) body.scrollTop = 0;
 }
-function closeModal(id) {
-    const el = document.getElementById(id);
-    if (el) el.classList.remove('active');
-}
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        document.querySelectorAll('.tahfidz-modal').forEach(function(m) {
+            if (m.style.display === 'flex') {
+                if (typeof window.closeModal === 'function') {
+                    window.closeModal(m.id);
+                } else {
+                    m.style.display = 'none';
+                    document.body.style.overflow = '';
+                }
+            }
+        });
+    }
+});
 
 function switchTahfidzTab(tab) {
     const isSantri = (tab === 'santri');
@@ -1926,7 +1939,7 @@ function openRombelDetail(key) {
         `<span>Tuntas: <strong>${data.achieved_students}/${data.total_students} Santri</strong> (Avg Progres: ${Number(data.avg_progress_pct).toFixed(1)}%)</span>`;
     document.getElementById('rombelStudentSearch').value = '';
     renderFilteredRombelStudents();
-    openModal('studentDetailModal');
+    openTahfidzModal('studentDetailModal');
 }
 
 function renderFilteredRombelStudents() {
@@ -1999,7 +2012,7 @@ function openTeacherDetail(guruId) {
             </tr>
         `).join('');
     }
-    openModal('teacherDetailModal');
+    openTahfidzModal('teacherDetailModal');
 }
 
 function filterGuruRows() {
@@ -2038,6 +2051,13 @@ function onTargetValueChange(paralelId) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Pindahkan overlay modal langsung ke document.body agar bebas dari stacking-context/transition <main>
+    document.querySelectorAll('.tahfidz-modal').forEach((modalEl) => {
+        if (modalEl.parentElement !== document.body) {
+            document.body.appendChild(modalEl);
+        }
+    });
+
     if (typeof Chart === 'undefined') return;
 
     const paralelCtx = document.getElementById('paralelChartCanvas');
