@@ -46,11 +46,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['action'] ?? '', $h
             } elseif (empty($aiPre['pending_notes'])) {
                 $_SESSION['tahfidz_ai_flash'] = ['type' => 'success', 'text' => 'Seluruh catatan bebas guru pada periode ini sudah tersimpan di cache AI.'];
             } else {
-                $batchRes = extractTahfidzNotesWithAiBatch($pdo, $aiPre['pending_notes'], 25);
+                $batchRes = extractTahfidzNotesWithAiBatch($pdo, $aiPre['pending_notes'], 20);
                 if (!empty($batchRes['success'])) {
                     $_SESSION['tahfidz_ai_flash'] = [
                         'type' => 'success',
                         'text' => "AI berhasil menganalisis {$batchRes['processed']} catatan unik guru. Sisa antrean: {$batchRes['remaining']} catatan."
+                    ];
+                } elseif (($batchRes['processed'] ?? 0) > 0) {
+                    $_SESSION['tahfidz_ai_flash'] = [
+                        'type' => 'success',
+                        'text' => "Tersimpan {$batchRes['processed']} catatan ke cache AI (sisa {$batchRes['remaining']}), namun sesi terhenti sementara: " . (string)($batchRes['error'] ?? '')
                     ];
                 } else {
                     $_SESSION['tahfidz_ai_flash'] = [
@@ -200,7 +205,7 @@ $sourceVia        = $ctx['source_via'];
 $surahAiDict  = getTahfidzAiSurahDictionary();
 $aiConfigured = (defined('TAHFIDZ_AI_ENABLED') && TAHFIDZ_AI_ENABLED && defined('TAHFIDZ_AI_API_KEY') && TAHFIDZ_AI_API_KEY !== '');
 $aiProvider   = defined('TAHFIDZ_AI_PROVIDER') ? (string)TAHFIDZ_AI_PROVIDER : 'gemini';
-$aiModel      = defined('TAHFIDZ_AI_MODEL') ? (string)TAHFIDZ_AI_MODEL : 'gemini-flash-lite-latest';
+$aiModel      = defined('TAHFIDZ_AI_MODEL') ? (string)TAHFIDZ_AI_MODEL : 'gemini-3.1-flash-lite';
 
 $targetConfigs   = $isSuccess ? getTahfidzTargetConfigs($pdo, $unitId, $selectedSemester) : [];
 $emptyHierarchy  = [
@@ -834,7 +839,7 @@ require_once __DIR__ . '/../../includes/header.php';
                         <input type="hidden" name="tab" value="<?= htmlspecialchars($activeTab) ?>">
                         <input type="hidden" name="status_filter" value="<?= htmlspecialchars($statusFilter) ?>">
                         <button type="submit" class="btn-kinerja btn-kinerja-indigo">
-                            <i class="fa-solid fa-play"></i> Analisis Catatan AI (Batch 25)
+                            <i class="fa-solid fa-play"></i> Analisis Catatan AI (Batch 20)
                         </button>
                     </form>
                 <?php endif; ?>

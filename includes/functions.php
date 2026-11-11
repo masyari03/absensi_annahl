@@ -5758,7 +5758,7 @@ if (!function_exists('callTahfidzAiProvider')) {
         }
         $enabled  = defined('TAHFIDZ_AI_ENABLED') ? (bool)TAHFIDZ_AI_ENABLED : false;
         $provider = defined('TAHFIDZ_AI_PROVIDER') ? (string)TAHFIDZ_AI_PROVIDER : 'gemini';
-        $model    = defined('TAHFIDZ_AI_MODEL') ? (string)TAHFIDZ_AI_MODEL : 'gemini-flash-lite-latest';
+        $model    = defined('TAHFIDZ_AI_MODEL') ? (string)TAHFIDZ_AI_MODEL : 'gemini-3.1-flash-lite';
         $apiKey   = defined('TAHFIDZ_AI_API_KEY') ? trim((string)TAHFIDZ_AI_API_KEY) : '';
 
         if (!$enabled || $apiKey === '') {
@@ -5805,97 +5805,144 @@ if (!function_exists('callTahfidzAiProvider')) {
 
         $userPrompt = 'Ekstrak array "results" untuk catatan berikut: ' . json_encode($itemsPayload, JSON_UNESCAPED_UNICODE);
 
-        if ($provider === 'openai') {
-            $endpoint = 'https://api.openai.com/v1/chat/completions';
-            $headers  = [
-                'Content-Type: application/json',
-                'Authorization: Bearer ' . $apiKey,
+        // Bangun daftar model kandidat untuk auto-fallback bila model utama terkena lonjakan traffic sementara (HTTP 503 / 429)
+        $candidateModels = ($provider === 'openai')
+            ? [($model ?: 'gpt-4o-mini')]
+            : array_values(array_unique(array_slice([
+                $model ?: 'gemini-3.1-flash-lite',
+                'gemini-3.1-flash-lite',
+                'gemini-flash-lite-latest',
+                'gemini-3.5-flash-lite',
+            ], 0, 4)));
+        if ($provider === 'gemini') {
+            $candidateModels = array_slice($candidateModels, 0, 3);
+        }
+
+        $lastHttpCode = 0;
+        $lastCurlErr  = '';
+        $usedModel    = $candidateModels[0];
+
+        foreach ($candidateModels as $attemptIdx => $tryModel) {
+            if ($attemptIdx > 0) {
+                usleep(250000);
+            }
+            $usedModel = $tryModel;
+
+            if ($provider === 'openai') {
+                $endpoint = 'https://api.openai.com/v1/chat/completions';
+                $headers  = [
+                    'Content-Type: application/json',
+                    'Authorization: Bearer ' . $apiKey,
+                ];
+                $body = json_encode([
+                    'model'           => $tryModel,
+                    'temperature'     => 0.1,
+                    'response_format' => ['type' => 'json_object'],
+                    'messages'        => [
+                        ['role' => 'system', 'content' => $systemPrompt],
+                        ['role' => 'user', 'content' => $userPrompt],
+                    ],
+                ], JSON_UNESCAPED_UNICODE);
+            } else {
+                $safeModel = preg_replace('/[^a-zA-Z0-9._-]/', '', $tryModel) ?: 'gemini-3.1-flash-lite';
+                $usedModel = $safeModel;
+                $endpoint  = "https://generativelanguage.googleapis.com/v1beta/models/{$safeModel}:generateContent";
+                $headers   = [
+                    'Content-Type: application/json',
+                    'x-goog-api-key: ' . $apiKey,
+                ];
+                $body = json_encode([
+                    'systemInstruction' => ['parts' => [['text' => $systemPrompt]]],
+                    'contents'          => [['role' => 'user', 'parts' => [['text' => $userPrompt]]]],
+                    'generationConfig'  => [
+                        'temperature'      => 0.1,
+                        'responseMimeType' => 'application/json',
+                    ],
+                ], JSON_UNESCAPED_UNICODE);
+            }
+
+            if (!isAllowedAiEndpointUrl($endpoint)) {
+                return ['success' => false, 'items' => [], 'provider' => $provider, 'model' => $usedModel, 'error' => 'Endpoint AI ditolak oleh proteksi SSRF.'];
+            }
+
+            $ch = curl_init($endpoint);
+            curl_setopt_array($ch, [
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $body,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT        => 10,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_HTTPHEADER     => $headers,
+                CURLOPT_IPRESOLVE      => CURL_IPRESOLVE_V4,
+            ]);
+            $rawResp      = curl_exec($ch);
+            $lastHttpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $lastCurlErr  = curl_error($ch);
+            curl_close($ch);
+
+            if ($rawResp !== false && $lastCurlErr === '' && $lastHttpCode === 200) {
+                $respJson = json_decode((string)$rawResp, true);
+                if (is_array($respJson)) {
+                    $jsonText = ($provider === 'openai')
+                        ? (string)($respJson['choices'][0]['message']['content'] ?? '')
+                        : (string)($respJson['candidates'][0]['content']['parts'][0]['text'] ?? '');
+                    $jsonText = preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($jsonText)) ?? trim($jsonText);
+                    $parsed   = json_decode($jsonText, true);
+                    $results  = is_array($parsed['results'] ?? null) ? $parsed['results'] : (is_array($parsed) && isset($parsed[0]) ? $parsed : []);
+
+                    return [
+                        'success'  => true,
+                        'items'    => $results,
+                        'provider' => $provider,
+                        'model'    => $usedModel,
+                        'error'    => null,
+                    ];
+                }
+            }
+
+            error_log("[callTahfidzAiProvider] {$provider}:{$usedModel} HTTP {$lastHttpCode} err={$lastCurlErr}");
+            // Hentikan segera jika masalah otentikasi / request invalid; hanya fallback bila 503/429/404/timeout
+            if (!in_array($lastHttpCode, [0, 404, 429, 500, 502, 503, 504], true)) {
+                break;
+            }
+        }
+
+        if ($lastCurlErr !== '' || $lastHttpCode === 0) {
+            return [
+                'success'  => false,
+                'items'    => [],
+                'provider' => $provider,
+                'model'    => $usedModel,
+                'error'    => 'Koneksi ke layanan AI melewati batas waktu (timeout). Silakan coba lagi.',
             ];
-            $body = json_encode([
-                'model'           => $model,
-                'temperature'     => 0.1,
-                'response_format' => ['type' => 'json_object'],
-                'messages'        => [
-                    ['role' => 'system', 'content' => $systemPrompt],
-                    ['role' => 'user', 'content' => $userPrompt],
-                ],
-            ], JSON_UNESCAPED_UNICODE);
-        } else {
-            $safeModel = preg_replace('/[^a-zA-Z0-9._-]/', '', $model) ?: 'gemini-flash-lite-latest';
-            $endpoint  = "https://generativelanguage.googleapis.com/v1beta/models/{$safeModel}:generateContent";
-            $headers   = [
-                'Content-Type: application/json',
-                'x-goog-api-key: ' . $apiKey,
+        }
+        if (in_array($lastHttpCode, [429, 500, 502, 503, 504], true)) {
+            return [
+                'success'  => false,
+                'items'    => [],
+                'provider' => $provider,
+                'model'    => $usedModel,
+                'error'    => "Server AI Google sedang sibuk sementara (HTTP {$lastHttpCode} / High Demand). API Key Anda valid — silakan klik ulang analisis beberapa detik lagi.",
             ];
-            $body = json_encode([
-                'systemInstruction' => ['parts' => [['text' => $systemPrompt]]],
-                'contents'          => [['role' => 'user', 'parts' => [['text' => $userPrompt]]]],
-                'generationConfig'  => [
-                    'temperature'      => 0.1,
-                    'responseMimeType' => 'application/json',
-                ],
-            ], JSON_UNESCAPED_UNICODE);
         }
-
-        if (!isAllowedAiEndpointUrl($endpoint)) {
-            return ['success' => false, 'items' => [], 'provider' => $provider, 'model' => $model, 'error' => 'Endpoint AI ditolak oleh proteksi SSRF.'];
-        }
-
-        $ch = curl_init($endpoint);
-        curl_setopt_array($ch, [
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => $body,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_TIMEOUT        => 10,
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_HTTPHEADER     => $headers,
-            CURLOPT_IPRESOLVE      => CURL_IPRESOLVE_V4,
-        ]);
-        $rawResp  = curl_exec($ch);
-        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlErr  = curl_error($ch);
-        curl_close($ch);
-
-        if ($rawResp === false || $curlErr !== '') {
-            error_log("[callTahfidzAiProvider] {$provider} network error: {$curlErr}");
-            return ['success' => false, 'items' => [], 'provider' => $provider, 'model' => $model, 'error' => 'Koneksi ke layanan AI gagal atau melewati batas waktu (timeout).'];
-        }
-
-        $respJson = json_decode((string)$rawResp, true);
-        if ($httpCode !== 200 || !is_array($respJson)) {
-            error_log("[callTahfidzAiProvider] {$provider} HTTP {$httpCode}");
-            return ['success' => false, 'items' => [], 'provider' => $provider, 'model' => $model, 'error' => "Layanan AI merespons HTTP {$httpCode}. Periksa kuota atau validitas API key pada .env."];
-        }
-
-        $jsonText = '';
-        if ($provider === 'openai') {
-            $jsonText = (string)($respJson['choices'][0]['message']['content'] ?? '');
-        } else {
-            $jsonText = (string)($respJson['candidates'][0]['content']['parts'][0]['text'] ?? '');
-        }
-
-        // Bersihkan pembungkus markdown ```json jika ada
-        $jsonText = preg_replace('/^```(?:json)?\s*|\s*```$/i', '', trim($jsonText)) ?? trim($jsonText);
-        $parsed   = json_decode($jsonText, true);
-        $results  = is_array($parsed['results'] ?? null) ? $parsed['results'] : (is_array($parsed) && isset($parsed[0]) ? $parsed : []);
-
         return [
-            'success'  => true,
-            'items'    => $results,
+            'success'  => false,
+            'items'    => [],
             'provider' => $provider,
-            'model'    => $model,
-            'error'    => null,
+            'model'    => $usedModel,
+            'error'    => "Layanan AI merespons HTTP {$lastHttpCode}. Periksa API Key atau nama model pada file .env.",
         ];
     }
 }
 
 if (!function_exists('extractTahfidzNotesWithAiBatch')) {
     /**
-     * Memproses antrean catatan unik yang belum ada di kinerja_tahfidz_ai_cache dalam satu batch transaksi aman.
+     * Memproses antrean catatan unik ke kinerja_tahfidz_ai_cache dalam sub-chunk aman (maks 10/request)
+     * sehingga tiap chunk langsung tersimpan permanen dan terhindar dari timeout beban besar.
      */
-    function extractTahfidzNotesWithAiBatch(PDO $pdo, array $pendingNotes, int $batchLimit = 25): array
+    function extractTahfidzNotesWithAiBatch(PDO $pdo, array $pendingNotes, int $batchLimit = 20): array
     {
         $limitSafe = max(1, min(50, $batchLimit));
         if (empty($pendingNotes)) {
@@ -5934,25 +5981,12 @@ if (!function_exists('extractTahfidzNotesWithAiBatch')) {
             return ['success' => true, 'processed' => 0, 'remaining' => 0, 'error' => null];
         }
 
-        $batch    = array_slice($toProcess, 0, $limitSafe);
-        $aiResult = callTahfidzAiProvider($batch);
-        if (empty($aiResult['success'])) {
-            return [
-                'success'   => false,
-                'processed' => 0,
-                'remaining' => count($toProcess),
-                'error'     => $aiResult['error'] ?? 'Ekstraksi AI gagal.',
-            ];
-        }
-
-        $dict      = getTahfidzAiSurahDictionary();
-        $batchMap  = [];
-        foreach ($batch as $b) {
-            $batchMap[(string)$b['note_hash']] = $b;
-        }
+        $batch      = array_slice($toProcess, 0, $limitSafe);
+        $dict       = getTahfidzAiSurahDictionary();
+        $totalSaved = 0;
+        $lastErr    = null;
 
         try {
-            $pdo->beginTransaction();
             $stmtUp = $pdo->prepare("
                 INSERT INTO kinerja_tahfidz_ai_cache
                     (note_hash, source_type, kd_nama, materi, raw_text, is_achievement, juz, surah_key, ayat_end,
@@ -5979,48 +6013,61 @@ if (!function_exists('extractTahfidzNotesWithAiBatch')) {
                     parsed_json    = VALUES(parsed_json)
             ");
 
-            $saved = 0;
-            foreach ($aiResult['items'] as $item) {
-                if (!is_array($item) || empty($item['note_hash'])) {
-                    continue;
+            foreach (array_chunk($batch, 10) as $subChunk) {
+                $aiResult = callTahfidzAiProvider($subChunk);
+                if (empty($aiResult['success'])) {
+                    $lastErr = $aiResult['error'] ?? 'Ekstraksi AI terhenti sementara.';
+                    break;
                 }
-                $h = (string)$item['note_hash'];
-                if (!isset($batchMap[$h])) {
-                    continue;
-                }
-                $src = $batchMap[$h];
-                $conv = convertAiExtractionToRanks($item, $dict);
 
-                $stmtUp->execute([
-                    ':note_hash'      => $h,
-                    ':source_type'    => in_array($src['source_type'] ?? '', ['quran_nilai', 'tes_ummi', 'rapor', 'jurnal'], true) ? $src['source_type'] : 'quran_nilai',
-                    ':kd_nama'        => mb_substr((string)($src['kd_nama'] ?? ''), 0, 150),
-                    ':materi'         => mb_substr((string)($src['materi'] ?? ''), 0, 255),
-                    ':raw_text'       => (string)($src['raw_text'] ?? ''),
-                    ':is_achievement' => $conv['is_achievement'],
-                    ':juz'            => $conv['juz'],
-                    ':surah_key'      => $conv['surah_key'],
-                    ':ayat_end'       => $conv['ayat_end'],
-                    ':juz30_rank'     => $conv['juz30_rank'],
-                    ':juz29_rank'     => $conv['juz29_rank'],
-                    ':juz28_rank'     => $conv['juz28_rank'],
-                    ':juz_stage'      => $conv['juz_stage'],
-                    ':is_munaqasyah'  => $conv['is_munaqasyah'],
-                    ':confidence'     => $conv['confidence'],
-                    ':ai_reason'      => $conv['ai_reason'],
-                    ':ai_provider'    => (string)$aiResult['provider'],
-                    ':ai_model'       => (string)$aiResult['model'],
-                    ':parsed_json'    => json_encode($item, JSON_UNESCAPED_UNICODE) ?: null,
-                ]);
-                $saved++;
+                $chunkMap = [];
+                foreach ($subChunk as $b) {
+                    $chunkMap[(string)$b['note_hash']] = $b;
+                }
+
+                $pdo->beginTransaction();
+                foreach ($aiResult['items'] as $item) {
+                    if (!is_array($item) || empty($item['note_hash'])) {
+                        continue;
+                    }
+                    $h = (string)$item['note_hash'];
+                    if (!isset($chunkMap[$h])) {
+                        continue;
+                    }
+                    $src  = $chunkMap[$h];
+                    $conv = convertAiExtractionToRanks($item, $dict);
+
+                    $stmtUp->execute([
+                        ':note_hash'      => $h,
+                        ':source_type'    => in_array($src['source_type'] ?? '', ['quran_nilai', 'tes_ummi', 'rapor', 'jurnal'], true) ? $src['source_type'] : 'quran_nilai',
+                        ':kd_nama'        => mb_substr((string)($src['kd_nama'] ?? ''), 0, 150),
+                        ':materi'         => mb_substr((string)($src['materi'] ?? ''), 0, 255),
+                        ':raw_text'       => (string)($src['raw_text'] ?? ''),
+                        ':is_achievement' => $conv['is_achievement'],
+                        ':juz'            => $conv['juz'],
+                        ':surah_key'      => $conv['surah_key'],
+                        ':ayat_end'       => $conv['ayat_end'],
+                        ':juz30_rank'     => $conv['juz30_rank'],
+                        ':juz29_rank'     => $conv['juz29_rank'],
+                        ':juz28_rank'     => $conv['juz28_rank'],
+                        ':juz_stage'      => $conv['juz_stage'],
+                        ':is_munaqasyah'  => $conv['is_munaqasyah'],
+                        ':confidence'     => $conv['confidence'],
+                        ':ai_reason'      => $conv['ai_reason'],
+                        ':ai_provider'    => (string)$aiResult['provider'],
+                        ':ai_model'       => (string)$aiResult['model'],
+                        ':parsed_json'    => json_encode($item, JSON_UNESCAPED_UNICODE) ?: null,
+                    ]);
+                    $totalSaved++;
+                }
+                $pdo->commit();
             }
 
-            $pdo->commit();
             return [
-                'success'   => true,
-                'processed' => $saved,
-                'remaining' => max(0, count($toProcess) - $saved),
-                'error'     => null,
+                'success'   => ($lastErr === null),
+                'processed' => $totalSaved,
+                'remaining' => max(0, count($toProcess) - $totalSaved),
+                'error'     => $lastErr,
             ];
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -6029,8 +6076,8 @@ if (!function_exists('extractTahfidzNotesWithAiBatch')) {
             error_log('[extractTahfidzNotesWithAiBatch] DB error: ' . $e->getMessage());
             return [
                 'success'   => false,
-                'processed' => 0,
-                'remaining' => count($toProcess),
+                'processed' => $totalSaved,
+                'remaining' => max(0, count($toProcess) - $totalSaved),
                 'error'     => 'Gagal menyimpan hasil ekstraksi AI ke database cache.',
             ];
         }
