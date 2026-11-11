@@ -173,6 +173,7 @@ $menuUrlMap = [
     'kinerja_nilai_paralel'      => '/kinerja/index.php',
     'kinerja_tertinggi_terendah' => '/kinerja/tertinggi_terendah.php',
     'kinerja_capaian_tahfidz'    => '/kinerja/tahfidz.php',
+    'kinerja_tahfidz_ai'         => '/kinerja/tahfidz_ai.php',
 ];
 
 $allMenuUrls = [];

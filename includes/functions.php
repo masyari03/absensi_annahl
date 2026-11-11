@@ -6219,3 +6219,426 @@ if (!function_exists('applyTahfidzAiCacheToStudents')) {
         return $summary;
     }
 }
+
+// =========================================================================
+// SHARED CONTEXT, PERBANDINGAN SEBELUM/SESUDAH AI & AUDIT CATATAN TAHFIDZ
+// =========================================================================
+
+if (!function_exists('getTahfidzAccessContext')) {
+    /**
+     * Mengambil konteks otorisasi unit akademik user untuk seluruh modul Tahfidz.
+     */
+    function getTahfidzAccessContext(PDO $pdo): array
+    {
+        $role = currentRole();
+        $allowedLocalUnits = getUserAllowedUnits($pdo);
+        $allowedUnitNames  = [];
+        if ($role !== 'super_admin' && !empty($allowedLocalUnits)) {
+            foreach ($allowedLocalUnits as $lu) {
+                $uName = strtoupper(trim((string)($lu['unit'] ?? '')));
+                if ($uName !== '') {
+                    $allowedUnitNames[] = $uName;
+                }
+            }
+        }
+        return [
+            'role'               => $role,
+            'is_super_admin'     => ($role === 'super_admin'),
+            'allowed_unit_names' => array_values(array_unique($allowedUnitNames)),
+        ];
+    }
+}
+
+if (!function_exists('filterTahfidzAisUnitsByAccess')) {
+    /**
+     * Menyaring daftar unit AIS berdasarkan unit akademik yang diizinkan pada user.
+     */
+    function filterTahfidzAisUnitsByAccess(array $aisUnits, array $accessCtx): array
+    {
+        $allowedNames = $accessCtx['allowed_unit_names'] ?? [];
+        if (!empty($accessCtx['is_super_admin']) || empty($allowedNames)) {
+            return $aisUnits;
+        }
+        return array_values(array_filter($aisUnits, static function ($u) use ($allowedNames) {
+            $n = strtoupper(trim((string)($u['nama'] ?? '')));
+            return in_array($n, $allowedNames, true);
+        }));
+    }
+}
+
+if (!function_exists('assertTahfidzPostUnitAccess')) {
+    /**
+     * Mencegah IDOR lintas unit saat POST action pada modul Tahfidz.
+     */
+    function assertTahfidzPostUnitAccess(int $postUnitId, array $accessCtx): void
+    {
+        $allowedNames = $accessCtx['allowed_unit_names'] ?? [];
+        if (!empty($accessCtx['is_super_admin']) || empty($allowedNames)) {
+            return;
+        }
+        $probeMeta   = fetchTahfidzAchievement($postUnitId, null, 0, false);
+        $allowedPost = filterTahfidzAisUnitsByAccess($probeMeta['meta']['units'] ?? [], $accessCtx);
+        $allowedIds  = array_map(static fn($u) => (int)($u['id'] ?? 0), $allowedPost);
+        if (!in_array($postUnitId, $allowedIds, true)) {
+            http_response_code(403);
+            die('403 - Akses Ditolak: Anda tidak memiliki hak akses untuk mengubah data unit ini.');
+        }
+    }
+}
+
+if (!function_exists('loadTahfidzFilterContext')) {
+    /**
+     * Memuat filter Unit/TA/Semester/Bulan/Sort dan mengambil snapshot AIS dengan scoping RBAC.
+     */
+    function loadTahfidzFilterContext(PDO $pdo, array $accessCtx, array $query): array
+    {
+        $unitId          = isset($query['unit_id']) ? max(1, (int)$query['unit_id']) : 2;
+        $reqTahunAjaranId = (isset($query['tahun_ajaran_id']) && (int)$query['tahun_ajaran_id'] > 0) ? (int)$query['tahun_ajaran_id'] : null;
+        $reqYearName     = trim((string)($query['tahun'] ?? ''));
+        $reqSemester     = (isset($query['semester']) && in_array((int)$query['semester'], [1, 2], true)) ? (int)$query['semester'] : null;
+        $month           = isset($query['month']) ? max(0, min(12, (int)$query['month'])) : 0;
+        $sortMode        = in_array($query['sort'] ?? '', ['grade_asc', 'highest', 'lowest'], true) ? (string)$query['sort'] : 'grade_asc';
+        $forceRefresh    = isset($query['refresh']) && $query['refresh'] === '1';
+
+        $apiResponse       = fetchTahfidzAchievement($unitId, $reqTahunAjaranId, $month, $forceRefresh);
+        $availableUnitsAll = $apiResponse['meta']['units'] ?? [];
+        $availableUnits    = filterTahfidzAisUnitsByAccess($availableUnitsAll, $accessCtx);
+
+        if (!empty($availableUnits)) {
+            $allowedAisIds = array_map(static fn($u) => (int)($u['id'] ?? 0), $availableUnits);
+            if (!in_array($unitId, $allowedAisIds, true)) {
+                $unitId      = $allowedAisIds[0];
+                $apiResponse = fetchTahfidzAchievement($unitId, $reqTahunAjaranId, $month, $forceRefresh);
+            }
+        }
+
+        $academicYears    = $apiResponse['meta']['academic_years'] ?? [];
+        $selectedYear     = $apiResponse['meta']['selected_tahun_ajaran'] ?? [];
+        $selectedYearName = $reqYearName !== '' ? $reqYearName : (string)($selectedYear['nama'] ?? '');
+        $selectedSemester = $reqSemester !== null ? $reqSemester : (int)($selectedYear['semester'] ?? 1);
+
+        if (!empty($academicYears) && ($reqYearName !== '' || $reqSemester !== null) && $reqTahunAjaranId === null) {
+            $matchedTaId = null;
+            foreach ($academicYears as $ay) {
+                if ((string)($ay['nama'] ?? '') === $selectedYearName && (int)($ay['semester'] ?? 0) === $selectedSemester) {
+                    $matchedTaId = (int)$ay['id'];
+                    break;
+                }
+            }
+            if ($matchedTaId === null) {
+                foreach ($academicYears as $ay) {
+                    if ((string)($ay['nama'] ?? '') === $selectedYearName) {
+                        $matchedTaId      = (int)$ay['id'];
+                        $selectedSemester = (int)($ay['semester'] ?? 1);
+                        break;
+                    }
+                }
+            }
+            if ($matchedTaId !== null && $matchedTaId !== (int)($selectedYear['id'] ?? 0)) {
+                $apiResponse   = fetchTahfidzAchievement($unitId, $matchedTaId, $month, $forceRefresh);
+                $academicYears = $apiResponse['meta']['academic_years'] ?? $academicYears;
+                $selectedYear  = $apiResponse['meta']['selected_tahun_ajaran'] ?? $selectedYear;
+                if (!empty($selectedYear['nama'])) {
+                    $selectedYearName = (string)$selectedYear['nama'];
+                    $selectedSemester = (int)($selectedYear['semester'] ?? 1);
+                }
+            }
+        }
+
+        $isSuccess        = !empty($apiResponse['success']);
+        $apiError         = $apiResponse['error'] ?? null;
+        $isFromCache      = !empty($apiResponse['from_cache']);
+        $sourceVia        = (string)($apiResponse['source_via'] ?? ($isFromCache ? 'Smart Cache' : 'Live API'));
+        $meta             = is_array($apiResponse['meta'] ?? null) ? $apiResponse['meta'] : [];
+        $selectedUnit     = $meta['selected_unit'] ?? ['id' => $unitId, 'nama' => 'SD'];
+        $selectedYear     = $meta['selected_tahun_ajaran'] ?? $selectedYear;
+        $selectedYearName = (string)($selectedYear['nama'] ?? $selectedYearName);
+        $selectedSemester = (int)($selectedYear['semester'] ?? $selectedSemester);
+        $selectedTaId     = (int)($selectedYear['id'] ?? 0);
+
+        $uniqueYearNames = [];
+        foreach ($academicYears as $ay) {
+            $yn = (string)($ay['nama'] ?? '');
+            if ($yn !== '' && !in_array($yn, $uniqueYearNames, true)) {
+                $uniqueYearNames[] = $yn;
+            }
+        }
+
+        return [
+            'unit_id'           => $unitId,
+            'month'             => $month,
+            'sort_mode'         => $sortMode,
+            'force_refresh'     => $forceRefresh,
+            'api_response'      => $apiResponse,
+            'available_units'   => $availableUnits,
+            'academic_years'    => $academicYears,
+            'unique_year_names' => $uniqueYearNames,
+            'available_months'  => is_array($meta['available_months'] ?? null) ? $meta['available_months'] : [],
+            'selected_unit'     => $selectedUnit,
+            'selected_year'     => $selectedYear,
+            'selected_year_name'=> $selectedYearName,
+            'selected_semester' => $selectedSemester,
+            'selected_ta_id'    => $selectedTaId,
+            'is_success'        => $isSuccess,
+            'api_error'         => $apiError,
+            'is_from_cache'     => $isFromCache,
+            'source_via'        => $sourceVia,
+            'meta'              => $meta,
+        ];
+    }
+}
+
+if (!function_exists('fetchTahfidzAiNoteCatalogForAudit')) {
+    /**
+     * Mengambil katalog lengkap catatan bebas guru + status cache AI + sampel santri terkait untuk halaman Audit AI.
+     */
+    function fetchTahfidzAiNoteCatalogForAudit(PDO $pdo, array $apiData, float $confidenceThreshold = 0.80): array
+    {
+        $ambiguousMap = is_array($apiData['ambiguous_notes'] ?? null) ? $apiData['ambiguous_notes'] : [];
+        $students     = is_array($apiData['students'] ?? null) ? $apiData['students'] : [];
+
+        $counts = [
+            'all'            => count($ambiguousMap),
+            'pending'        => 0,
+            'low_confidence' => 0,
+            'auto_ai'        => 0,
+            'verified'       => 0,
+            'rejected'       => 0,
+        ];
+
+        if (empty($ambiguousMap)) {
+            return ['items' => [], 'counts' => $counts, 'tables_ready' => true];
+        }
+
+        // Hubungkan setiap note_hash ke daftar santri pemiliknya agar penguji bisa langsung audit konteksnya
+        $studentsByHash = [];
+        foreach ($students as $st) {
+            $hashes = is_array($st['note_hashes'] ?? null) ? $st['note_hashes'] : [];
+            if (empty($hashes)) {
+                continue;
+            }
+            $stRef = [
+                'siswa_id'    => (int)($st['siswa_id'] ?? 0),
+                'nama'        => (string)($st['nama'] ?? ''),
+                'rombel_nama' => trim((string)(($st['paralel_nama'] ?? '') . ' ' . ($st['rombel_nama'] ?? ''))),
+            ];
+            foreach ($hashes as $nh) {
+                $nhStr = (string)$nh;
+                if (!isset($studentsByHash[$nhStr])) {
+                    $studentsByHash[$nhStr] = ['count' => 0, 'samples' => []];
+                }
+                $studentsByHash[$nhStr]['count']++;
+                if (count($studentsByHash[$nhStr]['samples']) < 3) {
+                    $studentsByHash[$nhStr]['samples'][] = $stRef;
+                }
+            }
+        }
+
+        $cacheRows   = [];
+        $tablesReady = true;
+        try {
+            $hashes = array_keys($ambiguousMap);
+            foreach (array_chunk($hashes, 200) as $chunk) {
+                $ph = implode(',', array_fill(0, count($chunk), '?'));
+                $stmtC = $pdo->prepare("SELECT * FROM kinerja_tahfidz_ai_cache WHERE note_hash IN ({$ph})");
+                $stmtC->execute($chunk);
+                foreach ($stmtC->fetchAll(PDO::FETCH_ASSOC) as $cr) {
+                    $cacheRows[(string)$cr['note_hash']] = $cr;
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[fetchTahfidzAiNoteCatalogForAudit] Error: ' . $e->getMessage());
+            $tablesReady = false;
+        }
+
+        $dict  = getTahfidzAiSurahDictionary();
+        $items = [];
+
+        foreach ($ambiguousMap as $nh => $noteMeta) {
+            $nhStr = (string)$nh;
+            $c     = $cacheRows[$nhStr] ?? null;
+
+            $auditBucket = 'pending';
+            $surahLabel  = '-';
+            $confPct     = 0;
+            $aiReason    = '';
+            $isAchieve   = 0;
+            $reviewState = 'pending';
+
+            if ($c !== null) {
+                $conf        = (float)($c['confidence'] ?? 0);
+                $confPct     = (int)round($conf * 100);
+                $isAchieve   = (int)($c['is_achievement'] ?? 0);
+                $aiReason    = (string)($c['ai_reason'] ?? '');
+                $reviewState = (string)($c['review_status'] ?? 'auto_ai');
+
+                $surahBase = (!empty($c['surah_key']) && isset($dict['surahs'][$c['surah_key']]))
+                    ? $dict['surahs'][$c['surah_key']]['label']
+                    : (!empty($c['juz']) ? ('Juz ' . (int)$c['juz']) : ($isAchieve ? 'Capaian Terbaca' : 'Bukan Capaian'));
+                $surahLabel = $surahBase . (!empty($c['ayat_end']) ? (' (Ayat s.d. ' . (int)$c['ayat_end'] . ')') : '');
+
+                if ($reviewState === 'rejected') {
+                    $auditBucket = 'rejected';
+                } elseif ($reviewState === 'verified') {
+                    $auditBucket = 'verified';
+                } elseif ($isAchieve === 1 && $conf < $confidenceThreshold) {
+                    $auditBucket = 'low_confidence';
+                } else {
+                    $auditBucket = 'auto_ai';
+                }
+            }
+
+            $counts[$auditBucket]++;
+            $linked = $studentsByHash[$nhStr] ?? ['count' => 0, 'samples' => []];
+
+            $items[] = [
+                'note_hash'       => $nhStr,
+                'source_type'     => (string)($noteMeta['source_type'] ?? 'quran_nilai'),
+                'kd_nama'         => (string)($noteMeta['kd_nama'] ?? ''),
+                'materi'          => (string)($noteMeta['materi'] ?? ''),
+                'raw_text'        => (string)($noteMeta['raw_text'] ?? ''),
+                'audit_bucket'    => $auditBucket,
+                'review_status'   => $reviewState,
+                'is_achievement'  => $isAchieve,
+                'surah_label'     => $surahLabel,
+                'confidence_pct'  => $confPct,
+                'ai_reason'       => $aiReason,
+                'ai_provider'     => (string)($c['ai_provider'] ?? ''),
+                'ai_model'        => (string)($c['ai_model'] ?? ''),
+                'student_count'   => (int)$linked['count'],
+                'student_samples' => $linked['samples'],
+                'in_cache'        => ($c !== null),
+            ];
+        }
+
+        // Prioritaskan catatan butuh tinjauan (<80%), lalu pending antrean, lalu auto/verified/rejected
+        $priorityOrder = ['low_confidence' => 1, 'pending' => 2, 'auto_ai' => 3, 'verified' => 4, 'rejected' => 5];
+        usort($items, static function ($a, $b) use ($priorityOrder) {
+            $pa = $priorityOrder[$a['audit_bucket']] ?? 9;
+            $pb = $priorityOrder[$b['audit_bucket']] ?? 9;
+            if ($pa !== $pb) {
+                return $pa <=> $pb;
+            }
+            return ($b['student_count'] <=> $a['student_count']);
+        });
+
+        return [
+            'items'        => $items,
+            'counts'       => $counts,
+            'tables_ready' => $tablesReady,
+        ];
+    }
+}
+
+if (!function_exists('buildTahfidzAiComparisonData')) {
+    /**
+     * Membandingkan hasil hierarki Tahfidz Sebelum AI (Baku AIS) vs Sesudah AI (+ Koreksi Manual).
+     */
+    function buildTahfidzAiComparisonData(array $beforeHierarchy, array $afterHierarchy): array
+    {
+        $bUnit = $beforeHierarchy['unit_summary'] ?? [];
+        $aUnit = $afterHierarchy['unit_summary'] ?? [];
+
+        $beforeStudentsById = [];
+        $beforeParalelById  = [];
+        foreach (($beforeHierarchy['paralels'] ?? []) as $bp) {
+            $beforeParalelById[(int)($bp['paralel_id'] ?? 0)] = $bp;
+            foreach (($bp['rombels'] ?? []) as $br) {
+                foreach (($br['students'] ?? []) as $bs) {
+                    $beforeStudentsById[(int)($bs['siswa_id'] ?? 0)] = $bs;
+                }
+            }
+        }
+
+        $paralelRows     = [];
+        $changedStudents = [];
+
+        foreach (($afterHierarchy['paralels'] ?? []) as $ap) {
+            $pid = (int)($ap['paralel_id'] ?? 0);
+            $bp  = $beforeParalelById[$pid] ?? null;
+
+            $bAch = (int)($bp['achieved_students'] ?? 0);
+            $aAch = (int)($ap['achieved_students'] ?? 0);
+            $bPct = (float)($bp['percentage'] ?? 0.0);
+            $aPct = (float)($ap['percentage'] ?? 0.0);
+
+            $paralelRows[] = [
+                'paralel_id'      => $pid,
+                'paralel_nama'    => (string)($ap['paralel_nama'] ?? ''),
+                'target_label'    => (string)($ap['target_label'] ?? ''),
+                'total_students'  => (int)($ap['total_students'] ?? 0),
+                'before_achieved' => $bAch,
+                'after_achieved'  => $aAch,
+                'delta_achieved'  => $aAch - $bAch,
+                'before_pct'      => $bPct,
+                'after_pct'       => $aPct,
+                'delta_pct'       => round($aPct - $bPct, 1),
+            ];
+
+            foreach (($ap['rombels'] ?? []) as $ar) {
+                foreach (($ar['students'] ?? []) as $as) {
+                    $sid      = (int)($as['siswa_id'] ?? 0);
+                    $bs       = $beforeStudentsById[$sid] ?? null;
+                    $aiBadge  = (string)($as['ai_badge'] ?? '');
+                    $bDisp    = (string)($bs['actual_display'] ?? 'Belum Ada Data');
+                    $aDisp    = (string)($as['actual_display'] ?? 'Belum Ada Data');
+                    $bAchSt   = !empty($bs['achieved']);
+                    $aAchSt   = !empty($as['achieved']);
+                    $bProg    = (float)($bs['progress_pct'] ?? 0.0);
+                    $aProg    = (float)($as['progress_pct'] ?? 0.0);
+
+                    if ($aiBadge !== '' || $bDisp !== $aDisp || $bAchSt !== $aAchSt || abs($aProg - $bProg) > 0.05) {
+                        $changedStudents[] = [
+                            'siswa_id'         => $sid,
+                            'nama'             => (string)($as['nama'] ?? ''),
+                            'paralel_nama'     => (string)($ap['paralel_nama'] ?? ''),
+                            'rombel_nama'      => (string)($ar['rombel_nama'] ?? ''),
+                            'pengajar_nama'    => (string)($as['pengajar_nama'] ?? '-'),
+                            'before_display'   => $bDisp,
+                            'after_display'    => $aDisp,
+                            'before_progress'  => $bProg,
+                            'after_progress'   => $aProg,
+                            'before_achieved'  => $bAchSt,
+                            'after_achieved'   => $aAchSt,
+                            'flipped_achieved' => (!$bAchSt && $aAchSt),
+                            'ai_badge'         => $aiBadge,
+                            'ai_evidence'      => $as['ai_evidence'] ?? null,
+                            'manual_override'  => $as['manual_override'] ?? null,
+                        ];
+                    }
+                }
+            }
+        }
+
+        usort($changedStudents, static function ($x, $y) {
+            if ($x['flipped_achieved'] !== $y['flipped_achieved']) {
+                return $y['flipped_achieved'] <=> $x['flipped_achieved'];
+            }
+            $dx = $x['after_progress'] - $x['before_progress'];
+            $dy = $y['after_progress'] - $y['before_progress'];
+            if (abs($dy - $dx) > 0.05) {
+                return ($dy > $dx) ? 1 : -1;
+            }
+            return strcasecmp($x['nama'], $y['nama']);
+        });
+
+        $bUnitAch = (int)($bUnit['achieved_students'] ?? 0);
+        $aUnitAch = (int)($aUnit['achieved_students'] ?? 0);
+        $bUnitPct = (float)($bUnit['percentage'] ?? 0.0);
+        $aUnitPct = (float)($aUnit['percentage'] ?? 0.0);
+
+        return [
+            'unit_delta' => [
+                'total_students'  => (int)($aUnit['total_students'] ?? 0),
+                'before_achieved' => $bUnitAch,
+                'after_achieved'  => $aUnitAch,
+                'delta_achieved'  => $aUnitAch - $bUnitAch,
+                'before_pct'      => $bUnitPct,
+                'after_pct'       => $aUnitPct,
+                'delta_pct'       => round($aUnitPct - $bUnitPct, 1),
+            ],
+            'paralels'         => $paralelRows,
+            'changed_students' => $changedStudents,
+        ];
+    }
+}

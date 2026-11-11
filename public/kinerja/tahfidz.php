@@ -8,259 +8,105 @@ require_once __DIR__ . '/../../includes/functions.php';
 requireLogin();
 requireMenuAccess('kinerja_capaian_tahfidz');
 
-$currentRole   = currentRole();
 $canEditTarget = canEdit('kinerja_capaian_tahfidz');
 $pageTitle     = 'Capaian Tahfidz & Jurnal Guru — Penilaian Kinerja';
+$accessCtx     = getTahfidzAccessContext($pdo);
 
-// Helper penentuan unit akademik yang diizinkan user berdasar nama unit (mengingat ID unit lokal & AIS dapat berbeda untuk SMA)
-$allowedLocalUnits = getUserAllowedUnits($pdo);
-$allowedUnitNames  = [];
-if ($currentRole !== 'super_admin' && !empty($allowedLocalUnits)) {
-    foreach ($allowedLocalUnits as $lu) {
-        $uName = strtoupper(trim((string)($lu['unit'] ?? '')));
-        if ($uName !== '') {
-            $allowedUnitNames[] = $uName;
-        }
-    }
-}
-
-$filterUnitsByAccess = static function (array $aisUnits) use ($allowedUnitNames, $currentRole): array {
-    if ($currentRole === 'super_admin' || empty($allowedUnitNames)) {
-        return $aisUnits;
-    }
-    return array_values(array_filter($aisUnits, static function ($u) use ($allowedUnitNames) {
-        $n = strtoupper(trim((string)($u['nama'] ?? '')));
-        return in_array($n, $allowedUnitNames, true);
-    }));
-};
-
-// 1. Handle POST actions (Target Kurikulum, Batch AI Catatan, Verifikasi AI, Koreksi Manual Santri)
-$handledPostActions = ['save_targets', 'run_ai_batch', 'review_ai_note', 'save_student_override'];
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['action'] ?? '', $handledPostActions, true)) {
+// 1. Handle POST Simpan Target Kurikulum per Paralel & Semester
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_targets') {
     if (!$canEditTarget) {
         http_response_code(403);
-        die('403 - Akses Ditolak: Anda tidak memiliki izin untuk mengubah atau menganalisis data Tahfidz.');
+        die('403 - Akses Ditolak: Anda tidak memiliki izin mengubah target kurikulum Tahfidz.');
     }
     requireCsrf();
 
-    $postAction   = (string)$_POST['action'];
     $postUnitId   = max(1, (int)($_POST['unit_id'] ?? 2));
     $postSemester = ((int)($_POST['semester'] ?? 1) === 2) ? 2 : 1;
     $postTahun    = trim((string)($_POST['tahun'] ?? ''));
     $postMonth    = max(0, min(12, (int)($_POST['month'] ?? 0)));
     $postTab      = in_array($_POST['tab'] ?? '', ['santri', 'jurnal'], true) ? $_POST['tab'] : 'santri';
     $postSort     = in_array($_POST['sort'] ?? '', ['grade_asc', 'highest', 'lowest'], true) ? $_POST['sort'] : 'grade_asc';
-    $postTaId     = max(0, (int)($_POST['tahun_ajaran_id'] ?? 0));
 
     // Validasi horizontal unit scoping saat POST agar user non-superadmin tidak dapat mengubah unit lain
-    if ($currentRole !== 'super_admin' && !empty($allowedUnitNames)) {
-        $probeMeta   = fetchTahfidzAchievement($postUnitId, null, 0, false);
-        $allowedPost = $filterUnitsByAccess($probeMeta['meta']['units'] ?? []);
-        $allowedIds  = array_map(static fn($u) => (int)$u['id'], $allowedPost);
-        if (!in_array($postUnitId, $allowedIds, true)) {
-            http_response_code(403);
-            die('403 - Akses Ditolak: Anda tidak memiliki hak akses untuk mengubah data unit ini.');
-        }
-    }
+    assertTahfidzPostUnitAccess($postUnitId, $accessCtx);
 
-    if ($postAction === 'save_targets') {
-        $allowedTargetTypes = [
-            'juz30_rank', 'juz29_rank', 'juz28_rank',
-            'juz_stage', 'juz29_coverage', 'juz28_coverage', 'teacher_individual'
-        ];
-        $rawTargets = $_POST['targets'] ?? [];
+    $allowedTargetTypes = [
+        'juz30_rank', 'juz29_rank', 'juz28_rank',
+        'juz_stage', 'juz29_coverage', 'juz28_coverage', 'teacher_individual'
+    ];
+    $rawTargets = $_POST['targets'] ?? [];
 
-        if (!is_array($rawTargets) || empty($rawTargets)) {
-            $_SESSION['tahfidz_flash'] = ['type' => 'error', 'text' => 'Data target tidak valid atau kosong.'];
-        } else {
-            try {
-                $pdo->beginTransaction();
-                $stmtSave = $pdo->prepare("
-                    INSERT INTO kinerja_tahfidz_targets
-                        (unit_id, paralel_id, paralel_nama, semester, target_type, target_value, target_label, require_munaqasyah, updated_by)
-                    VALUES
-                        (:unit_id, :paralel_id, :paralel_nama, :semester, :target_type, :target_value, :target_label, :require_munaqasyah, :updated_by)
-                    ON DUPLICATE KEY UPDATE
-                        paralel_nama       = VALUES(paralel_nama),
-                        target_type        = VALUES(target_type),
-                        target_value       = VALUES(target_value),
-                        target_label       = VALUES(target_label),
-                        require_munaqasyah = VALUES(require_munaqasyah),
-                        updated_by         = VALUES(updated_by)
-                ");
+    if (!is_array($rawTargets) || empty($rawTargets)) {
+        $_SESSION['tahfidz_flash'] = ['type' => 'error', 'text' => 'Data target tidak valid atau kosong.'];
+    } else {
+        try {
+            $pdo->beginTransaction();
+            $stmtSave = $pdo->prepare("
+                INSERT INTO kinerja_tahfidz_targets
+                    (unit_id, paralel_id, paralel_nama, semester, target_type, target_value, target_label, require_munaqasyah, updated_by)
+                VALUES
+                    (:unit_id, :paralel_id, :paralel_nama, :semester, :target_type, :target_value, :target_label, :require_munaqasyah, :updated_by)
+                ON DUPLICATE KEY UPDATE
+                    paralel_nama       = VALUES(paralel_nama),
+                    target_type        = VALUES(target_type),
+                    target_value       = VALUES(target_value),
+                    target_label       = VALUES(target_label),
+                    require_munaqasyah = VALUES(require_munaqasyah),
+                    updated_by         = VALUES(updated_by)
+            ");
 
-                $savedCount = 0;
-                $catalog    = getTahfidzSurahCatalog();
+            $savedCount = 0;
+            $catalog    = getTahfidzSurahCatalog();
 
-                foreach ($rawTargets as $pIdRaw => $row) {
-                    if (!is_array($row)) {
-                        continue;
-                    }
-                    $pId = (int)$pIdRaw;
-                    if ($pId <= 0) {
-                        continue;
-                    }
-                    $tType = (string)($row['target_type'] ?? 'juz30_rank');
-                    if (!in_array($tType, $allowedTargetTypes, true)) {
-                        $tType = 'juz30_rank';
-                    }
-                    $tVal   = max(0.0, min(100.0, (float)($row['target_value'] ?? 13)));
-                    $pNama  = mb_substr(trim(strip_tags((string)($row['paralel_nama'] ?? "Level {$pId}"))), 0, 100);
-                    $tLabel = mb_substr(trim(strip_tags((string)($row['target_label'] ?? ''))), 0, 150);
-                    if ($tLabel === '') {
-                        $intKey = (int)round($tVal);
-                        $tLabel = $catalog[$tType][$intKey] ?? 'Target Tahfidz';
-                    }
-                    $reqMunaq = !empty($row['require_munaqasyah']) ? 1 : 0;
-
-                    $stmtSave->execute([
-                        ':unit_id'            => $postUnitId,
-                        ':paralel_id'         => $pId,
-                        ':paralel_nama'       => $pNama,
-                        ':semester'           => $postSemester,
-                        ':target_type'        => $tType,
-                        ':target_value'       => $tVal,
-                        ':target_label'       => $tLabel,
-                        ':require_munaqasyah' => $reqMunaq,
-                        ':updated_by'         => currentUserId(),
-                    ]);
-                    $savedCount++;
+            foreach ($rawTargets as $pIdRaw => $row) {
+                if (!is_array($row)) {
+                    continue;
                 }
+                $pId = (int)$pIdRaw;
+                if ($pId <= 0) {
+                    continue;
+                }
+                $tType = (string)($row['target_type'] ?? 'juz30_rank');
+                if (!in_array($tType, $allowedTargetTypes, true)) {
+                    $tType = 'juz30_rank';
+                }
+                $tVal   = max(0.0, min(100.0, (float)($row['target_value'] ?? 13)));
+                $pNama  = mb_substr(trim(strip_tags((string)($row['paralel_nama'] ?? "Level {$pId}"))), 0, 100);
+                $tLabel = mb_substr(trim(strip_tags((string)($row['target_label'] ?? ''))), 0, 150);
+                if ($tLabel === '') {
+                    $intKey = (int)round($tVal);
+                    $tLabel = $catalog[$tType][$intKey] ?? 'Target Tahfidz';
+                }
+                $reqMunaq = !empty($row['require_munaqasyah']) ? 1 : 0;
 
-                $pdo->commit();
-                $_SESSION['tahfidz_flash'] = [
-                    'type' => 'success',
-                    'text' => "Berhasil menyimpan {$savedCount} target kurikulum Tahfidz (Semester {$postSemester})."
-                ];
-            } catch (Throwable $e) {
-                if ($pdo->inTransaction()) {
-                    $pdo->rollBack();
-                }
-                error_log('[tahfidz.php save_targets] Error: ' . $e->getMessage());
-                $_SESSION['tahfidz_flash'] = [
-                    'type' => 'error',
-                    'text' => 'Gagal menyimpan target kurikulum karena kendala database internal.'
-                ];
-            }
-        }
-    } elseif ($postAction === 'run_ai_batch') {
-        $probeApi = fetchTahfidzAchievement($postUnitId, $postTaId > 0 ? $postTaId : null, $postMonth, false);
-        if (empty($probeApi['success'])) {
-            $_SESSION['tahfidz_flash'] = ['type' => 'error', 'text' => 'Tidak dapat mengambil daftar catatan AIS untuk dianalisis.'];
-        } else {
-            $effTaId = (int)($probeApi['meta']['selected_tahun_ajaran']['id'] ?? $postTaId);
-            $aiPre   = applyTahfidzAiCacheToStudents($pdo, $probeApi, $postUnitId, $effTaId, 0.80);
-            if (empty($aiPre['tables_ready'])) {
-                $_SESSION['tahfidz_flash'] = ['type' => 'error', 'text' => 'Tabel cache AI belum tersedia. Jalankan php database/migrate_penilaian_kinerja_tahfidz_ai.php.'];
-            } elseif (empty($aiPre['pending_notes'])) {
-                $_SESSION['tahfidz_flash'] = ['type' => 'success', 'text' => 'Seluruh catatan bebas guru pada periode ini sudah tersimpan di cache AI.'];
-            } else {
-                $batchRes = extractTahfidzNotesWithAiBatch($pdo, $aiPre['pending_notes'], 25);
-                if (!empty($batchRes['success'])) {
-                    $_SESSION['tahfidz_flash'] = [
-                        'type' => 'success',
-                        'text' => "AI berhasil menganalisis {$batchRes['processed']} catatan unik guru. Sisa antrean belum diproses: {$batchRes['remaining']} catatan."
-                    ];
-                } else {
-                    $_SESSION['tahfidz_flash'] = [
-                        'type' => 'error',
-                        'text' => (string)($batchRes['error'] ?? 'Ekstraksi catatan AI gagal diproses.')
-                    ];
-                }
-            }
-        }
-    } elseif ($postAction === 'review_ai_note') {
-        $noteHash = trim((string)($_POST['note_hash'] ?? ''));
-        $decision = (string)($_POST['decision'] ?? '');
-        if (!preg_match('/^[a-f0-9]{64}$/', $noteHash) || !in_array($decision, ['verified', 'rejected'], true)) {
-            $_SESSION['tahfidz_flash'] = ['type' => 'error', 'text' => 'Parameter verifikasi catatan AI tidak valid.'];
-        } else {
-            try {
-                $stmtRev = $pdo->prepare("
-                    UPDATE kinerja_tahfidz_ai_cache
-                    SET review_status = :status, reviewed_by = :uid
-                    WHERE note_hash = :hash
-                ");
-                $stmtRev->execute([
-                    ':status' => $decision,
-                    ':uid'    => currentUserId(),
-                    ':hash'   => $noteHash,
+                $stmtSave->execute([
+                    ':unit_id'            => $postUnitId,
+                    ':paralel_id'         => $pId,
+                    ':paralel_nama'       => $pNama,
+                    ':semester'           => $postSemester,
+                    ':target_type'        => $tType,
+                    ':target_value'       => $tVal,
+                    ':target_label'       => $tLabel,
+                    ':require_munaqasyah' => $reqMunaq,
+                    ':updated_by'         => currentUserId(),
                 ]);
-                $_SESSION['tahfidz_flash'] = [
-                    'type' => 'success',
-                    'text' => $decision === 'verified' ? 'Tafsir catatan AI telah disetujui dan diverifikasi.' : 'Tafsir catatan AI ditolak dari perhitungan.'
-                ];
-            } catch (Throwable $e) {
-                error_log('[tahfidz.php review_ai_note] Error: ' . $e->getMessage());
-                $_SESSION['tahfidz_flash'] = ['type' => 'error', 'text' => 'Gagal memperbarui status verifikasi catatan AI.'];
+                $savedCount++;
             }
-        }
-    } elseif ($postAction === 'save_student_override') {
-        $siswaId       = (int)($_POST['siswa_id'] ?? 0);
-        $clearOverride = !empty($_POST['clear_override']);
-        if ($siswaId <= 0 || $postTaId <= 0) {
-            $_SESSION['tahfidz_flash'] = ['type' => 'error', 'text' => 'Identitas santri atau tahun ajaran tidak valid.'];
-        } elseif ($clearOverride) {
-            try {
-                $stmtDel = $pdo->prepare("
-                    DELETE FROM kinerja_tahfidz_student_overrides
-                    WHERE unit_id = :u AND tahun_ajaran_id = :ta AND siswa_id = :sid
-                ");
-                $stmtDel->execute([':u' => $postUnitId, ':ta' => $postTaId, ':sid' => $siswaId]);
-                $_SESSION['tahfidz_flash'] = ['type' => 'success', 'text' => 'Koreksi manual santri dihapus; perhitungan kembali mengikuti data AIS & cache AI.'];
-            } catch (Throwable $e) {
-                error_log('[tahfidz.php clear_override] Error: ' . $e->getMessage());
-                $_SESSION['tahfidz_flash'] = ['type' => 'error', 'text' => 'Gagal menghapus koreksi manual santri.'];
+
+            $pdo->commit();
+            $_SESSION['tahfidz_flash'] = [
+                'type' => 'success',
+                'text' => "Berhasil menyimpan {$savedCount} target kurikulum Tahfidz (Semester {$postSemester})."
+            ];
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
             }
-        } else {
-            $surahKey = trim((string)($_POST['surah_key'] ?? ''));
-            $juzOnly  = (int)($_POST['juz_fallback'] ?? 0);
-            $ayatEnd  = isset($_POST['ayat_end']) && (int)$_POST['ayat_end'] > 0 ? (int)$_POST['ayat_end'] : null;
-            $reqMunaq = !empty($_POST['is_munaqasyah']);
-            $reason   = mb_substr(trim(strip_tags((string)($_POST['reason'] ?? ''))), 0, 250);
-
-            $conv = convertAiExtractionToRanks([
-                'is_achievement' => 1,
-                'surah_key'      => $surahKey !== '' ? $surahKey : null,
-                'juz'            => $surahKey === '' && $juzOnly > 0 ? $juzOnly : null,
-                'ayat_end'       => $ayatEnd,
-                'is_munaqasyah'  => $reqMunaq ? 1 : 0,
-                'confidence'     => 1.0,
-            ]);
-
-            if ($conv['juz_stage'] <= 0 && $conv['juz30_rank'] <= 0) {
-                $_SESSION['tahfidz_flash'] = ['type' => 'error', 'text' => 'Pilih surat atau Juz capaian yang valid untuk koreksi manual.'];
-            } else {
-                $dispLabel = 'Koreksi: ' . ($conv['surah_label'] !== '' ? $conv['surah_label'] : 'Capaian Disesuaikan');
-                $m30 = ($conv['juz'] === 30 && $reqMunaq) || $conv['juz_stage'] >= 2 ? 1 : 0;
-                $m29 = ($conv['juz'] === 29 && $reqMunaq) || $conv['juz_stage'] >= 3 ? 1 : 0;
-                $m28 = ($conv['juz'] === 28 && $reqMunaq) ? 1 : 0;
-
-                try {
-                    $stmtOv = $pdo->prepare("
-                        INSERT INTO kinerja_tahfidz_student_overrides
-                            (unit_id, tahun_ajaran_id, siswa_id, juz30_rank, juz29_rank, juz28_rank, juz_stage,
-                             has_munaqasyah_juz30, has_munaqasyah_juz29, has_munaqasyah_juz28, display_label, reason, updated_by)
-                        VALUES
-                            (:u, :ta, :sid, :r30, :r29, :r28, :st, :m30, :m29, :m28, :lbl, :rsn, :uid)
-                        ON DUPLICATE KEY UPDATE
-                            juz30_rank = VALUES(juz30_rank), juz29_rank = VALUES(juz29_rank), juz28_rank = VALUES(juz28_rank),
-                            juz_stage = VALUES(juz_stage), has_munaqasyah_juz30 = VALUES(has_munaqasyah_juz30),
-                            has_munaqasyah_juz29 = VALUES(has_munaqasyah_juz29), has_munaqasyah_juz28 = VALUES(has_munaqasyah_juz28),
-                            display_label = VALUES(display_label), reason = VALUES(reason), updated_by = VALUES(updated_by)
-                    ");
-                    $stmtOv->execute([
-                        ':u' => $postUnitId, ':ta' => $postTaId, ':sid' => $siswaId,
-                        ':r30' => $conv['juz30_rank'], ':r29' => $conv['juz29_rank'], ':r28' => $conv['juz28_rank'],
-                        ':st' => $conv['juz_stage'], ':m30' => $m30, ':m29' => $m29, ':m28' => $m28,
-                        ':lbl' => $dispLabel, ':rsn' => $reason, ':uid' => currentUserId(),
-                    ]);
-                    $_SESSION['tahfidz_flash'] = ['type' => 'success', 'text' => "Koreksi manual untuk {$dispLabel} berhasil disimpan."];
-                } catch (Throwable $e) {
-                    error_log('[tahfidz.php save_student_override] Error: ' . $e->getMessage());
-                    $_SESSION['tahfidz_flash'] = ['type' => 'error', 'text' => 'Gagal menyimpan koreksi manual santri.'];
-                }
-            }
+            error_log('[tahfidz.php save_targets] Error: ' . $e->getMessage());
+            $_SESSION['tahfidz_flash'] = [
+                'type' => 'error',
+                'text' => 'Gagal menyimpan target kurikulum karena kendala database internal.'
+            ];
         }
     }
 
@@ -283,96 +129,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($_POST['action'] ?? '', $h
 $flashMessage = $_SESSION['tahfidz_flash'] ?? null;
 unset($_SESSION['tahfidz_flash']);
 
-// 2. Parameter GET Filter
-$unitId          = isset($_GET['unit_id']) ? max(1, (int)$_GET['unit_id']) : 2;
-$reqTahunAjaranId = (isset($_GET['tahun_ajaran_id']) && (int)$_GET['tahun_ajaran_id'] > 0) ? (int)$_GET['tahun_ajaran_id'] : null;
-$reqYearName     = trim((string)($_GET['tahun'] ?? ''));
-$reqSemester     = (isset($_GET['semester']) && in_array((int)$_GET['semester'], [1, 2], true)) ? (int)$_GET['semester'] : null;
-$month           = isset($_GET['month']) ? max(0, min(12, (int)$_GET['month'])) : 0;
-$sortMode        = in_array($_GET['sort'] ?? '', ['grade_asc', 'highest', 'lowest'], true) ? (string)$_GET['sort'] : 'grade_asc';
-$activeTab       = in_array($_GET['tab'] ?? '', ['santri', 'jurnal'], true) ? (string)$_GET['tab'] : 'santri';
-$forceRefresh    = isset($_GET['refresh']) && $_GET['refresh'] === '1';
+// 2. Parameter GET Filter & Probe AIS API (Murni Aturan Baku Layer 1 AIS, Terpisah dari Halaman AI)
+$activeTab        = in_array($_GET['tab'] ?? '', ['santri', 'jurnal'], true) ? (string)$_GET['tab'] : 'santri';
+$ctx              = loadTahfidzFilterContext($pdo, $accessCtx, $_GET);
+$unitId           = $ctx['unit_id'];
+$month            = $ctx['month'];
+$sortMode         = $ctx['sort_mode'];
+$apiResponse      = $ctx['api_response'];
+$availableUnits   = $ctx['available_units'];
+$uniqueYearNames  = $ctx['unique_year_names'];
+$availableMonths  = $ctx['available_months'];
+$selectedUnit     = $ctx['selected_unit'];
+$selectedYear     = $ctx['selected_year'];
+$selectedYearName = $ctx['selected_year_name'];
+$selectedSemester = $ctx['selected_semester'];
+$isSuccess        = $ctx['is_success'];
+$apiError         = $ctx['api_error'];
+$isFromCache      = $ctx['is_from_cache'];
+$sourceVia        = $ctx['source_via'];
+$meta             = $ctx['meta'];
 
-// 3. Probe AIS API & Terapkan Scoping Unit + Tahun/Semester
-$apiResponse = fetchTahfidzAchievement($unitId, $reqTahunAjaranId, $month, $forceRefresh);
-
-$availableUnitsAll = $apiResponse['meta']['units'] ?? [];
-$availableUnits    = $filterUnitsByAccess($availableUnitsAll);
-
-if (!empty($availableUnits)) {
-    $allowedAisIds = array_map(static fn($u) => (int)$u['id'], $availableUnits);
-    if (!in_array($unitId, $allowedAisIds, true)) {
-        $unitId      = $allowedAisIds[0];
-        $apiResponse = fetchTahfidzAchievement($unitId, $reqTahunAjaranId, $month, $forceRefresh);
-    }
-}
-
-$academicYears  = $apiResponse['meta']['academic_years'] ?? [];
-$selectedYear   = $apiResponse['meta']['selected_tahun_ajaran'] ?? [];
-$selectedYearName = $reqYearName !== '' ? $reqYearName : (string)($selectedYear['nama'] ?? '');
-$selectedSemester = $reqSemester !== null ? $reqSemester : (int)($selectedYear['semester'] ?? 1);
-
-if (!empty($academicYears) && ($reqYearName !== '' || $reqSemester !== null) && $reqTahunAjaranId === null) {
-    $matchedTaId = null;
-    foreach ($academicYears as $ay) {
-        if ((string)$ay['nama'] === $selectedYearName && (int)$ay['semester'] === $selectedSemester) {
-            $matchedTaId = (int)$ay['id'];
-            break;
-        }
-    }
-    if ($matchedTaId === null) {
-        foreach ($academicYears as $ay) {
-            if ((string)$ay['nama'] === $selectedYearName) {
-                $matchedTaId      = (int)$ay['id'];
-                $selectedSemester = (int)$ay['semester'];
-                break;
-            }
-        }
-    }
-    if ($matchedTaId !== null && $matchedTaId !== (int)($selectedYear['id'] ?? 0)) {
-        $apiResponse  = fetchTahfidzAchievement($unitId, $matchedTaId, $month, $forceRefresh);
-        $academicYears = $apiResponse['meta']['academic_years'] ?? $academicYears;
-        $selectedYear  = $apiResponse['meta']['selected_tahun_ajaran'] ?? $selectedYear;
-        if (!empty($selectedYear['nama'])) {
-            $selectedYearName = (string)$selectedYear['nama'];
-            $selectedSemester = (int)$selectedYear['semester'];
-        }
-    }
-}
-
-$isSuccess     = !empty($apiResponse['success']);
-$apiError      = $apiResponse['error'] ?? null;
-$isFromCache   = !empty($apiResponse['from_cache']);
-$sourceVia     = (string)($apiResponse['source_via'] ?? ($isFromCache ? 'Smart Cache' : 'Live API'));
-$meta          = $apiResponse['meta'] ?? [];
-$selectedUnit  = $meta['selected_unit'] ?? ['id' => $unitId, 'nama' => 'SD'];
-$selectedYear  = $meta['selected_tahun_ajaran'] ?? $selectedYear;
-$selectedYearName = (string)($selectedYear['nama'] ?? $selectedYearName);
-$selectedSemester = (int)($selectedYear['semester'] ?? $selectedSemester);
-$selectedTaId     = (int)($selectedYear['id'] ?? 0);
-
-$uniqueYearNames = [];
-foreach ($academicYears as $ay) {
-    $yn = (string)($ay['nama'] ?? '');
-    if ($yn !== '' && !in_array($yn, $uniqueYearNames, true)) {
-        $uniqueYearNames[] = $yn;
-    }
-}
-
-$availableMonths = is_array($meta['available_months'] ?? null) ? $meta['available_months'] : [];
 $monthLabelsId = [
     1 => 'Januari', 2 => 'Februari', 3 => 'Maret', 4 => 'April',
     5 => 'Mei', 6 => 'Juni', 7 => 'Juli', 8 => 'Agustus',
     9 => 'September', 10 => 'Oktober', 11 => 'November', 12 => 'Desember'
 ];
 
-// 4. Terapkan AI Semantic Cache & Koreksi Manual, lalu Hitung Hierarki Capaian & Data Tab Jurnal Guru
+// 3. Hitung Hierarki Capaian Baku & Data Tab Jurnal Guru
 $surahCatalog   = getTahfidzSurahCatalog();
-$surahAiDict    = getTahfidzAiSurahDictionary();
-$aiConfigured   = (defined('TAHFIDZ_AI_ENABLED') && TAHFIDZ_AI_ENABLED && defined('TAHFIDZ_AI_API_KEY') && TAHFIDZ_AI_API_KEY !== '');
-$aiSummary      = $isSuccess
-    ? applyTahfidzAiCacheToStudents($pdo, $apiResponse, $unitId, $selectedTaId, 0.80)
-    : ['total_ambiguous' => 0, 'cached_count' => 0, 'pending_count' => 0, 'pending_review_count' => 0, 'ai_upgraded_count' => 0, 'override_count' => 0, 'tables_ready' => true];
 $targetConfigs  = $isSuccess ? getTahfidzTargetConfigs($pdo, $unitId, $selectedSemester) : [];
 $hierarchy      = $isSuccess ? calculateTahfidzHierarchy($apiResponse, $targetConfigs, $sortMode) : [
     'unit_summary' => [
@@ -1204,20 +988,6 @@ require_once __DIR__ . '/../../includes/header.php';
 .st-near     { background: #dbeafe; color: #1e40af; }
 .st-progress { background: #fef3c7; color: #92400e; }
 .st-empty    { background: #f1f5f9; color: #64748b; }
-.ai-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 7px;
-    border-radius: 6px;
-    font-size: 10.5px;
-    font-weight: 700;
-    margin-top: 3px;
-}
-.ai-chip-applied  { background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; }
-.ai-chip-verified { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
-.ai-chip-pending  { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
-.ai-chip-manual   { background: #f3e8ff; color: #7e22ce; border: 1px solid #e9d5ff; }
 </style>
 
 <?php
@@ -1362,48 +1132,6 @@ $barColor = static function (float $val): string {
             </div>
         </div>
     <?php else: ?>
-
-        <?php if (!empty($aiSummary['tables_ready']) && ($aiSummary['total_ambiguous'] > 0 || $aiSummary['override_count'] > 0)): ?>
-            <div class="notice-banner info" style="align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:16px; background:#f8fafc; border-color:#cbd5e1; color:#1e293b;">
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                    <i class="fa-solid fa-wand-magic-sparkles" style="color:#4f46e5; font-size:17px;"></i>
-                    <div>
-                        <strong>Pembacaan Catatan Bebas Guru (Hybrid AI):</strong>
-                        <span><?= (int)$aiSummary['cached_count'] ?>/<?= (int)$aiSummary['total_ambiguous'] ?> catatan unik tersimpan di cache</span>
-                        &bull; <strong style="color:#047857;"><?= (int)$aiSummary['ai_upgraded_count'] ?> santri</strong> terbantu AI
-                        <?php if ($aiSummary['override_count'] > 0): ?>
-                            &bull; <strong style="color:#4f46e5;"><?= (int)$aiSummary['override_count'] ?></strong> koreksi manual
-                        <?php endif; ?>
-                        <?php if ($aiSummary['pending_review_count'] > 0): ?>
-                            &bull; <strong style="color:#b45309;"><?= (int)$aiSummary['pending_review_count'] ?> santri</strong> perlu tinjauan
-                        <?php endif; ?>
-                        <?php if (!$aiConfigured && $aiSummary['pending_count'] > 0): ?>
-                            <div style="font-size:11.5px; color:#64748b; margin-top:2px;">
-                                Catatan: Pasang <code>TAHFIDZ_AI_API_KEY</code> di file <code>.env</code> server untuk menjalankan batch AI otomatis; koreksi manual per santri tetap aktif.
-                            </div>
-                        <?php endif; ?>
-                    </div>
-                </div>
-                <?php if ($canEditTarget && $aiSummary['pending_count'] > 0): ?>
-                    <form method="POST" action="" style="margin:0;">
-                        <?= csrfField() ?>
-                        <input type="hidden" name="action" value="run_ai_batch">
-                        <input type="hidden" name="unit_id" value="<?= (int)$unitId ?>">
-                        <input type="hidden" name="tahun_ajaran_id" value="<?= (int)$selectedTaId ?>">
-                        <input type="hidden" name="semester" value="<?= (int)$selectedSemester ?>">
-                        <input type="hidden" name="tahun" value="<?= htmlspecialchars($selectedYearName) ?>">
-                        <input type="hidden" name="month" value="<?= (int)$month ?>">
-                        <input type="hidden" name="sort" value="<?= htmlspecialchars($sortMode) ?>">
-                        <input type="hidden" name="tab" value="<?= htmlspecialchars($activeTab) ?>">
-                        <button type="submit" class="btn-kinerja btn-kinerja-indigo" style="padding:8px 14px; font-size:12.5px;"
-                                title="Analisis hingga 25 catatan bebas guru per batch dan simpan permanen ke cache">
-                            <i class="fa-solid fa-robot"></i>
-                            Analisis Catatan Guru (AI) &bull; <?= (int)$aiSummary['pending_count'] ?> Antrean
-                        </button>
-                    </form>
-                <?php endif; ?>
-            </div>
-        <?php endif; ?>
 
         <!-- 3. TOMBOL TAB UTAMA: CAPAIAN SANTRI vs JUMLAH ISI JURNAL -->
         <div class="tahfidz-tab-bar" role="tablist">
@@ -1840,7 +1568,6 @@ $barColor = static function (float $val): string {
                             <th>Capaian Terbaca</th>
                             <th>Progres</th>
                             <th>Status</th>
-                            <?php if ($canEditTarget): ?><th>Aksi</th><?php endif; ?>
                         </tr>
                     </thead>
                     <tbody id="rombelModalTbody"></tbody>
@@ -1878,7 +1605,6 @@ $barColor = static function (float $val): string {
                             <th>Target Kurikulum</th>
                             <th>Progres</th>
                             <th>Status</th>
-                            <?php if ($canEditTarget): ?><th>Aksi</th><?php endif; ?>
                         </tr>
                     </thead>
                     <tbody id="teacherModalTbody"></tbody>
@@ -2036,119 +1762,10 @@ $barColor = static function (float $val): string {
     </div>
 </div>
 
-<?php if ($canEditTarget): ?>
-<!-- ======================================================================= -->
-<!-- MODAL 5: KOREKSI MANUAL / VERIFIKASI CATATAN AI SANTRI                  -->
-<!-- ======================================================================= -->
-<div id="studentOverrideModal" class="custom-modal-overlay tahfidz-modal" onclick="if(event.target===this) closeModal('studentOverrideModal')">
-    <div class="custom-modal-box" style="max-width: 620px;">
-        <div class="custom-modal-header">
-            <h4 id="ovModalTitle">Tinjau / Koreksi Capaian Santri</h4>
-            <button type="button" class="btn-kinerja btn-kinerja-outline" style="padding:6px 12px;" onclick="closeModal('studentOverrideModal')">Tutup</button>
-        </div>
-        <div class="custom-modal-body">
-            <div id="ovAiBox" style="display:none; background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px; padding:12px 14px; margin-bottom:16px;">
-                <div style="font-size:12px; font-weight:800; color:#4338ca; margin-bottom:6px;">
-                    <i class="fa-solid fa-robot"></i> Pembacaan Catatan Guru oleh AI
-                </div>
-                <div id="ovAiDetails" style="font-size:12.5px; color:#334155; line-height:1.5; margin-bottom:10px;"></div>
-                <form method="POST" action="" style="display:flex; gap:8px; flex-wrap:wrap; margin:0;">
-                    <?= csrfField() ?>
-                    <input type="hidden" name="action" value="review_ai_note">
-                    <input type="hidden" name="unit_id" value="<?= (int)$unitId ?>">
-                    <input type="hidden" name="tahun_ajaran_id" value="<?= (int)$selectedTaId ?>">
-                    <input type="hidden" name="semester" value="<?= (int)$selectedSemester ?>">
-                    <input type="hidden" name="tahun" value="<?= htmlspecialchars($selectedYearName) ?>">
-                    <input type="hidden" name="month" value="<?= (int)$month ?>">
-                    <input type="hidden" name="sort" value="<?= htmlspecialchars($sortMode) ?>">
-                    <input type="hidden" name="tab" value="<?= htmlspecialchars($activeTab) ?>">
-                    <input type="hidden" name="note_hash" id="ovNoteHash" value="">
-                    <button type="submit" name="decision" value="verified" class="btn-kinerja btn-kinerja-primary" style="padding:6px 12px; font-size:12px;">
-                        <i class="fa-solid fa-check"></i> Setujui Tafsir AI
-                    </button>
-                    <button type="submit" name="decision" value="rejected" class="btn-kinerja btn-kinerja-outline" style="padding:6px 12px; font-size:12px; color:#be123c; border-color:#fecdd3;">
-                        <i class="fa-solid fa-xmark"></i> Tolak Tafsir Ini
-                    </button>
-                </form>
-            </div>
-
-            <form method="POST" action="" style="margin:0;">
-                <?= csrfField() ?>
-                <input type="hidden" name="action" value="save_student_override">
-                <input type="hidden" name="unit_id" value="<?= (int)$unitId ?>">
-                <input type="hidden" name="tahun_ajaran_id" value="<?= (int)$selectedTaId ?>">
-                <input type="hidden" name="semester" value="<?= (int)$selectedSemester ?>">
-                <input type="hidden" name="tahun" value="<?= htmlspecialchars($selectedYearName) ?>">
-                <input type="hidden" name="month" value="<?= (int)$month ?>">
-                <input type="hidden" name="sort" value="<?= htmlspecialchars($sortMode) ?>">
-                <input type="hidden" name="tab" value="<?= htmlspecialchars($activeTab) ?>">
-                <input type="hidden" name="siswa_id" id="ovSiswaId" value="">
-
-                <div style="margin-bottom:12px;">
-                    <label style="display:block; font-size:12px; font-weight:700; color:#475569; margin-bottom:5px;">Pilih Surat Terakhir yang Benar-benar Tuntas (Juz 30 / 29 / 28)</label>
-                    <select name="surah_key" id="ovSurahSelect" class="filter-control" style="width:100%;">
-                        <option value="">-- Atau pilih Juz Lanjutan di bawah (Juz 1..27) --</option>
-                        <?php foreach ($surahAiDict['surahs'] as $sKey => $sInfo): ?>
-                            <option value="<?= htmlspecialchars($sKey) ?>">
-                                Juz <?= (int)$sInfo['juz'] ?> &mdash; <?= htmlspecialchars($sInfo['label']) ?> (<?= (int)$sInfo['ayats'] ?> Ayat)
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
-                    <div>
-                        <label style="display:block; font-size:12px; font-weight:700; color:#475569; margin-bottom:5px;">Juz Lanjutan (Jika Juz 1–27)</label>
-                        <select name="juz_fallback" class="filter-control" style="width:100%;">
-                            <option value="0">-- Tidak Ada --</option>
-                            <?php for ($j = 1; $j <= 27; $j++): ?>
-                                <option value="<?= $j ?>">Tuntas Juz <?= $j ?></option>
-                            <?php endfor; ?>
-                        </select>
-                    </div>
-                    <div>
-                        <label style="display:block; font-size:12px; font-weight:700; color:#475569; margin-bottom:5px;">Ayat Terakhir (Opsional)</label>
-                        <input type="number" name="ayat_end" min="1" max="286" class="journal-search-input" style="width:100%; box-sizing:border-box;" placeholder="Kosong = tuntas 1 surat">
-                    </div>
-                </div>
-
-                <div style="margin-bottom:12px;">
-                    <label style="display:inline-flex; align-items:center; gap:8px; font-size:12.5px; font-weight:600; color:#334155;">
-                        <input type="checkbox" name="is_munaqasyah" value="1"> Sudah Lulus Munaqasyah Juz tersebut
-                    </label>
-                </div>
-
-                <div style="margin-bottom:16px;">
-                    <label style="display:block; font-size:12px; font-weight:700; color:#475569; margin-bottom:5px;">Alasan / Catatan Koreksi Admin</label>
-                    <input type="text" name="reason" id="ovReasonInput" maxlength="250" class="journal-search-input" style="width:100%; box-sizing:border-box;" placeholder="Mis. Catatan guru tertulis di buku mutaba'ah / keterangan tes">
-                </div>
-
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; border-top:1px solid #e2e8f0; padding-top:14px;">
-                    <button type="submit" name="clear_override" value="1" id="ovClearBtn" class="btn-kinerja btn-kinerja-outline" style="color:#be123c; border-color:#fecdd3; display:none;">
-                        <i class="fa-solid fa-trash-can"></i> Hapus Koreksi Manual
-                    </button>
-                    <div style="display:flex; gap:8px; margin-left:auto;">
-                        <button type="button" class="btn-kinerja btn-kinerja-outline" onclick="closeModal('studentOverrideModal')">Batal</button>
-                        <button type="submit" class="btn-kinerja btn-kinerja-primary">
-                            <i class="fa-solid fa-floppy-disk"></i> Simpan Koreksi Manual
-                        </button>
-                    </div>
-                </div>
-            </form>
-        </div>
-    </div>
-</div>
-<?php endif; ?>
-
 <script>
 const ROMBEL_DATA     = <?= json_encode($rombelJsonMap, $jsonFlags) ?>;
 const TEACHER_DATA    = <?= json_encode($teacherJsonMap, $jsonFlags) ?>;
 const SURAH_CATALOG   = <?= json_encode($surahCatalog, $jsonFlags) ?>;
-const CAN_EDIT_TARGET = <?= $canEditTarget ? 'true' : 'false' ?>;
-const STUDENT_INDEX   = {};
-Object.values(ROMBEL_DATA).forEach(r => {
-    (r.students || []).forEach(s => { STUDENT_INDEX[String(s.siswa_id)] = s; });
-});
 
 let activeRombelKey = null;
 
@@ -2238,51 +1855,11 @@ function openRombelDetail(key) {
     openTahfidzModal('studentDetailModal');
 }
 
-function formatStudentActualHtml(s) {
-    let html = `<div>${escHtml(s.actual_display)}</div>`;
-    const ev = s.ai_evidence || null;
-    if (s.ai_badge === 'manual_override') {
-        const rs = (s.manual_override && s.manual_override.reason) ? s.manual_override.reason : 'Koreksi Manual Admin';
-        html += `<div><span class="ai-chip ai-chip-manual" title="${escHtml(rs)}"><i class="fa-solid fa-pen"></i> Koreksi Manual</span></div>`;
-    } else if (s.ai_badge === 'ai_verified' && ev) {
-        html += `<div><span class="ai-chip ai-chip-verified" title="${escHtml(ev.raw_text)}"><i class="fa-solid fa-check-double"></i> Terverifikasi (${escHtml(ev.confidence)}%)</span></div>`;
-    } else if (s.ai_badge === 'ai_applied' && ev) {
-        html += `<div><span class="ai-chip ai-chip-applied" title="Sumber: ${escHtml(ev.raw_text)} (${escHtml(ev.ai_reason)})"><i class="fa-solid fa-robot"></i> AI Catatan (${escHtml(ev.confidence)}%)</span></div>`;
-    } else if (s.ai_badge === 'ai_pending' && ev) {
-        html += `<div><span class="ai-chip ai-chip-pending" title="Sumber: ${escHtml(ev.raw_text)}"><i class="fa-solid fa-circle-question"></i> Perlu Tinjau AI (${escHtml(ev.confidence)}%)</span></div>`;
-    }
-    return html;
-}
-
-function openStudentOverrideModal(siswaId) {
-    if (!CAN_EDIT_TARGET) return;
-    const s = STUDENT_INDEX[String(siswaId)];
-    if (!s) return;
-    document.getElementById('ovModalTitle').textContent = `Tinjau / Koreksi: ${s.nama}`;
-    document.getElementById('ovSiswaId').value = String(s.siswa_id);
-    document.getElementById('ovReasonInput').value = (s.manual_override && s.manual_override.reason) ? s.manual_override.reason : '';
-    document.getElementById('ovClearBtn').style.display = (s.ai_badge === 'manual_override') ? 'inline-flex' : 'none';
-
-    const aiBox = document.getElementById('ovAiBox');
-    if (s.ai_evidence) {
-        aiBox.style.display = 'block';
-        document.getElementById('ovNoteHash').value = s.ai_evidence.note_hash || '';
-        document.getElementById('ovAiDetails').innerHTML =
-            `<div><strong>KD/Sumber:</strong> ${escHtml(s.ai_evidence.kd_nama || '-')} (${escHtml(s.ai_evidence.source_type)})</div>` +
-            `<div><strong>Catatan Guru:</strong> &ldquo;${escHtml(s.ai_evidence.raw_text)}&rdquo;</div>` +
-            `<div><strong>Hasil AI:</strong> ${escHtml(s.ai_evidence.surah_label)} (${escHtml(s.ai_evidence.confidence)}%) &mdash; ${escHtml(s.ai_evidence.ai_reason)}</div>`;
-    } else {
-        aiBox.style.display = 'none';
-    }
-    openTahfidzModal('studentOverrideModal');
-}
-
 function renderFilteredRombelStudents() {
     const data = ROMBEL_DATA[activeRombelKey];
     if (!data) return;
     const q = (document.getElementById('rombelStudentSearch').value || '').trim().toLowerCase();
     const tbody = document.getElementById('rombelModalTbody');
-    const colSpan = CAN_EDIT_TARGET ? 7 : 6;
     const filtered = (data.students || []).filter(s => {
         if (!q) return true;
         return (s.nama || '').toLowerCase().includes(q) ||
@@ -2291,7 +1868,7 @@ function renderFilteredRombelStudents() {
     });
 
     if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="${colSpan}" style="text-align:center; color:#64748b;">Tidak ada santri yang cocok.</td></tr>`;
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#64748b;">Tidak ada santri yang cocok.</td></tr>';
         return;
     }
 
@@ -2300,10 +1877,9 @@ function renderFilteredRombelStudents() {
             <td>${i + 1}</td>
             <td><strong>${escHtml(s.nama)}</strong></td>
             <td>${escHtml(s.pengajar_nama)}</td>
-            <td>${formatStudentActualHtml(s)}</td>
+            <td>${escHtml(s.actual_display)}</td>
             <td><strong>${Number(s.progress_pct).toFixed(1)}%</strong></td>
             <td>${statusChipHtml(s.status_key, s.status_label)}</td>
-            ${CAN_EDIT_TARGET ? `<td><button type="button" class="btn-kinerja btn-kinerja-outline" style="padding:4px 9px; font-size:11px;" onclick="openStudentOverrideModal(${Number(s.siswa_id)})">Koreksi</button></td>` : ''}
         </tr>
     `).join('');
 }
@@ -2334,20 +1910,18 @@ function openTeacherDetail(guruId) {
 
     const tbody = document.getElementById('teacherModalTbody');
     const stList = t.students || [];
-    const colSpan = CAN_EDIT_TARGET ? 8 : 7;
     if (stList.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="${colSpan}" style="text-align:center; color:#64748b;">Belum ada santri di halaqah guru ini.</td></tr>`;
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#64748b;">Belum ada santri di halaqah guru ini.</td></tr>';
     } else {
         tbody.innerHTML = stList.map((s, i) => `
             <tr>
                 <td>${i + 1}</td>
                 <td><strong>${escHtml(s.nama)}</strong></td>
                 <td>${escHtml(s.paralel_nama)} &bull; ${escHtml(s.rombel_nama)}</td>
-                <td>${formatStudentActualHtml(s)}</td>
+                <td>${escHtml(s.actual_display)}</td>
                 <td>${escHtml(s.target_label)}</td>
                 <td><strong>${Number(s.progress_pct).toFixed(1)}%</strong></td>
                 <td>${statusChipHtml(s.status_key, s.status_label)}</td>
-                ${CAN_EDIT_TARGET ? `<td><button type="button" class="btn-kinerja btn-kinerja-outline" style="padding:4px 9px; font-size:11px;" onclick="openStudentOverrideModal(${Number(s.siswa_id)})">Koreksi</button></td>` : ''}
             </tr>
         `).join('');
     }

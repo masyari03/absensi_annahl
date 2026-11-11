@@ -44,7 +44,7 @@ try {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
 
-    echo "[2/2] Membuat tabel kinerja_tahfidz_student_overrides...\n";
+    echo "[2/4] Membuat tabel kinerja_tahfidz_student_overrides...\n";
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS kinerja_tahfidz_student_overrides (
             id INT NOT NULL AUTO_INCREMENT,
@@ -67,9 +67,52 @@ try {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
 
-    echo "✅ Migrasi tabel AI cache & koreksi manual Tahfidz selesai dengan sukses!\n";
+    $pdo->beginTransaction();
+
+    echo "[3/4] Mendaftarkan Sub-menu 'Analisis AI Tahfidz' (ID 116)...\n";
+    $stmtMenu = $pdo->prepare("
+        INSERT INTO app_menus (id, menu_key, menu_name, category, menu_url, menu_icon, parent_id, sort_order, is_active)
+        VALUES (116, 'kinerja_tahfidz_ai', 'Analisis AI Tahfidz', 'PENILAIAN KINERJA', 'kinerja/tahfidz_ai.php', 'fa-robot', 112, 4, 1)
+        ON DUPLICATE KEY UPDATE
+            menu_name  = VALUES(menu_name),
+            category   = VALUES(category),
+            menu_url   = VALUES(menu_url),
+            menu_icon  = VALUES(menu_icon),
+            parent_id  = VALUES(parent_id),
+            sort_order = VALUES(sort_order),
+            is_active  = 1
+    ");
+    $stmtMenu->execute();
+
+    echo "[4/4] Mengatur RBAC default untuk Menu ID 116 (super_admin=1, lainnya default=0)...\n";
+    $roles = $pdo->query("SELECT id, role_key FROM roles")->fetchAll(PDO::FETCH_ASSOC);
+    $stmtSuper = $pdo->prepare("
+        INSERT INTO role_menu_access (role_id, menu_id, can_read, can_create, can_edit, can_delete)
+        VALUES (:role_id, 116, 1, 1, 1, 1)
+        ON DUPLICATE KEY UPDATE can_read = 1, can_create = 1, can_edit = 1, can_delete = 1
+    ");
+    $stmtOther = $pdo->prepare("
+        INSERT IGNORE INTO role_menu_access (role_id, menu_id, can_read, can_create, can_edit, can_delete)
+        VALUES (:role_id, 116, 0, 0, 0, 0)
+    ");
+
+    foreach ($roles as $r) {
+        if ($r['role_key'] === 'super_admin') {
+            $stmtSuper->execute([':role_id' => (int)$r['id']]);
+        } else {
+            $stmtOther->execute([':role_id' => (int)$r['id']]);
+        }
+    }
+
+    $pdo->commit();
+
+    echo "✅ Migrasi tabel AI cache, koreksi manual, & Menu ID 116 selesai dengan sukses!\n";
 } catch (Throwable $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
     error_log('[migrate_penilaian_kinerja_tahfidz_ai] Error: ' . $e->getMessage());
     fwrite(STDERR, "❌ Migrasi gagal: " . $e->getMessage() . "\n");
     exit(1);
 }
+

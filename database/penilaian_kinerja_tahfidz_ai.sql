@@ -53,3 +53,24 @@ CREATE TABLE IF NOT EXISTS kinerja_tahfidz_student_overrides (
     PRIMARY KEY (id),
     UNIQUE KEY uq_unit_ta_siswa (unit_id, tahun_ajaran_id, siswa_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 3. Registrasi Sub-menu Analisis AI Tahfidz (ID 116)
+INSERT INTO app_menus (id, menu_key, menu_name, category, menu_url, menu_icon, parent_id, sort_order, is_active)
+VALUES (116, 'kinerja_tahfidz_ai', 'Analisis AI Tahfidz', 'PENILAIAN KINERJA', 'kinerja/tahfidz_ai.php', 'fa-robot', 112, 4, 1)
+ON DUPLICATE KEY UPDATE
+    menu_name  = VALUES(menu_name),
+    category   = VALUES(category),
+    menu_url   = VALUES(menu_url),
+    menu_icon  = VALUES(menu_icon),
+    parent_id  = VALUES(parent_id),
+    sort_order = VALUES(sort_order),
+    is_active  = 1;
+
+INSERT INTO role_menu_access (role_id, menu_id, can_read, can_create, can_edit, can_delete)
+SELECT id, 116, 1, 1, 1, 1 FROM roles WHERE role_key = 'super_admin'
+ON DUPLICATE KEY UPDATE can_read = 1, can_create = 1, can_edit = 1, can_delete = 1;
+
+INSERT IGNORE INTO role_menu_access (role_id, menu_id, can_read, can_create, can_edit, can_delete)
+SELECT id, 116, 0, 0, 0, 0 FROM roles WHERE role_key <> 'super_admin';
+
+
