@@ -38,11 +38,16 @@ if ($currentRole === 'super_admin' && isset($_POST['save_officer_permissions']))
         $pdo->exec("DELETE FROM officer_attendance_permissions");
         if (!empty($selectedUserIds)) {
             $stmtInsert = $pdo->prepare("INSERT INTO officer_attendance_permissions (user_id, granted_by) VALUES (?, ?)");
-            $stmtGrantMenu = $pdo->prepare("INSERT IGNORE INTO user_menu_access (user_id, menu_id) VALUES (?, 17)"); // menu 17 = attendance_students
+            $attMenuId = (int)($pdo->query("SELECT id FROM app_menus WHERE menu_key = 'attendance_students' LIMIT 1")->fetchColumn() ?: 0);
+            $stmtGrantMenu = $attMenuId > 0
+                ? $pdo->prepare("INSERT INTO user_menu_access (user_id, menu_id, can_read, can_create, can_edit, can_delete) VALUES (?, ?, 1, 1, 1, 0) ON DUPLICATE KEY UPDATE can_read = 1, can_create = 1, can_edit = 1")
+                : null;
             foreach ($selectedUserIds as $uId) {
                 if ($uId > 0) {
                     $stmtInsert->execute([$uId, $userId]);
-                    $stmtGrantMenu->execute([$uId]);
+                    if ($stmtGrantMenu) {
+                        $stmtGrantMenu->execute([$uId, $attMenuId]);
+                    }
                     if (function_exists('refreshUserPermissions')) {
                         refreshUserPermissions($pdo, $uId);
                     }

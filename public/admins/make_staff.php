@@ -34,17 +34,15 @@ try {
     $stmtClass = $pdo->prepare("DELETE FROM admin_class_permissions WHERE user_id = ?");
     $stmtClass->execute([$id]);
 
-    // 3. Reset menu access ke default role staff
+    // 3. Sinkronkan user_roles & bersihkan override menu agar bersih mengikuti default role staff
+    $stmtStaffRoleId = $pdo->query("SELECT id FROM roles WHERE role_key = 'staff' LIMIT 1")->fetchColumn();
+    if ($stmtStaffRoleId) {
+        $pdo->prepare("DELETE FROM user_roles WHERE user_id = ?")->execute([$id]);
+        $pdo->prepare("INSERT INTO user_roles (user_id, role_id, is_primary) VALUES (?, ?, 1)")->execute([$id, (int)$stmtStaffRoleId]);
+    }
+
     $stmtDelUma = $pdo->prepare("DELETE FROM user_menu_access WHERE user_id = ?");
     $stmtDelUma->execute([$id]);
-
-    $stmtAddUma = $pdo->prepare("
-        INSERT IGNORE INTO user_menu_access (user_id, menu_id)
-        SELECT ?, rma.menu_id FROM role_menu_access rma
-        INNER JOIN roles r ON r.id = rma.role_id
-        WHERE r.role_key = 'staff'
-    ");
-    $stmtAddUma->execute([$id]);
 
     $pdo->commit();
     flash('success', 'Admin berhasil diubah menjadi Staff. Hak akses pemantau telah dicabut.');

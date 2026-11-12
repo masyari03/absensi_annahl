@@ -11,6 +11,111 @@ requireSuperAdmin();
 $pageTitle = 'Manajemen Akses & Pengguna';
 $currentUserId = currentUserId();
 
+/**
+ * Hitung matriks default Role (Additive Union) dari seluruh role milik user (user_roles + users.role).
+ */
+function getUserRolePermissionMatrix(PDO $pdo, int $uid): array
+{
+    $stmt = $pdo->prepare("
+        SELECT
+            am.id AS menu_id,
+            COALESCE(MAX(rma.can_read), 0) AS can_read,
+            COALESCE(MAX(rma.can_create), 0) AS can_create,
+            COALESCE(MAX(rma.can_edit), 0) AS can_edit,
+            COALESCE(MAX(rma.can_delete), 0) AS can_delete
+        FROM app_menus am
+        LEFT JOIN users u ON u.id = ?
+        LEFT JOIN roles r_primary ON r_primary.role_key = u.role
+        LEFT JOIN user_roles ur ON ur.user_id = ?
+        INNER JOIN role_menu_access rma
+            ON rma.menu_id = am.id AND (rma.role_id = ur.role_id OR rma.role_id = r_primary.id)
+        WHERE am.is_active = 1 AND am.menu_url != '#'
+        GROUP BY am.id
+    ");
+    $stmt->execute([$uid, $uid]);
+    $matrix = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $matrix[(int)$row['menu_id']] = [
+            'read'   => (int)$row['can_read'] > 0 ? 1 : 0,
+            'create' => (int)$row['can_create'] > 0 ? 1 : 0,
+            'edit'   => (int)$row['can_edit'] > 0 ? 1 : 0,
+            'delete' => (int)$row['can_delete'] > 0 ? 1 : 0,
+        ];
+    }
+    return $matrix;
+}
+
+/**
+ * Hitung matriks hak akses efektif user (Explicit user_menu_access override menimpa Role Union).
+ */
+function getUserEffectiveMenuMatrix(PDO $pdo, int $uid): array
+{
+    $roleDefaults = getUserRolePermissionMatrix($pdo, $uid);
+    $stmtUma = $pdo->prepare("
+        SELECT uma.menu_id, uma.can_read, uma.can_create, uma.can_edit, uma.can_delete
+        FROM user_menu_access uma
+        INNER JOIN app_menus am ON am.id = uma.menu_id
+        WHERE uma.user_id = ? AND am.is_active = 1 AND am.menu_url != '#'
+    ");
+    $stmtUma->execute([$uid]);
+    $overrides = [];
+    while ($row = $stmtUma->fetch(PDO::FETCH_ASSOC)) {
+        $overrides[(int)$row['menu_id']] = [
+            'read'   => (int)$row['can_read'] > 0 ? 1 : 0,
+            'create' => (int)$row['can_create'] > 0 ? 1 : 0,
+            'edit'   => (int)$row['can_edit'] > 0 ? 1 : 0,
+            'delete' => (int)$row['can_delete'] > 0 ? 1 : 0,
+        ];
+    }
+
+    $effective = [];
+    $sources = [];
+    $allMenuIds = array_unique(array_merge(array_keys($roleDefaults), array_keys($overrides)));
+    foreach ($allMenuIds as $mId) {
+        if (isset($overrides[$mId])) {
+            $p = $overrides[$mId];
+            $sources[$mId] = 'custom';
+        } else {
+            $p = $roleDefaults[$mId];
+            $sources[$mId] = 'role';
+        }
+        if ($p['read'] || $p['create'] || $p['edit'] || $p['delete']) {
+            $effective[$mId] = $p;
+        }
+    }
+
+    return [
+        'effective'     => $effective,
+        'role_defaults' => $roleDefaults,
+        'overrides'     => $overrides,
+        'sources'       => $sources,
+    ];
+}
+
+/**
+ * Sinkronkan tabel pivot user_roles ke satu role utama saat quick/bulk change role.
+ */
+function syncUsersSingleRole(PDO $pdo, array $userIds, string $roleKey): void
+{
+    if (empty($userIds)) {
+        return;
+    }
+    $stmtR = $pdo->prepare("SELECT id FROM roles WHERE role_key = ? LIMIT 1");
+    $stmtR->execute([$roleKey]);
+    $roleId = (int)$stmtR->fetchColumn();
+    if ($roleId <= 0) {
+        return;
+    }
+    $placeholders = implode(',', array_fill(0, count($userIds), '?'));
+    $pdo->prepare("DELETE FROM user_roles WHERE user_id IN ($placeholders)")->execute($userIds);
+    $stmtIns = $pdo->prepare("INSERT INTO user_roles (user_id, role_id, is_primary) VALUES (?, ?, 1)");
+    foreach ($userIds as $uid) {
+        if ((int)$uid > 0) {
+            $stmtIns->execute([(int)$uid, $roleId]);
+        }
+    }
+}
+
 // =========================================================================
 // AJAX: AMBIL HAK AKSES USER (JSON DENGAN GRANULAR CRUD MATRIX)
 // =========================================================================
@@ -23,25 +128,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_user_permissions') {
     $stmtUser->execute([$uid]);
     $user = $stmtUser->fetch(PDO::FETCH_ASSOC);
 
-    // Ambil granular permissions per menu_id
-    $stmt = $pdo->prepare("
-        SELECT menu_id, can_read, can_create, can_edit, can_delete 
-        FROM user_menu_access 
-        WHERE user_id = ?
-    ");
-    $stmt->execute([$uid]);
-    $permissions = [];
-    $menuIds = [];
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $mid = (int)$row['menu_id'];
-        $menuIds[] = $mid;
-        $permissions[$mid] = [
-            'read'   => (int)$row['can_read'],
-            'create' => (int)$row['can_create'],
-            'edit'   => (int)$row['can_edit'],
-            'delete' => (int)$row['can_delete'],
-        ];
-    }
+    $matrixInfo = getUserEffectiveMenuMatrix($pdo, $uid);
+    $permissions = $matrixInfo['effective'];
+    $menuIds = array_map('intval', array_keys($permissions));
 
     // Ambil list assigned roles dari user_roles
     $stmtRoles = $pdo->prepare("
@@ -55,11 +144,13 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_user_permissions') {
     $userRoles = $stmtRoles->fetchAll(PDO::FETCH_ASSOC);
 
     echo json_encode([
-        'status' => 'success',
-        'user' => $user,
-        'menu_ids' => array_map('intval', $menuIds),
-        'permissions' => $permissions,
-        'roles' => $userRoles
+        'status'           => 'success',
+        'user'             => $user,
+        'menu_ids'         => $menuIds,
+        'permissions'      => $permissions,
+        'role_permissions' => $matrixInfo['role_defaults'],
+        'sources'          => $matrixInfo['sources'],
+        'roles'            => $userRoles
     ]);
     exit;
 }
@@ -78,9 +169,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_role_permissions') {
         $stmtR->execute([$roleId]);
         $roleData = $stmtR->fetch(PDO::FETCH_ASSOC);
         $stmt = $pdo->prepare("
-            SELECT menu_id, can_read, can_create, can_edit, can_delete 
-            FROM role_menu_access 
-            WHERE role_id = ?
+            SELECT rma.menu_id, rma.can_read, rma.can_create, rma.can_edit, rma.can_delete 
+            FROM role_menu_access rma
+            INNER JOIN app_menus am ON am.id = rma.menu_id
+            WHERE rma.role_id = ? AND am.is_active = 1 AND am.menu_url != '#'
         ");
         $stmt->execute([$roleId]);
     } else {
@@ -90,8 +182,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_role_permissions') {
         $stmt = $pdo->prepare("
             SELECT rma.menu_id, rma.can_read, rma.can_create, rma.can_edit, rma.can_delete 
             FROM role_menu_access rma 
-            INNER JOIN roles r ON r.id = rma.role_id 
-            WHERE r.role_key = ?
+            INNER JOIN roles r ON r.id = rma.role_id
+            INNER JOIN app_menus am ON am.id = rma.menu_id
+            WHERE r.role_key = ? AND am.is_active = 1 AND am.menu_url != '#'
         ");
         $stmt->execute([$roleKey]);
     }
@@ -169,7 +262,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_user_roles') {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
-    // 1. SIMPAN HAK AKSES USER TUNGGAL (MANUAL DENGAN 2D CRUD MATRIX)
+    // 1. SIMPAN HAK AKSES USER TUNGGAL (MANUAL DENGAN 2D CRUD MATRIX & EXPLICIT OVERRIDE)
     if ($action === 'save_user_permissions') {
         $targetUserId = (int)($_POST['target_user_id'] ?? 0);
         $permData = $_POST['perm'] ?? [];
@@ -178,7 +271,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($targetUserId > 0) {
             $pdo->beginTransaction();
             try {
-                // Hapus permission lama
+                // Ambil default role union milik user untuk membedakan inheritance vs explicit override (allow/deny)
+                $roleDefaults = getUserRolePermissionMatrix($pdo, $targetUserId);
+                $activeMenuIds = $pdo->query("SELECT id FROM app_menus WHERE is_active = 1 AND menu_url != '#'")->fetchAll(PDO::FETCH_COLUMN);
+                $allCheckIds = array_unique(array_merge(
+                    array_map('intval', $activeMenuIds),
+                    array_keys($roleDefaults),
+                    is_array($permData) ? array_map('intval', array_keys($permData)) : [],
+                    $selectedMenuIds
+                ));
+
+                // Hapus override lama
                 $pdo->prepare("DELETE FROM user_menu_access WHERE user_id = ?")->execute([$targetUserId]);
 
                 $stmtInsert = $pdo->prepare("
@@ -186,35 +289,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     VALUES (?, ?, ?, ?, ?, ?)
                 ");
 
-                if (!empty($permData) && is_array($permData)) {
-                    // Simpan dari 2D CRUD Matrix
-                    foreach ($permData as $menuId => $actions) {
-                        $mId = (int)$menuId;
+                $overrideCount = 0;
+                $useFallbackIds = (!is_array($permData) || empty($permData)) && !empty($selectedMenuIds);
+
+                foreach ($allCheckIds as $mId) {
+                    if ($mId <= 0) continue;
+
+                    if ($useFallbackIds) {
+                        $r = in_array($mId, $selectedMenuIds, true) ? 1 : 0;
+                        $c = 0; $e = 0; $d = 0;
+                    } else {
+                        $actions = $permData[$mId] ?? [];
                         $r = !empty($actions['read']) ? 1 : 0;
                         $c = !empty($actions['create']) ? 1 : 0;
                         $e = !empty($actions['edit']) ? 1 : 0;
                         $d = !empty($actions['delete']) ? 1 : 0;
-                        // Otomatis aktifkan read jika create/edit/delete aktif
                         if ($c || $e || $d) {
                             $r = 1;
                         }
-                        if ($mId > 0 && ($r || $c || $e || $d)) {
-                            $stmtInsert->execute([$targetUserId, $mId, $r, $c, $e, $d]);
-                        }
                     }
-                } elseif (!empty($selectedMenuIds)) {
-                    // Fallback backward compatibility
-                    foreach ($selectedMenuIds as $mId) {
-                        if ($mId > 0) {
-                            $stmtInsert->execute([$targetUserId, $mId, 1, 0, 0, 0]);
-                        }
+
+                    $def = $roleDefaults[$mId] ?? ['read' => 0, 'create' => 0, 'edit' => 0, 'delete' => 0];
+                    $isDifferent = ($r !== $def['read']) || ($c !== $def['create']) || ($e !== $def['edit']) || ($d !== $def['delete']);
+
+                    // Simpan hanya yang berbeda dari default role (termasuk 0,0,0,0 untuk mencabut menu bawaan role!)
+                    if ($isDifferent) {
+                        $stmtInsert->execute([$targetUserId, $mId, $r, $c, $e, $d]);
+                        $overrideCount++;
                     }
                 }
 
                 $pdo->commit();
                 refreshUserPermissions($pdo, $targetUserId);
                 if (function_exists('recordActivityAudit')) {
-                    recordActivityAudit($pdo, 'access_control', 'UPDATE', 'user_menu_access', $targetUserId, "Perbarui Matriks Hak Akses (CRUD) Pengguna #{$targetUserId}");
+                    recordActivityAudit($pdo, 'access_control', 'UPDATE', 'user_menu_access', $targetUserId, "Perbarui Matriks Hak Akses (CRUD) Pengguna #{$targetUserId} ({$overrideCount} custom override)");
                 }
                 flash('success', 'Matriks hak akses (CRUD) pengguna berhasil diperbarui!');
             } catch (Exception $e) {
@@ -322,28 +430,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new Exception("Pengguna tidak ditemukan.");
             }
 
-            // Update role di tabel users
+            // Update role di tabel users & sinkronkan user_roles
             $stmtUp = $pdo->prepare("UPDATE users SET role = ? WHERE id = ?");
             $stmtUp->execute([$newRole, $uid]);
+            syncUsersSingleRole($pdo, [$uid], $newRole);
 
             // Eksekusi kebijakan sinkronisasi hak akses
             if ($syncPolicy === 'apply_defaults') {
-                // Hapus izin lama
+                // Kosongkan custom override agar user langsung mengikuti role_menu_access terbaru secara dinamis
                 $pdo->prepare("DELETE FROM user_menu_access WHERE user_id = ?")->execute([$uid]);
-
-                // Salin default role menu jika role ada di tabel roles
-                if ($roleRow) {
-                    $stmtDef = $pdo->prepare("SELECT menu_id FROM role_menu_access WHERE role_id = ?");
-                    $stmtDef->execute([$roleRow['id']]);
-                    $defMenuIds = $stmtDef->fetchAll(PDO::FETCH_COLUMN);
-
-                    if (!empty($defMenuIds)) {
-                        $stmtIns = $pdo->prepare("INSERT INTO user_menu_access (user_id, menu_id) VALUES (?, ?)");
-                        foreach ($defMenuIds as $mId) {
-                            $stmtIns->execute([$uid, (int)$mId]);
-                        }
-                    }
-                }
             }
             // Jika keep_existing atau manual_customize, menu user dipertahankan saat ini
 
@@ -407,30 +502,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $placeholders = implode(',', array_fill(0, count($userIds), '?'));
             
-            // 1. Update role users
+            // 1. Update role users & sinkronkan user_roles
             $stmtUp = $pdo->prepare("UPDATE users SET role = ? WHERE id IN ($placeholders)");
             $params = array_merge([$newRole], $userIds);
             $stmtUp->execute($params);
+            syncUsersSingleRole($pdo, $userIds, $newRole);
 
-            // 2. Sinkronisasi menu jika apply_defaults
+            // 2. Sinkronisasi menu jika apply_defaults (bersihkan override agar mengikuti template role secara penuh)
             if ($syncPolicy === 'apply_defaults') {
                 $stmtDel = $pdo->prepare("DELETE FROM user_menu_access WHERE user_id IN ($placeholders)");
                 $stmtDel->execute($userIds);
-
-                if ($roleRow) {
-                    $stmtDef = $pdo->prepare("SELECT menu_id FROM role_menu_access WHERE role_id = ?");
-                    $stmtDef->execute([$roleRow['id']]);
-                    $defMenuIds = $stmtDef->fetchAll(PDO::FETCH_COLUMN);
-
-                    if (!empty($defMenuIds)) {
-                        $stmtIns = $pdo->prepare("INSERT INTO user_menu_access (user_id, menu_id) VALUES (?, ?)");
-                        foreach ($userIds as $uId) {
-                            foreach ($defMenuIds as $mId) {
-                                $stmtIns->execute([(int)$uId, (int)$mId]);
-                            }
-                        }
-                    }
-                }
             }
 
             $pdo->commit();
@@ -468,38 +549,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->beginTransaction();
         try {
             $placeholders = implode(',', array_fill(0, count($userIds), '?'));
-            
-            // Hapus izin lama user terpilih
+            // Hapus seluruh override per-user sehingga pengguna otomatis mengikuti matriks role saat ini secara penuh
             $stmtDel = $pdo->prepare("DELETE FROM user_menu_access WHERE user_id IN ($placeholders)");
             $stmtDel->execute($userIds);
-
-            // Ambil user dan rolenya
-            $stmtUsers = $pdo->prepare("SELECT id, role FROM users WHERE id IN ($placeholders)");
-            $stmtUsers->execute($userIds);
-            $userList = $stmtUsers->fetchAll(PDO::FETCH_ASSOC);
-
-            // Cache menu per role
-            $stmtRma = $pdo->query("
-                SELECT r.role_key, rma.menu_id 
-                FROM role_menu_access rma 
-                JOIN roles r ON r.id = rma.role_id
-            ");
-            $roleMenus = [];
-            while ($rRow = $stmtRma->fetch(PDO::FETCH_ASSOC)) {
-                $roleMenus[$rRow['role_key']][] = (int)$rRow['menu_id'];
-            }
-
-            $stmtIns = $pdo->prepare("INSERT INTO user_menu_access (user_id, menu_id) VALUES (?, ?)");
-            $appliedCount = 0;
-            foreach ($userList as $u) {
-                $rKey = $u['role'];
-                if (!empty($roleMenus[$rKey])) {
-                    foreach ($roleMenus[$rKey] as $mId) {
-                        $stmtIns->execute([(int)$u['id'], $mId]);
-                    }
-                    $appliedCount++;
-                }
-            }
 
             $pdo->commit();
 
@@ -537,7 +589,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->beginTransaction();
         try {
             if ($subAction === 'grant') {
-                $stmtIns = $pdo->prepare("INSERT IGNORE INTO user_menu_access (user_id, menu_id) VALUES (?, ?)");
+                $stmtIns = $pdo->prepare("
+                    INSERT INTO user_menu_access (user_id, menu_id, can_read, can_create, can_edit, can_delete)
+                    VALUES (?, ?, 1, 0, 0, 0)
+                    ON DUPLICATE KEY UPDATE can_read = 1
+                ");
                 foreach ($userIds as $uId) {
                     foreach ($selectedMenuIds as $mId) {
                         if ($mId > 0) $stmtIns->execute([(int)$uId, $mId]);
@@ -545,13 +601,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $pdo->commit();
                 flash('success', "Akses " . count($selectedMenuIds) . " menu berhasil DIBERIKAN ke " . count($userIds) . " pengguna terpilih.");
-            } else { // revoke
-                $userPlaceholders = implode(',', array_fill(0, count($userIds), '?'));
-                $menuPlaceholders = implode(',', array_fill(0, count($selectedMenuIds), '?'));
-                $sql = "DELETE FROM user_menu_access WHERE user_id IN ($userPlaceholders) AND menu_id IN ($menuPlaceholders)";
-                $stmtDel = $pdo->prepare($sql);
-                $params = array_merge($userIds, $selectedMenuIds);
-                $stmtDel->execute($params);
+            } else { // revoke (dukung explicit deny jika menu berasal dari role)
+                $stmtDeny = $pdo->prepare("
+                    INSERT INTO user_menu_access (user_id, menu_id, can_read, can_create, can_edit, can_delete)
+                    VALUES (?, ?, 0, 0, 0, 0)
+                    ON DUPLICATE KEY UPDATE can_read = 0, can_create = 0, can_edit = 0, can_delete = 0
+                ");
+                $stmtDelOne = $pdo->prepare("DELETE FROM user_menu_access WHERE user_id = ? AND menu_id = ?");
+                foreach ($userIds as $uId) {
+                    $uIdInt = (int)$uId;
+                    $roleDefs = getUserRolePermissionMatrix($pdo, $uIdInt);
+                    foreach ($selectedMenuIds as $mId) {
+                        if ($mId <= 0) continue;
+                        $rp = $roleDefs[$mId] ?? null;
+                        if ($rp && ($rp['read'] || $rp['create'] || $rp['edit'] || $rp['delete'])) {
+                            $stmtDeny->execute([$uIdInt, $mId]);
+                        } else {
+                            $stmtDelOne->execute([$uIdInt, $mId]);
+                        }
+                    }
+                }
                 $pdo->commit();
                 flash('success', "Akses " . count($selectedMenuIds) . " menu berhasil DICABUT dari " . count($userIds) . " pengguna terpilih.");
             }
@@ -672,43 +741,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute([$name, $username, $hash, $primaryRoleKey]);
                     $newUserId = (int)$pdo->lastInsertId();
 
-                    // Simpan ke user_roles
+                    // Simpan ke user_roles (hak akses menu otomatis mewarisi role_menu_access secara dinamis)
                     $stmtInsertUR = $pdo->prepare("INSERT INTO user_roles (user_id, role_id, is_primary) VALUES (?, ?, ?)");
                     foreach ($selectedRoleIds as $rid) {
                         $isPri = ($rid === $primaryRoleId) ? 1 : 0;
                         $stmtInsertUR->execute([$newUserId, $rid, $isPri]);
-                    }
-
-                    // Copy default permissions dari seluruh selected roles (Additive Union)
-                    $placeholders = implode(',', array_fill(0, count($selectedRoleIds), '?'));
-                    $stmtRoleAccess = $pdo->prepare("
-                        SELECT menu_id, 
-                               MAX(can_read) as can_read, 
-                               MAX(can_create) as can_create, 
-                               MAX(can_edit) as can_edit, 
-                               MAX(can_delete) as can_delete
-                        FROM role_menu_access 
-                        WHERE role_id IN ($placeholders)
-                        GROUP BY menu_id
-                    ");
-                    $stmtRoleAccess->execute($selectedRoleIds);
-                    $roleAccessList = $stmtRoleAccess->fetchAll(PDO::FETCH_ASSOC);
-
-                    if (!empty($roleAccessList)) {
-                        $stmtUserMenu = $pdo->prepare("
-                            INSERT INTO user_menu_access (user_id, menu_id, can_read, can_create, can_edit, can_delete) 
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        ");
-                        foreach ($roleAccessList as $ra) {
-                            $stmtUserMenu->execute([
-                                $newUserId, 
-                                (int)$ra['menu_id'], 
-                                (int)$ra['can_read'], 
-                                (int)$ra['can_create'], 
-                                (int)$ra['can_edit'], 
-                                (int)$ra['can_delete']
-                            ]);
-                        }
                     }
 
                     $pdo->commit();
@@ -910,6 +947,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $roleId = (int)($_POST['role_id'] ?? 0);
         $permData = $_POST['perm'] ?? [];
         $selectedMenuIds = array_map('intval', $_POST['menu_ids'] ?? []);
+        $syncRoleUsers = !empty($_POST['sync_role_users']);
 
         if ($roleId > 0) {
             $pdo->beginTransaction();
@@ -942,11 +980,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
-                $pdo->commit();
-                if (function_exists('recordActivityAudit')) {
-                    recordActivityAudit($pdo, 'access_control', 'UPDATE', 'role_menu_access', $roleId, "Perbarui Default Matriks CRUD Role #{$roleId}");
+                $syncedUsersCount = 0;
+                if ($syncRoleUsers) {
+                    $stmtRk = $pdo->prepare("SELECT role_key FROM roles WHERE id = ? LIMIT 1");
+                    $stmtRk->execute([$roleId]);
+                    $targetRoleKey = $stmtRk->fetchColumn();
+
+                    $stmtAffected = $pdo->prepare("
+                        SELECT DISTINCT u.id
+                        FROM users u
+                        LEFT JOIN user_roles ur ON ur.user_id = u.id
+                        WHERE u.deleted_at IS NULL
+                          AND (ur.role_id = ? OR u.role COLLATE utf8mb4_general_ci = ?)
+                    ");
+                    $stmtAffected->execute([$roleId, (string)$targetRoleKey]);
+                    $affectedUserIds = array_values(array_filter(array_map('intval', $stmtAffected->fetchAll(PDO::FETCH_COLUMN))));
+                    if (!empty($affectedUserIds)) {
+                        $uPlaceholders = implode(',', array_fill(0, count($affectedUserIds), '?'));
+                        $pdo->prepare("DELETE FROM user_menu_access WHERE user_id IN ($uPlaceholders)")->execute($affectedUserIds);
+                        $syncedUsersCount = count($affectedUserIds);
+                    }
                 }
-                flash('success', 'Default matriks hak akses role (CRUD) berhasil diperbarui!');
+
+                $pdo->commit();
+                refreshUserPermissions($pdo, $currentUserId);
+                if (function_exists('recordActivityAudit')) {
+                    $syncNote = $syncRoleUsers ? " + sinkron penuh {$syncedUsersCount} pengguna" : " (override khusus dipertahankan)";
+                    recordActivityAudit($pdo, 'access_control', 'UPDATE', 'role_menu_access', $roleId, "Perbarui Default Matriks CRUD Role #{$roleId}{$syncNote}");
+                }
+                flash('success', $syncRoleUsers
+                    ? "Default matriks role berhasil diperbarui & diterapkan ke {$syncedUsersCount} pengguna!"
+                    : 'Default matriks hak akses role (CRUD) berhasil diperbarui!');
             } catch (Exception $e) {
                 if ($pdo->inTransaction()) $pdo->rollBack();
                 flash('error', 'Gagal menyimpan: ' . $e->getMessage());
@@ -995,20 +1059,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $overtimeMenuId = (int)$stmtMId->fetchColumn();
 
             if ($overtimeMenuId > 0) {
-                $stmtCheck = $pdo->prepare("SELECT COUNT(*) FROM user_menu_access WHERE user_id = ? AND menu_id = ?");
-                $stmtCheck->execute([$targetUserId, $overtimeMenuId]);
-                $hasAccess = (int)$stmtCheck->fetchColumn() > 0;
+                $matrixInfo = getUserEffectiveMenuMatrix($pdo, $targetUserId);
+                $hasAccess = !empty($matrixInfo['effective'][$overtimeMenuId]['read']);
+                $roleDefault = $matrixInfo['role_defaults'][$overtimeMenuId] ?? ['read' => 0, 'create' => 0, 'edit' => 0, 'delete' => 0];
+                $roleGrants = !empty($roleDefault['read']);
 
                 $stmtUName = $pdo->prepare("SELECT name FROM users WHERE id = ?");
                 $stmtUName->execute([$targetUserId]);
                 $uNameStr = $stmtUName->fetchColumn() ?: 'Pengguna';
 
                 if ($hasAccess) {
-                    $pdo->prepare("DELETE FROM user_menu_access WHERE user_id = ? AND menu_id = ?")->execute([$targetUserId, $overtimeMenuId]);
+                    if ($roleGrants) {
+                        $pdo->prepare("
+                            INSERT INTO user_menu_access (user_id, menu_id, can_read, can_create, can_edit, can_delete)
+                            VALUES (?, ?, 0, 0, 0, 0)
+                            ON DUPLICATE KEY UPDATE can_read = 0, can_create = 0, can_edit = 0, can_delete = 0
+                        ")->execute([$targetUserId, $overtimeMenuId]);
+                    } else {
+                        $pdo->prepare("DELETE FROM user_menu_access WHERE user_id = ? AND menu_id = ?")->execute([$targetUserId, $overtimeMenuId]);
+                    }
                     refreshUserPermissions($pdo, $targetUserId);
                     flash('success', "Akses Data Lembur Staff untuk \"{$uNameStr}\" telah DICABUT.");
                 } else {
-                    $pdo->prepare("INSERT IGNORE INTO user_menu_access (user_id, menu_id) VALUES (?, ?)")->execute([$targetUserId, $overtimeMenuId]);
+                    if ($roleGrants) {
+                        // Cukup hapus explicit deny sebelumnya agar kembali mengikuti role
+                        $pdo->prepare("DELETE FROM user_menu_access WHERE user_id = ? AND menu_id = ?")->execute([$targetUserId, $overtimeMenuId]);
+                    } else {
+                        $pdo->prepare("
+                            INSERT INTO user_menu_access (user_id, menu_id, can_read, can_create, can_edit, can_delete)
+                            VALUES (?, ?, 1, 0, 0, 0)
+                            ON DUPLICATE KEY UPDATE can_read = 1
+                        ")->execute([$targetUserId, $overtimeMenuId]);
+                    }
                     refreshUserPermissions($pdo, $targetUserId);
                     flash('success', "Akses Data Lembur Staff untuk \"{$uNameStr}\" berhasil DIBERIKAN!");
                 }
@@ -1078,27 +1160,57 @@ while ($rc = $stmtCounts->fetch(PDO::FETCH_ASSOC)) {
     }
 }
 
-// 3. Filter Pengguna (Default: staff_only agar tabel ringan & ultra-cepat)
+// 3. Filter Pengguna (Default: staff_only agar tabel ringan & ultra-cepat; mendukung semua role termasuk observer)
 $roleFilter = trim($_GET['role_filter'] ?? 'staff_only');
-$validFilterRoles = ['staff_only', 'all', 'super_admin', 'kepala_sekolah', 'admin', 'staff', 'hrd', 'siswa'];
+$dynamicRoleKeys = array_column($roles, 'role_key');
+$validFilterRoles = array_values(array_unique(array_merge(['staff_only', 'all', 'super_admin', 'kepala_sekolah', 'admin', 'staff', 'observer', 'hrd', 'siswa'], $dynamicRoleKeys)));
 
 $whereSql = "WHERE u.deleted_at IS NULL";
 $queryParams = [];
 
 if ($roleFilter === 'staff_only') {
     $whereSql .= " AND u.role != 'siswa'";
-} elseif ($roleFilter !== 'all' && in_array($roleFilter, $validFilterRoles)) {
-    $whereSql .= " AND u.role = ?";
+} elseif ($roleFilter !== 'all' && in_array($roleFilter, $validFilterRoles, true)) {
+    $whereSql .= " AND (u.role = ? OR EXISTS (SELECT 1 FROM user_roles ur_f INNER JOIN roles r_f ON r_f.id = ur_f.role_id WHERE ur_f.user_id = u.id AND r_f.role_key = ?))";
+    $queryParams[] = $roleFilter;
     $queryParams[] = $roleFilter;
 }
 
-// 4. Ambil Daftar Pengguna
+// 4. Ambil Daftar Pengguna beserta hitungan menu EFEKTIF (Role Union + Explicit Override)
 $stmtUsers = $pdo->prepare("
     SELECT u.id, u.name, u.username, u.role, u.photo, u.created_at,
-           (SELECT COUNT(*) FROM user_menu_access uma WHERE uma.user_id = u.id) as active_menus,
-           (SELECT COUNT(*) FROM user_menu_access uma2 
-            JOIN app_menus am2 ON am2.id = uma2.menu_id 
-            WHERE uma2.user_id = u.id AND am2.menu_key = 'reports_overtimes') as has_overtime_access
+           (
+               SELECT COUNT(*)
+               FROM app_menus am_eff
+               WHERE am_eff.is_active = 1 AND am_eff.menu_url != '#'
+                 AND COALESCE(
+                     (SELECT uma_e.can_read FROM user_menu_access uma_e WHERE uma_e.user_id = u.id AND uma_e.menu_id = am_eff.id LIMIT 1),
+                     (SELECT MAX(rma_e.can_read)
+                      FROM role_menu_access rma_e
+                      LEFT JOIN user_roles ur_e ON ur_e.user_id = u.id
+                      LEFT JOIN roles rp_e ON rp_e.role_key = u.role
+                      WHERE rma_e.menu_id = am_eff.id AND (rma_e.role_id = ur_e.role_id OR rma_e.role_id = rp_e.id)
+                     ),
+                     0
+                 ) > 0
+           ) as active_menus,
+           (SELECT COUNT(*) FROM user_menu_access uma_c WHERE uma_c.user_id = u.id) as custom_overrides,
+           (
+               SELECT COALESCE(
+                   (SELECT uma2.can_read
+                    FROM user_menu_access uma2
+                    INNER JOIN app_menus am2 ON am2.id = uma2.menu_id
+                    WHERE uma2.user_id = u.id AND am2.menu_key = 'reports_overtimes'
+                    LIMIT 1),
+                   (SELECT MAX(rma2.can_read)
+                    FROM role_menu_access rma2
+                    INNER JOIN app_menus am2 ON am2.id = rma2.menu_id
+                    LEFT JOIN user_roles ur2 ON ur2.user_id = u.id
+                    LEFT JOIN roles rp2 ON rp2.role_key = u.role
+                    WHERE am2.menu_key = 'reports_overtimes' AND (rma2.role_id = ur2.role_id OR rma2.role_id = rp2.id)),
+                   0
+               )
+           ) as has_overtime_access
     FROM users u
     {$whereSql}
     ORDER BY u.id DESC
@@ -1768,7 +1880,7 @@ input[type="checkbox"].crud-row-all {
                             $avatar = !empty($u['photo']) ? UPLOAD_URL . '/admins/' . $u['photo'] : null;
                             $avatarFile = !empty($u['photo']) ? UPLOAD_PATH . '/admins/' . $u['photo'] : null;
                         ?>
-                        <tr style="border-bottom: 1px solid #f1f5f9;" class="user-row" data-name="<?= strtolower($u['name']) ?>" data-username="<?= strtolower($u['username']) ?>" data-role="<?= $u['role'] ?>" id="row_user_<?= $u['id'] ?>">
+                        <tr style="border-bottom: 1px solid #f1f5f9;" class="user-row" data-name="<?= htmlspecialchars(strtolower((string)$u['name']), ENT_QUOTES, 'UTF-8') ?>" data-username="<?= htmlspecialchars(strtolower((string)$u['username']), ENT_QUOTES, 'UTF-8') ?>" data-role="<?= htmlspecialchars((string)$u['role'], ENT_QUOTES, 'UTF-8') ?>" id="row_user_<?= (int)$u['id'] ?>">
                             <td style="padding: 12px 10px; text-align: center;">
                                 <input type="checkbox" class="user-bulk-chk" value="<?= $u['id'] ?>" onchange="onUserCheckboxChange(this)" style="cursor: pointer; width: 16px; height: 16px;">
                             </td>
@@ -1821,9 +1933,16 @@ input[type="checkbox"].crud-row-all {
                                         <i class="fa-solid fa-infinity"></i> Semua Akses
                                     </span>
                                 <?php else: ?>
-                                    <span style="display: inline-block; padding: 4px 10px; background: #f1f5f9; color: #334155; border-radius: 12px; font-size: 12px; font-weight: 600;">
-                                        <?= (int)$u['active_menus'] ?> menu
-                                    </span>
+                                    <div style="display: inline-flex; flex-direction: column; align-items: center; gap: 3px;">
+                                        <span style="display: inline-block; padding: 4px 10px; background: #f1f5f9; color: #334155; border-radius: 12px; font-size: 12px; font-weight: 600;">
+                                            <?= (int)$u['active_menus'] ?> menu
+                                        </span>
+                                        <?php if (!empty($u['custom_overrides'])): ?>
+                                            <span style="font-size: 10px; padding: 1px 6px; background: #fef3c7; color: #92400e; border-radius: 8px; font-weight: 700;" title="Memiliki pengaturan khusus yang menimpa default role">
+                                                <?= (int)$u['custom_overrides'] ?> override
+                                            </span>
+                                        <?php endif; ?>
+                                    </div>
                                 <?php endif; ?>
                             </td>
                             <!-- STATUS & TOGGLE AKSES LEMBUR (HRD) -->
@@ -2521,7 +2640,12 @@ input[type="checkbox"].crud-row-all {
                                                             <?= htmlspecialchars($m['menu_name']) ?>
                                                             <?php if ($isOtMenu): ?>
                                                                 <span style="font-size: 10px; background: #fef3c7; color: #b45309; padding: 2px 6px; border-radius: 4px; font-weight: 700; border: 1px solid #fde68a; margin-left: 4px;">⭐ HRD / Lembur</span>
+                                                            <?php elseif ($m['menu_key'] === 'mentoring_assignments'): ?>
+                                                                <span style="font-size: 10px; background: #fee2e2; color: #b91c1c; padding: 2px 6px; border-radius: 4px; font-weight: 700; margin-left: 4px;">Khusus Kepsek/Super Admin</span>
+                                                            <?php elseif (in_array($m['menu_key'], ['mentoring_dashboard', 'mentoring_report', 'mentoring_adab', 'mentoring_curriculum'], true)): ?>
+                                                                <span style="font-size: 10px; background: #e0f2fe; color: #0369a1; padding: 2px 6px; border-radius: 4px; font-weight: 600; margin-left: 4px;">Guru wajib izin Kepsek</span>
                                                             <?php endif; ?>
+                                                            <span id="user_src_badge_<?= $m['id'] ?>" class="user-src-badge" style="display: none; font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; margin-left: 4px;"></span>
                                                         </div>
                                                         <div style="font-size: 11px; color: #94a3b8;"><code><?= htmlspecialchars($m['menu_key']) ?></code></div>
                                                     </div>
@@ -2677,7 +2801,14 @@ input[type="checkbox"].crud-row-all {
                                                 <div style="display: flex; align-items: center; gap: 10px;">
                                                     <i class="<?= htmlspecialchars($icon) ?>" style="color: <?= $isOtMenu ? '#d97706' : 'var(--primary)' ?>; width: 18px; text-align: center; font-size: 15px;"></i>
                                                     <div>
-                                                        <div style="font-weight: 600; color: #1e293b; font-size: 13.5px;"><?= htmlspecialchars($m['menu_name']) ?></div>
+                                                        <div style="font-weight: 600; color: #1e293b; font-size: 13.5px;">
+                                                            <?= htmlspecialchars($m['menu_name']) ?>
+                                                            <?php if ($m['menu_key'] === 'mentoring_assignments'): ?>
+                                                                <span style="font-size: 10px; background: #fee2e2; color: #b91c1c; padding: 2px 6px; border-radius: 4px; font-weight: 700; margin-left: 4px;">Khusus Kepsek/Super Admin</span>
+                                                            <?php elseif (in_array($m['menu_key'], ['mentoring_dashboard', 'mentoring_report', 'mentoring_adab', 'mentoring_curriculum'], true)): ?>
+                                                                <span style="font-size: 10px; background: #e0f2fe; color: #0369a1; padding: 2px 6px; border-radius: 4px; font-weight: 600; margin-left: 4px;">Guru wajib izin Kepsek</span>
+                                                            <?php endif; ?>
+                                                        </div>
                                                         <div style="font-size: 11px; color: #94a3b8;"><code><?= htmlspecialchars($m['menu_key']) ?></code></div>
                                                     </div>
                                                 </div>
@@ -2706,11 +2837,17 @@ input[type="checkbox"].crud-row-all {
                 </div>
             </div>
 
-            <div class="custom-modal-footer">
-                <button type="button" class="btn btn-secondary" onclick="closeModal('modalRolePermissions')">Batal</button>
-                <button type="submit" class="btn btn-primary">
-                    <i class="fa-solid fa-floppy-disk"></i> Simpan Matriks Role
-                </button>
+            <div class="custom-modal-footer" style="justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                <label style="display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; font-weight: 600; cursor: pointer; margin: 0;">
+                    <input type="checkbox" name="sync_role_users" value="1" checked style="width: 16px; height: 16px; accent-color: var(--primary);">
+                    <span>Terapkan ke semua pengguna role ini (hapus override lama agar menu langsung berubah)</span>
+                </label>
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('modalRolePermissions')">Batal</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fa-solid fa-floppy-disk"></i> Simpan Matriks Role
+                    </button>
+                </div>
             </div>
         </form>
     </div>
@@ -3471,6 +3608,7 @@ function openUserPermissionsModal(userId) {
         filterMatrixRows('user', '');
     }
     applyMatrixPreset('user', 'empty');
+    document.querySelectorAll('.user-src-badge').forEach(el => { el.style.display = 'none'; el.innerText = ''; });
     document.getElementById('roleTemplateSelector').value = '';
 
     openModal('modalUserPermissions');
@@ -3492,6 +3630,7 @@ function openUserPermissionsModal(userId) {
                 document.getElementById('modalTargetUserRole').innerText = roleStr;
                 
                 const perms = data.permissions || {};
+                const sources = data.sources || {};
                 for (const [mId, p] of Object.entries(perms)) {
                     const chkR = document.getElementById(`user_perm_${mId}_read`);
                     const chkC = document.getElementById(`user_perm_${mId}_create`);
@@ -3504,6 +3643,21 @@ function openUserPermissionsModal(userId) {
                     if (chkD) chkD.checked = (p.delete === 1);
 
                     syncMatrixRowState('user', mId);
+                }
+                for (const [mId, src] of Object.entries(sources)) {
+                    const badge = document.getElementById(`user_src_badge_${mId}`);
+                    if (!badge) continue;
+                    if (src === 'custom') {
+                        badge.innerText = 'Custom Override';
+                        badge.style.background = '#fef3c7';
+                        badge.style.color = '#92400e';
+                        badge.style.display = 'inline-block';
+                    } else if (perms[mId]) {
+                        badge.innerText = 'Dari Role';
+                        badge.style.background = '#f1f5f9';
+                        badge.style.color = '#475569';
+                        badge.style.display = 'inline-block';
+                    }
                 }
                 syncMatrixColHeaders('user');
             } else {
@@ -3524,6 +3678,7 @@ function applyRoleTemplateToMatrix(roleKey) {
         .then(data => {
             if (data.status === 'success') {
                 applyMatrixPreset('user', 'empty');
+                document.querySelectorAll('.user-src-badge').forEach(el => { el.style.display = 'none'; el.innerText = ''; });
                 const perms = data.permissions || {};
                 for (const [mId, p] of Object.entries(perms)) {
                     const chkR = document.getElementById(`user_perm_${mId}_read`);

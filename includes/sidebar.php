@@ -31,7 +31,7 @@ if (isset($pdo) && $currentUserId > 0) {
         ");
         $rawMenus = $stmtNav->fetchAll(PDO::FETCH_ASSOC);
     } else {
-        // User biasa: ambil dari multi-role additive union (user_roles + roles + user_menu_access)
+        // User biasa: ambil dari multi-role additive union (user_roles + roles) dengan explicit per-user override (user_menu_access menimpa role)
         // serta sertakan parent menu otomatis jika punya child yang diizinkan
         $stmtNav = $pdo->prepare("
             SELECT am.id, am.menu_key, am.menu_name, am.category, am.menu_url, am.menu_icon, am.parent_id, am.sort_order
@@ -50,7 +50,7 @@ if (isset($pdo) && $currentUserId > 0) {
                 ON rma.menu_id = am.id AND (rma.role_id = ur.role_id OR rma.role_id = r_primary.id)
             WHERE am.is_active = 1
             GROUP BY am.id, am.menu_key, am.menu_name, am.category, am.menu_url, am.menu_icon, am.parent_id, am.sort_order
-            HAVING GREATEST(COALESCE(MAX(uma.can_read), 0), COALESCE(MAX(rma.can_read), 0)) > 0
+            HAVING COALESCE(MAX(uma.can_read), MAX(rma.can_read), 0) > 0
 
             UNION
 
@@ -71,7 +71,7 @@ if (isset($pdo) && $currentUserId > 0) {
                 ON rma.menu_id = ch.id AND (rma.role_id = ur.role_id OR rma.role_id = r_primary.id)
             WHERE p.is_active = 1 AND ch.is_active = 1
             GROUP BY p.id, p.menu_key, p.menu_name, p.category, p.menu_url, p.menu_icon, p.parent_id, p.sort_order
-            HAVING GREATEST(COALESCE(MAX(uma.can_read), 0), COALESCE(MAX(rma.can_read), 0)) > 0
+            HAVING COALESCE(MAX(uma.can_read), MAX(rma.can_read), 0) > 0
 
             ORDER BY sort_order ASC, id ASC
         ");
@@ -88,8 +88,11 @@ if (isset($pdo) && $currentUserId > 0) {
     }
 
     // FILTER KEAMANAN MANDATORI:
+    $sessionRoles = $_SESSION['roles'] ?? [$currentRole];
+    $isSuperUser = ($currentRole === 'super_admin' || in_array('super_admin', $sessionRoles, true));
+
     // 1. Menu 'user_activity' (Monitoring & Log Aktivitas Pengguna) HANYA BISA DIAKSES OLEH SUPER ADMIN
-    if ($currentRole !== 'super_admin') {
+    if (!$isSuperUser) {
         $rawMenus = array_filter($rawMenus, function($m) {
             return ($m['menu_key'] ?? '') !== 'user_activity';
         });
@@ -105,8 +108,7 @@ if (isset($pdo) && $currentUserId > 0) {
 
     // 3. Proteksi Modul Mentoring & Pembuatan Kelompok:
     // A. Menu 'mentoring_assignments' (Kelola Kelompok Mentoring) HANYA BISA DIAKSES OLEH KEPALA SEKOLAH & SUPER ADMIN
-    //    Guru / Staff TIDAK BOLEH melihat atau membuat kelompok mentoring dalam kondisi apa pun.
-    $isSuperOrKepsek = in_array($currentRole, ['super_admin', 'kepala_sekolah'], true);
+    $isSuperOrKepsek = ($isSuperUser || $currentRole === 'kepala_sekolah' || in_array('kepala_sekolah', $sessionRoles, true));
     if (!$isSuperOrKepsek) {
         $rawMenus = array_filter($rawMenus, function($m) {
             return ($m['menu_key'] ?? '') !== 'mentoring_assignments';
@@ -115,7 +117,8 @@ if (isset($pdo) && $currentUserId > 0) {
 
     // B. Menu Pembinaan lainnya (dashboard, report, adab, curriculum):
     //    Guru / Staff hanya bisa mengakses JIKA Kepala Sekolah telah memberikan izin.
-    if (!in_array($currentRole, ['super_admin', 'admin', 'kepala_sekolah'], true)) {
+    $isPrivilegedMentoring = ($isSuperOrKepsek || $currentRole === 'admin' || in_array('admin', $sessionRoles, true));
+    if (!$isPrivilegedMentoring) {
         $hasMentoringAccess = function_exists('canTeacherAccessMentoring') && canTeacherAccessMentoring($pdo, (int)$currentUserId);
         if (!$hasMentoringAccess) {
             $mentoringKeys = ['mentoring_dashboard', 'mentoring_report', 'mentoring_adab', 'mentoring_curriculum', 'pembinaan_parent'];
@@ -126,7 +129,7 @@ if (isset($pdo) && $currentUserId > 0) {
     }
 
     // Realtime session synchronization agar hak akses langsung sinkron tanpa logout
-    $_SESSION['menu_keys'] = array_filter(array_column($rawMenus, 'menu_key'));
+    $_SESSION['menu_keys'] = array_values(array_filter(array_column($rawMenus, 'menu_key')));
 }
 
 // Canonical URL Map
@@ -237,6 +240,21 @@ foreach ($rawMenus as $m) {
         $cat = strtoupper($m['category'] ?? 'LAINNYA');
         $parentsByCategory[$cat][] = $m;
         $allParentsMap[(int)$m['id']] = $m;
+    }
+}
+
+// Buang parent accordion ('#') yang tidak memiliki satupun child yang diizinkan, serta kategori kosong
+foreach ($parentsByCategory as $cat => $items) {
+    $parentsByCategory[$cat] = array_values(array_filter($items, function ($item) use ($childrenByParentId) {
+        $itemId = (int)$item['id'];
+        $hasChildren = !empty($childrenByParentId[$itemId]);
+        if (!$hasChildren && trim((string)($item['menu_url'] ?? '')) === '#') {
+            return false;
+        }
+        return true;
+    }));
+    if (empty($parentsByCategory[$cat])) {
+        unset($parentsByCategory[$cat]);
     }
 }
 ?>

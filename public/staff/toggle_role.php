@@ -73,14 +73,13 @@ if ($action === 'make_kepsek') {
         $pdo->prepare("DELETE FROM admin_unit_permissions WHERE user_id = ?")->execute([$staff['user_id']]);
         $pdo->prepare("INSERT INTO admin_unit_permissions (user_id, unit_id) VALUES (?, ?)")->execute([$staff['user_id'], $staff['unit_id']]);
         
-        // Reset menu access ke default kepala_sekolah
+        // Sinkronkan user_roles & bersihkan override menu agar mengikuti default role kepala_sekolah
+        $kepsekRoleId = $pdo->query("SELECT id FROM roles WHERE role_key = 'kepala_sekolah' LIMIT 1")->fetchColumn();
+        if ($kepsekRoleId) {
+            $pdo->prepare("DELETE FROM user_roles WHERE user_id = ?")->execute([$staff['user_id']]);
+            $pdo->prepare("INSERT INTO user_roles (user_id, role_id, is_primary) VALUES (?, ?, 1)")->execute([$staff['user_id'], (int)$kepsekRoleId]);
+        }
         $pdo->prepare("DELETE FROM user_menu_access WHERE user_id = ?")->execute([$staff['user_id']]);
-        $pdo->prepare("
-            INSERT IGNORE INTO user_menu_access (user_id, menu_id)
-            SELECT ?, rma.menu_id FROM role_menu_access rma
-            INNER JOIN roles r ON r.id = rma.role_id
-            WHERE r.role_key = 'kepala_sekolah'
-        ")->execute([$staff['user_id']]);
 
         $pdo->commit();
         flash('success', "{$staff['name']} berhasil diangkat menjadi Kepala Sekolah.");
@@ -105,14 +104,15 @@ if ($action === 'toggle_admin') {
         $pdo->prepare("DELETE FROM admin_class_permissions WHERE user_id = ?")->execute([$staff['user_id']]);
     }
 
-    // Reset menu access ke role baru
+    // Sinkronkan user_roles & reset override menu ke default role baru
+    $stmtRoleId = $pdo->prepare("SELECT id FROM roles WHERE role_key = ? LIMIT 1");
+    $stmtRoleId->execute([$newRole]);
+    $newRoleId = (int)$stmtRoleId->fetchColumn();
+    if ($newRoleId > 0) {
+        $pdo->prepare("DELETE FROM user_roles WHERE user_id = ?")->execute([$staff['user_id']]);
+        $pdo->prepare("INSERT INTO user_roles (user_id, role_id, is_primary) VALUES (?, ?, 1)")->execute([$staff['user_id'], $newRoleId]);
+    }
     $pdo->prepare("DELETE FROM user_menu_access WHERE user_id = ?")->execute([$staff['user_id']]);
-    $pdo->prepare("
-        INSERT IGNORE INTO user_menu_access (user_id, menu_id)
-        SELECT ?, rma.menu_id FROM role_menu_access rma
-        INNER JOIN roles r ON r.id = rma.role_id
-        WHERE r.role_key = ?
-    ")->execute([$staff['user_id'], $newRole]);
 
     flash('success', "Akses untuk " . $staff['name'] . " berhasil diubah menjadi " . ucfirst($newRole) . ".");
     redirect('index.php');

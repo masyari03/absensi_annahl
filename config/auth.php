@@ -246,12 +246,15 @@ if (!function_exists('hasMenuAccess')) {
             session_start();
         }
 
+        $sessionUserId = (int)($_SESSION['user_id'] ?? 0);
         $currentRole = $_SESSION['role'] ?? '';
-        if ($currentRole === 'super_admin') {
-            return true;
+        if ($userId === null || $userId === $sessionUserId) {
+            if ($currentRole === 'super_admin' || in_array('super_admin', currentUserRoles(), true)) {
+                return true;
+            }
         }
 
-        $uid = $userId !== null ? $userId : (int)($_SESSION['user_id'] ?? 0);
+        $uid = $userId !== null ? $userId : $sessionUserId;
         if ($uid <= 0) {
             return false;
         }
@@ -261,36 +264,50 @@ if (!function_exists('hasMenuAccess')) {
             return true;
         }
 
+        // Hardcoded global safety gates
+        if ($menuKey === 'user_activity') {
+            return hasRole('super_admin', $uid);
+        }
+        if ($menuKey === 'mentoring_assignments' && !hasRole(['super_admin', 'kepala_sekolah'], $uid)) {
+            return false;
+        }
+
         $action = strtolower($action);
         if (!in_array($action, ['read', 'create', 'edit', 'delete'], true)) {
             $action = 'read';
         }
         $actField = 'can_' . $action;
 
-        // Cek cache session permissions jika user yang dicek adalah user yang login
-        if ($uid === (int)($_SESSION['user_id'] ?? 0) && isset($_SESSION['menu_permissions']) && is_array($_SESSION['menu_permissions'])) {
-            if (isset($_SESSION['menu_permissions'][$menuKey])) {
-                $p = $_SESSION['menu_permissions'][$menuKey];
-                return !empty($p[$action]);
-            }
-        }
-
-        // Jika hanya check 'read' dan ada $_SESSION['menu_keys']
-        if ($action === 'read' && $uid === (int)($_SESSION['user_id'] ?? 0) && isset($_SESSION['menu_keys']) && is_array($_SESSION['menu_keys'])) {
-            if (in_array($menuKey, $_SESSION['menu_keys'], true)) {
+        global $pdo;
+        // Sinkronkan hak akses user aktif sekali per HTTP request agar perubahan role/matrix langsung efektif
+        if ($uid === $sessionUserId && isset($pdo) && function_exists('loadUserPermissions')) {
+            loadUserPermissions($pdo, $uid);
+            if (($GLOBALS['__ais_role'] ?? $_SESSION['role'] ?? '') === 'super_admin' || in_array('super_admin', $_SESSION['roles'] ?? [], true)) {
                 return true;
             }
+            if (isset($_SESSION['menu_permissions'][$menuKey])) {
+                return !empty($_SESSION['menu_permissions'][$menuKey][$action]);
+            }
+            // loadUserPermissions telah memuat seluruh menu yang punya izin > 0
+            if (isset($_SESSION['menu_permissions']) && is_array($_SESSION['menu_permissions'])) {
+                return false;
+            }
         }
 
-        // Cek langsung ke database dengan model additive union
-        global $pdo;
+        // Fallback query langsung ke DB (untuk pemeriksaan $userId lain atau sebelum functions.php dimuat)
         if (isset($pdo)) {
             try {
+                // Jika checking user lain yang ternyata super_admin
+                if (hasRole('super_admin', $uid)) {
+                    return true;
+                }
+
                 $sql = "
                     SELECT 
-                        GREATEST(
-                            COALESCE(MAX(uma.$actField), 0),
-                            COALESCE(MAX(rma.$actField), 0)
+                        COALESCE(
+                            MAX(uma.$actField),
+                            MAX(rma.$actField),
+                            0
                         ) as allowed
                     FROM app_menus am
                     LEFT JOIN user_menu_access uma 
@@ -309,29 +326,7 @@ if (!function_exists('hasMenuAccess')) {
                 ";
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute([$uid, $uid, $uid, $menuKey]);
-                $allowed = ((int)$stmt->fetchColumn()) > 0;
-
-                // Update session cache
-                if ($uid === (int)($_SESSION['user_id'] ?? 0)) {
-                    if (!isset($_SESSION['menu_permissions'])) {
-                        $_SESSION['menu_permissions'] = [];
-                    }
-                    if (!isset($_SESSION['menu_permissions'][$menuKey])) {
-                        $_SESSION['menu_permissions'][$menuKey] = ['read' => 0, 'create' => 0, 'edit' => 0, 'delete' => 0];
-                    }
-                    $_SESSION['menu_permissions'][$menuKey][$action] = $allowed ? 1 : 0;
-
-                    if ($allowed && $action === 'read') {
-                        if (!isset($_SESSION['menu_keys'])) {
-                            $_SESSION['menu_keys'] = [];
-                        }
-                        if (!in_array($menuKey, $_SESSION['menu_keys'], true)) {
-                            $_SESSION['menu_keys'][] = $menuKey;
-                        }
-                    }
-                }
-
-                return $allowed;
+                return ((int)$stmt->fetchColumn()) > 0;
             } catch (Exception $e) {
                 return false;
             }

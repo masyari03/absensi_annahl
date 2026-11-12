@@ -104,378 +104,198 @@ if (!function_exists('setFlash')) {
 
  */
 
-if (!function_exists('loadUserPermissions')) {
-
-    function loadUserPermissions(PDO $pdo, int $userId): void
-
-    {
-
-        if (session_status() === PHP_SESSION_NONE) {
-
-            session_start();
-
-        }
-
-        // Ambil info primary role
-
-        $stmtUser = $pdo->prepare("SELECT role, name, username FROM users WHERE id = ?");
-
-        $stmtUser->execute([$userId]);
-
-        $uData = $stmtUser->fetch(PDO::FETCH_ASSOC);
-
-        $primaryRole = $uData['role'] ?? 'staff';
-
-        $_SESSION['role'] = $primaryRole;
-
-        // Ambil seluruh role keys dan role names dari user_roles (Multi-Role)
-
-        $stmtRoles = $pdo->prepare("
-
-            SELECT r.id, r.role_key, r.role_name, ur.is_primary
-
-            FROM user_roles ur
-
-            INNER JOIN roles r ON r.id = ur.role_id
-
-            WHERE ur.user_id = ?
-
-            ORDER BY ur.is_primary DESC, r.id ASC
-
-        ");
-
-        $stmtRoles->execute([$userId]);
-
-        $assignedRoles = $stmtRoles->fetchAll(PDO::FETCH_ASSOC);
-
-        $roleKeys = [];
-
-        $roleNames = [];
-
-        foreach ($assignedRoles as $ar) {
-
-            $roleKeys[] = $ar['role_key'];
-
-            $roleNames[] = $ar['role_name'];
-
-        }
-
-        if (!in_array($primaryRole, $roleKeys, true)) {
-
-            $roleKeys[] = $primaryRole;
-
-        }
-
-        $_SESSION['roles'] = array_values(array_unique($roleKeys));
-
-        $_SESSION['role_names'] = array_values(array_unique($roleNames));
-
-        // Jika user adalah super_admin, berikan full akses ke seluruh menu dengan Full CRUD
-
-        if ($primaryRole === 'super_admin' || in_array('super_admin', $roleKeys, true)) {
-
-            $stmtAll = $pdo->query("SELECT menu_key FROM app_menus WHERE is_active = 1 ORDER BY sort_order ASC");
-
-            $allKeys = $stmtAll->fetchAll(PDO::FETCH_COLUMN);
-
-            $_SESSION['menu_keys'] = $allKeys;
-
-            $_SESSION['menu_permissions'] = [];
-
-            foreach ($allKeys as $mk) {
-
-                $_SESSION['menu_permissions'][$mk] = ['read' => 1, 'create' => 1, 'edit' => 1, 'delete' => 1];
-
-            }
-
-            return;
-
-        }
-
-        // Hitung Additive Union Permissions dari:
-
-        // 1. Seluruh role_menu_access untuk semua role yang dimiliki user
-
-        // 2. user_menu_access custom overrides
-
-        $sql = "
-
-            SELECT 
-
-                am.menu_key,
-
-                GREATEST(COALESCE(MAX(uma.can_read), 0), COALESCE(MAX(rma.can_read), 0)) as can_read,
-
-                GREATEST(COALESCE(MAX(uma.can_create), 0), COALESCE(MAX(rma.can_create), 0)) as can_create,
-
-                GREATEST(COALESCE(MAX(uma.can_edit), 0), COALESCE(MAX(rma.can_edit), 0)) as can_edit,
-
-                GREATEST(COALESCE(MAX(uma.can_delete), 0), COALESCE(MAX(rma.can_delete), 0)) as can_delete
-
-            FROM app_menus am
-
-            LEFT JOIN user_menu_access uma 
-
-                ON uma.menu_id = am.id AND uma.user_id = ?
-
-            LEFT JOIN user_roles ur 
-
-                ON ur.user_id = ?
-
-            LEFT JOIN roles r_ur 
-
-                ON r_ur.id = ur.role_id
-
-            LEFT JOIN users u 
-
-                ON u.id = ?
-
-            LEFT JOIN roles r_primary 
-
-                ON r_primary.role_key = u.role
-
-            LEFT JOIN role_menu_access rma 
-
-                ON rma.menu_id = am.id AND (rma.role_id = ur.role_id OR rma.role_id = r_primary.id)
-
-            WHERE am.is_active = 1
-
-            GROUP BY am.id, am.menu_key, am.sort_order
-
-            HAVING can_read > 0 OR can_create > 0 OR can_edit > 0 OR can_delete > 0
-
-            ORDER BY am.sort_order ASC
-
-        ";
-
-        $stmtPerms = $pdo->prepare($sql);
-
-        $stmtPerms->execute([$userId, $userId, $userId]);
-
-        $rows = $stmtPerms->fetchAll(PDO::FETCH_ASSOC);
-
-        $allowedMenuKeys = [];
-
-        $menuPermissions = [];
-
-        foreach ($rows as $row) {
-
-            $mKey = $row['menu_key'];
-
-            if ((int)$row['can_read'] > 0) {
-
-                $allowedMenuKeys[] = $mKey;
-
-            }
-
-            $menuPermissions[$mKey] = [
-
-                'read'   => (int)$row['can_read'],
-
-                'create' => (int)$row['can_create'],
-
-                'edit'   => (int)$row['can_edit'],
-
-                'delete' => (int)$row['can_delete'],
-
-            ];
-
-        }
-
-        $_SESSION['menu_keys'] = array_values(array_unique($allowedMenuKeys));
-
-        $_SESSION['menu_permissions'] = $menuPermissions;
-
-    }
-
-}
-
-/**
-
- * Ambil semua menu_key yang boleh diakses oleh $userId dari DB.
-
- */
-
-if (!function_exists('getUserMenuKeys')) {
-
-    function getUserMenuKeys(PDO $pdo, int $userId): array
-
-    {
-
-        loadUserPermissions($pdo, $userId);
-
-        return $_SESSION['menu_keys'] ?? [];
-
-    }
-
-}
-
-/**
-
- * Refresh session permissions user tertentu.
-
- */
-
-if (!function_exists('refreshUserPermissions')) {
-
-    function refreshUserPermissions(PDO $pdo, int $targetUserId): void
-
-    {
-
-        if (session_status() === PHP_SESSION_NONE) {
-
-            session_start();
-
-        }
-
-        $currentUserId = (int)($_SESSION['user_id'] ?? 0);
-
-        if ($targetUserId === $currentUserId) {
-
-            loadUserPermissions($pdo, $currentUserId);
-
-        }
-
-    }
-
-}
-
-/**
-
- * FUNGSI UTAMA PENJAGA HALAMAN.
-
- *
-
- * @param string $menuKey  Nilai menu_key dari tabel app_menus.
-
- * @param string|null $redirect URL tujuan jika akses ditolak (default: dashboard).
-
- */
-
-if (!function_exists('checkUserAccess')) {
-
-    function checkUserAccess(string $menuKey, ?string $redirect = null): void
-
-    {
-
-        if (session_status() === PHP_SESSION_NONE) {
-
-            session_start();
-
-        }
-
-        // Pastikan user sudah login
-
-        if (empty($_SESSION['user_id'])) {
-
-            header('Location: ' . BASE_URL . '/login.php');
-
-            exit;
-
-        }
-
-        $role = $_SESSION['role'] ?? '';
-
-        // Super Admin selalu lolos
-
-        if ($role === 'super_admin') {
-
-            return;
-
-        }
-
-        // Halaman Dashboard selalu diizinkan untuk semua user yang sudah login
-
-        if ($menuKey === 'dashboard') {
-
-            return;
-
-        }
-
-        // Jika belum ada di session, load dari DB
-
-        if (!isset($_SESSION['menu_keys'])) {
-
-            global $pdo;
-
-            if (isset($pdo)) {
-
-                loadUserPermissions($pdo, (int)$_SESSION['user_id']);
-
-            }
-
-        }
-
-        $allowedKeys = $_SESSION['menu_keys'] ?? [];
-
-        if (!in_array($menuKey, $allowedKeys)) {
-
-            flash('error', 'Anda tidak memiliki hak akses untuk halaman tersebut.');
-
-            $target = $redirect ?? BASE_URL . '/dashboard.php';
-
-            header('Location: ' . $target);
-
-            exit;
-
-        }
-
-    }
-
-}
-
-/**
-
- * Cek apakah user yang sedang login punya akses ke menu tertentu (tanpa redirect).
-
- */
-
-if (!function_exists('hasMenuAccess')) {
-
-    function hasMenuAccess(string $menuKey): bool
-
-    {
-
-        if (session_status() === PHP_SESSION_NONE) {
-
-            session_start();
-
-        }
-
-        $role = $_SESSION['role'] ?? '';
-
-        if ($role === 'super_admin') {
-
-            return true;
-
-        }
-
-        if ($menuKey === 'dashboard') {
-
-            return true;
-
-        }
-
-        if (!isset($_SESSION['menu_keys'])) {
-
-            global $pdo;
-
-            if (isset($pdo) && !empty($_SESSION['user_id'])) {
-
-                loadUserPermissions($pdo, (int)$_SESSION['user_id']);
-
-            }
-
-        }
-
-        $allowedKeys = $_SESSION['menu_keys'] ?? [];
-
-        return in_array($menuKey, $allowedKeys);
-
-    }
-
-}
-
+if (!function_exists('loadUserPermissions')) {
+    function loadUserPermissions(PDO $pdo, int $userId, bool $forceReload = false): void
+    {
+        static $loadedInRequest = [];
+        if ($userId <= 0) {
+            return;
+        }
+        if (!$forceReload && isset($loadedInRequest[$userId])) {
+            return;
+        }
+        $loadedInRequest[$userId] = true;
+
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+
+        // Ambil info primary role
+        $stmtUser = $pdo->prepare("SELECT role, name, username FROM users WHERE id = ?");
+        $stmtUser->execute([$userId]);
+        $uData = $stmtUser->fetch(PDO::FETCH_ASSOC);
+        $primaryRole = $uData['role'] ?? 'staff';
+        $_SESSION['role'] = $primaryRole;
+
+        // Ambil seluruh role keys dan role names dari user_roles (Multi-Role)
+        $stmtRoles = $pdo->prepare("
+            SELECT r.id, r.role_key, r.role_name, ur.is_primary
+            FROM user_roles ur
+            INNER JOIN roles r ON r.id = ur.role_id
+            WHERE ur.user_id = ?
+            ORDER BY ur.is_primary DESC, r.id ASC
+        ");
+        $stmtRoles->execute([$userId]);
+        $assignedRoles = $stmtRoles->fetchAll(PDO::FETCH_ASSOC);
+
+        $roleKeys = [];
+        $roleNames = [];
+        foreach ($assignedRoles as $ar) {
+            $roleKeys[] = $ar['role_key'];
+            $roleNames[] = $ar['role_name'];
+        }
+        if (!in_array($primaryRole, $roleKeys, true)) {
+            $roleKeys[] = $primaryRole;
+        }
+        $_SESSION['roles'] = array_values(array_unique($roleKeys));
+        $_SESSION['role_names'] = array_values(array_unique($roleNames));
+
+        // Jika user adalah super_admin, berikan full akses ke seluruh menu dengan Full CRUD
+        if ($primaryRole === 'super_admin' || in_array('super_admin', $roleKeys, true)) {
+            $stmtAll = $pdo->query("SELECT menu_key FROM app_menus WHERE is_active = 1 ORDER BY sort_order ASC");
+            $allKeys = $stmtAll->fetchAll(PDO::FETCH_COLUMN);
+            $_SESSION['menu_keys'] = $allKeys;
+            $_SESSION['menu_permissions'] = [];
+            foreach ($allKeys as $mk) {
+                $_SESSION['menu_permissions'][$mk] = ['read' => 1, 'create' => 1, 'edit' => 1, 'delete' => 1];
+            }
+            return;
+        }
+
+        // Hitung Permissions: Explicit per-user override (user_menu_access) menimpa Role (additive multi-role union)
+        $sql = "
+            SELECT 
+                am.menu_key,
+                COALESCE(MAX(uma.can_read), MAX(rma.can_read), 0) as can_read,
+                COALESCE(MAX(uma.can_create), MAX(rma.can_create), 0) as can_create,
+                COALESCE(MAX(uma.can_edit), MAX(rma.can_edit), 0) as can_edit,
+                COALESCE(MAX(uma.can_delete), MAX(rma.can_delete), 0) as can_delete
+            FROM app_menus am
+            LEFT JOIN user_menu_access uma 
+                ON uma.menu_id = am.id AND uma.user_id = ?
+            LEFT JOIN user_roles ur 
+                ON ur.user_id = ?
+            LEFT JOIN roles r_ur 
+                ON r_ur.id = ur.role_id
+            LEFT JOIN users u 
+                ON u.id = ?
+            LEFT JOIN roles r_primary 
+                ON r_primary.role_key = u.role
+            LEFT JOIN role_menu_access rma 
+                ON rma.menu_id = am.id AND (rma.role_id = ur.role_id OR rma.role_id = r_primary.id)
+            WHERE am.is_active = 1
+            GROUP BY am.id, am.menu_key, am.sort_order
+            HAVING can_read > 0 OR can_create > 0 OR can_edit > 0 OR can_delete > 0
+            ORDER BY am.sort_order ASC
+        ";
+        $stmtPerms = $pdo->prepare($sql);
+        $stmtPerms->execute([$userId, $userId, $userId]);
+        $rows = $stmtPerms->fetchAll(PDO::FETCH_ASSOC);
+
+        $webPermitEnabled = !function_exists('getSystemSetting') || (getSystemSetting($pdo, 'student_web_permit_enabled', '1') === '1');
+        $isSuperOrKepsek = in_array($primaryRole, ['super_admin', 'kepala_sekolah'], true)
+            || in_array('super_admin', $roleKeys, true)
+            || in_array('kepala_sekolah', $roleKeys, true);
+
+        $allowedMenuKeys = [];
+        $menuPermissions = [];
+        foreach ($rows as $row) {
+            $mKey = $row['menu_key'];
+            if ($mKey === 'user_activity') {
+                continue;
+            }
+            if (!$webPermitEnabled && $mKey === 'student_permits') {
+                continue;
+            }
+            if (!$isSuperOrKepsek && $mKey === 'mentoring_assignments') {
+                continue;
+            }
+            if ((int)$row['can_read'] > 0) {
+                $allowedMenuKeys[] = $mKey;
+            }
+            $menuPermissions[$mKey] = [
+                'read'   => (int)$row['can_read'],
+                'create' => (int)$row['can_create'],
+                'edit'   => (int)$row['can_edit'],
+                'delete' => (int)$row['can_delete'],
+            ];
+        }
+
+        $_SESSION['menu_keys'] = array_values(array_unique($allowedMenuKeys));
+        $_SESSION['menu_permissions'] = $menuPermissions;
+    }
+}
+
+/**
+ * Ambil semua menu_key yang boleh diakses oleh $userId dari DB.
+ */
+if (!function_exists('getUserMenuKeys')) {
+    function getUserMenuKeys(PDO $pdo, int $userId): array
+    {
+        loadUserPermissions($pdo, $userId);
+        return $_SESSION['menu_keys'] ?? [];
+    }
+}
+
+/**
+ * Refresh session permissions user tertentu.
+ */
+if (!function_exists('refreshUserPermissions')) {
+    function refreshUserPermissions(PDO $pdo, int $targetUserId): void
+    {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        $currentUserId = (int)($_SESSION['user_id'] ?? 0);
+        if ($targetUserId === $currentUserId) {
+            loadUserPermissions($pdo, $currentUserId, true);
+        }
+    }
+}
+
+/**
+ * FUNGSI UTAMA PENJAGA HALAMAN.
+ *
+ * @param string $menuKey  Nilai menu_key dari tabel app_menus.
+ * @param string|null $redirect URL tujuan jika akses ditolak (default: dashboard).
+ */
+if (!function_exists('checkUserAccess')) {
+    function checkUserAccess(string $menuKey, ?string $redirect = null): void
+    {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        // Pastikan user sudah login
+        if (empty($_SESSION['user_id'])) {
+            header('Location: ' . BASE_URL . '/login.php');
+            exit;
+        }
+        $role = $_SESSION['role'] ?? '';
+        // Super Admin selalu lolos
+        if ($role === 'super_admin') {
+            return;
+        }
+        // Halaman Dashboard selalu diizinkan untuk semua user yang sudah login
+        if ($menuKey === 'dashboard') {
+            return;
+        }
+        // Sinkronkan dari DB (sekali per HTTP request via loadUserPermissions)
+        global $pdo;
+        if (isset($pdo)) {
+            loadUserPermissions($pdo, (int)$_SESSION['user_id']);
+        }
+        $allowedKeys = $_SESSION['menu_keys'] ?? [];
+        if (!in_array($menuKey, $allowedKeys)) {
+            flash('error', 'Anda tidak memiliki hak akses untuk halaman tersebut.');
+            $target = $redirect ?? BASE_URL . '/dashboard.php';
+            header('Location: ' . $target);
+            exit;
+        }
+    }
+}
+
+// hasMenuAccess() canonical implementation lives in config/auth.php (supports $action & $userId)
+
 // =========================================================================
 
 // ACCESS CONTROL SISWA (Filter berdasarkan izin unit/grade/kelas)
