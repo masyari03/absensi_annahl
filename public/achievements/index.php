@@ -6,6 +6,7 @@ require_once '../../config/security.php';
 require_once '../../includes/functions.php';
 
 requireLogin();
+checkUserAccess('student_achievements');
 
 $pageTitle = 'Rekapan Prestasi & Piagam Siswa';
 $currentRole = currentRole();

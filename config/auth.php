@@ -366,12 +366,13 @@ if (!function_exists('requireMenuAccess')) {
      * Jika tidak memiliki izin, otomatis mengembalikan respons 403 Forbidden berdesain elegan.
      *
      * @param string $menuKey
+     * @param string $action   Jenis aksi yang divalidasi (read, create, edit, delete). Default: read.
      */
-    function requireMenuAccess(string $menuKey)
+    function requireMenuAccess(string $menuKey, string $action = 'read')
     {
         requireLogin();
 
-        if (!hasMenuAccess($menuKey)) {
+        if (!hasMenuAccess($menuKey, $action)) {
             http_response_code(403);
             $backUrl = defined('BASE_URL') ? BASE_URL . '/dashboard.php' : '../dashboard.php';
             ?>

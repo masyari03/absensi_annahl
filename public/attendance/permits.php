@@ -6,7 +6,7 @@ require_once '../../config/security.php';
 require_once '../../includes/functions.php';
 
 requireLogin();
-checkUserAccess('attendance_students');
+checkUserAccess('student_permits');
 
 $webPermitEnabled = (getSystemSetting($pdo, 'student_web_permit_enabled', '1') === '1');
 if (!$webPermitEnabled) {

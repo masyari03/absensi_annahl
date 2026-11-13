@@ -1326,25 +1326,18 @@ require_once __DIR__ . '/../../includes/header.php';
 input[type="checkbox"].crud-chk,
 input[type="checkbox"].crud-header-chk,
 input[type="checkbox"].crud-row-all {
-    width: 19px !important;
-    height: 19px !important;
-    min-width: 19px !important;
-    max-width: 19px !important;
-    min-height: 19px !important;
-    max-height: 19px !important;
+    width: 18px !important;
+    height: 18px !important;
+    min-width: 18px !important;
+    max-width: 18px !important;
+    min-height: 18px !important;
+    max-height: 18px !important;
     padding: 0 !important;
     margin: 0 auto !important;
-    border: 1.5px solid #94a3b8 !important;
-    border-radius: 4px !important;
-    background-color: #ffffff !important;
-    outline: none !important;
-    box-shadow: none !important;
     cursor: pointer !important;
     display: inline-block !important;
     vertical-align: middle !important;
     box-sizing: border-box !important;
-    -webkit-appearance: checkbox !important;
-    appearance: checkbox !important;
 }
 
 .crud-matrix-wrapper {
@@ -3462,19 +3455,19 @@ function applyMatrixPreset(target, mode) {
             if (chkC) chkC.checked = true;
             if (chkE) chkE.checked = true;
             if (chkD) chkD.checked = true;
-            if (chkAll) chkAll.checked = true;
+            if (chkAll) { chkAll.checked = true; chkAll.indeterminate = false; }
         } else if (mode === 'readonly') {
             if (chkR) chkR.checked = true;
             if (chkC) chkC.checked = false;
             if (chkE) chkE.checked = false;
             if (chkD) chkD.checked = false;
-            if (chkAll) chkAll.checked = false;
+            if (chkAll) { chkAll.checked = false; chkAll.indeterminate = true; }
         } else if (mode === 'empty') {
             if (chkR) chkR.checked = false;
             if (chkC) chkC.checked = false;
             if (chkE) chkE.checked = false;
             if (chkD) chkD.checked = false;
-            if (chkAll) chkAll.checked = false;
+            if (chkAll) { chkAll.checked = false; chkAll.indeterminate = false; }
         }
     });
     syncMatrixColHeaders(target);
@@ -3511,6 +3504,7 @@ function toggleMatrixRow(target, menuId, isChecked) {
     if (chkE) chkE.checked = isChecked;
     if (chkD) chkD.checked = isChecked;
 
+    syncMatrixRowState(target, menuId);
     syncMatrixColHeaders(target);
 }
 
